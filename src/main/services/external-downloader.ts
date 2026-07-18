@@ -1,0 +1,199 @@
+import {execFile} from 'child_process';
+import {dialog, shell} from 'electron';
+import {existsSync} from 'fs';
+
+// 外部下载器(唤起第三方下载器)。
+// 启动方式沿用 view.ts 的 callPotPlayer:execFile(path, argvArray) 永不拼 shell 字符串,
+// URL/路径作为独立 argv 元素 —— 既避免命令注入(嗅探/右键得到的 url 可能含攻击者可控字符),
+// 也避免"浏览器进程派生 cmd.exe"启发式特征。迅雷走 thunder:// 系统协议。
+
+export interface IDownloaderPreset {
+  type: string;
+  // 右键菜单与提示文案。
+  name: string;
+  // 为 true 时不走 execFile,改用系统协议(thunder://)唤起。
+  usesProtocol?: boolean;
+  // 用于从注册表自动发现可执行路径(按顺序尝试),为空表示不走注册表。
+  registryKeys?: {key: string; valueName: string}[];
+}
+
+export const DOWNLOADER_PRESETS: Record<string, IDownloaderPreset> = {
+  idm: {
+    type: 'idm',
+    name: 'IDM',
+    registryKeys: [
+      {key: 'HKCU\\Software\\DownloadManager', valueName: 'ExePath'},
+      {key: 'HKLM\\SOFTWARE\\Internet Download Manager', valueName: 'ExePath'},
+      {key: 'HKLM\\SOFTWARE\\WOW6432Node\\Internet Download Manager', valueName: 'ExePath'},
+    ],
+  },
+  thunder: {
+    type: 'thunder',
+    name: '迅雷',
+    usesProtocol: true,
+  },
+  aria2: {
+    type: 'aria2',
+    name: 'aria2',
+    // aria2 通常无注册表项,需用户在设置中手动指定路径。
+  },
+  custom: {
+    type: 'custom',
+    name: '自定义',
+  },
+};
+
+export interface ILaunchOptions {
+  type: string;
+  // 用户在设置中配置的可执行路径;为空时尝试注册表自动发现(右键菜单场景)。
+  customPath?: string;
+  // 仅 custom 用:参数模板,占位符 {url} {path} {filename},按空白拆成 argv。
+  customArgs?: string;
+  url: string;
+  // 下载目录。
+  path?: string;
+  // 文件名(will-download 自动接管时可提供;右键链接通常没有)。
+  filename?: string;
+}
+
+// 构造各预置的 argv(除迅雷外)。
+function buildArgv(opts: ILaunchOptions): string[] {
+  const {type, url, path, filename, customArgs} = opts;
+  if (type === 'idm') {
+    // IDMan.exe /d URL [/p PATH] [/f FILENAME] /n
+    // /n = 不显示"下载文件信息"对话框,直接加入队列。
+    const argv = ['/d', url];
+    if (path) argv.push('/p', path);
+    if (filename) argv.push('/f', filename);
+    argv.push('/n');
+    return argv;
+  }
+  if (type === 'aria2') {
+    // aria2c [-d PATH] [-o FILENAME] URL
+    const argv: string[] = [];
+    if (path) argv.push('-d', path);
+    if (filename) argv.push('-o', filename);
+    argv.push(url);
+    return argv;
+  }
+  // custom:按空白拆模板,逐 token 替换占位符。
+  // 占位符 {url}/{path}/{filename} 是单个 token,含空格的路径仍保持一个 argv 元素(安全)。
+  const template = customArgs || '';
+  const subst = (tok: string) =>
+    tok
+      .replace(/\{url\}/g, url)
+      .replace(/\{path\}/g, path || '')
+      .replace(/\{filename\}/g, filename || '');
+  return template
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(subst)
+    .filter(Boolean);
+}
+
+// 从注册表发现预置下载器的可执行路径(仿 view.ts getPotPlayerInstallPath)。
+// 迅雷返回 ''(走协议);aria2/custom 无注册表项也返回 '';均不 reject。
+export function discoverDownloaderPath(type: string): Promise<string> {
+  const keys = DOWNLOADER_PRESETS[type]?.registryKeys ?? [];
+  return new Promise((resolve) => {
+    if (keys.length === 0) {
+      resolve('');
+      return;
+    }
+    let i = 0;
+    const tryNext = () => {
+      if (i >= keys.length) {
+        resolve('');
+        return;
+      }
+      const {key, valueName} = keys[i++];
+      execFile('reg', ['query', key, '/v', valueName], (error, stdout) => {
+        if (error || !stdout) {
+          tryNext();
+          return;
+        }
+        const re = new RegExp(`${valueName}\\s+REG_SZ\\s+(.+)`, 'i');
+        const match = stdout.match(re);
+        if (match && match[1]) {
+          resolve(match[1].trim());
+        } else {
+          tryNext();
+        }
+      });
+    };
+    tryNext();
+  });
+}
+
+// 同步预判能否接管下载。用于 will-download 中决定是否同步 preventDefault:
+// preventDefault 必须在事件处理函数同步段内调用(await 之后无效),故自动接管时
+// 不在此处做注册表查询(慢/异步),要求路径已配置且存在;迅雷走协议默认可唤起。
+export function canHandoffDownload(
+  type: string,
+  configuredPath: string,
+): boolean {
+  if (DOWNLOADER_PRESETS[type]?.usesProtocol) return true;
+  return !!configuredPath && existsSync(configuredPath);
+}
+
+// 唤起外部下载器。返回是否成功发起(右键菜单场景用于提示;自动接管场景应在调用前
+// 已用 canHandoffDownload 同步预判并 preventDefault)。
+export async function launchExternalDownload(
+  opts: ILaunchOptions,
+): Promise<boolean> {
+  const preset = DOWNLOADER_PRESETS[opts.type];
+  const name = preset?.name ?? '外部下载器';
+
+  // 迅雷:走 thunder:// 协议。负载 = base64("AA" + url + "ZZ")(标准迅雷协议)。
+  if (preset?.usesProtocol) {
+    const payload = Buffer.from(`AA${opts.url}ZZ`).toString('base64');
+    try {
+      await shell.openExternal(`thunder://${payload}`);
+      console.log(`${name}已唤起`);
+      return true;
+    } catch (e) {
+      console.error(`唤起${name}失败:`, e);
+      dialog.showMessageBox({
+        type: 'warning',
+        title: '温馨提示',
+        message: `唤起${name}失败,请确认已安装${name}。`,
+        buttons: ['确定'],
+      });
+      return false;
+    }
+  }
+
+  // 解析路径:用户配置优先,否则注册表自动发现。
+  let path = opts.customPath || '';
+  if (!path) {
+    path = await discoverDownloaderPath(opts.type);
+  }
+  if (!path || !existsSync(path)) {
+    dialog.showMessageBox({
+      type: 'warning',
+      title: '温馨提示',
+      message: `未找到${name},请在设置中确认路径。`,
+      buttons: ['确定'],
+    });
+    return false;
+  }
+
+  const argv = buildArgv(opts);
+  if (argv.length === 0) {
+    console.warn(`${name}:参数为空,跳过启动`);
+    return false;
+  }
+
+  execFile(path, argv, (error, _stdout, stderr) => {
+    if (error) {
+      console.error(`调用${name}失败: ${error.message}`);
+      return;
+    }
+    if (stderr) {
+      console.error(`${name}输出错误: ${stderr}`);
+      return;
+    }
+    console.log(`${name}已启动`);
+  });
+  return true;
+}

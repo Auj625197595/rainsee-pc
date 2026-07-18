@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>无法访问此网站</title>
+    <style>
+      /* 断网时显示,样式全部内联,不依赖任何外部资源。
+         配色用 CSS 变量,深色变体跟随 prefers-color-scheme,
+         由 Electron 的 nativeTheme 驱动,与应用主题保持一致。 */
+      :root {
+        color-scheme: light dark;
+        --primary: #3452ff;
+        --bg: #ffffff;
+        --text-main: #202124;
+        --text-sub: #5f6368;
+        --text-mute: #9aa0a6;
+        --icon: #c4c7cc;
+        --link: #3452ff;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --primary: #6e86ff;
+          --bg: #191c26;
+          --text-main: #e8eaed;
+          --text-sub: #9aa6be;
+          --text-mute: #6b7488;
+          --icon: #5a6172;
+          --link: #8ab4f8;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text-main);
+        font-family: 'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+          'Microsoft YaHei', system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+        padding: 14vh 24px 24px;
+      }
+      ::selection {
+        background: var(--primary);
+        color: #fff;
+      }
+
+      .wrap {
+        width: 100%;
+        max-width: 600px;
+      }
+
+      .face {
+        width: 72px;
+        height: 72px;
+        color: var(--icon);
+      }
+
+      .title {
+        margin: 36px 0 0;
+        font-size: 28px;
+        font-weight: 700;
+        line-height: 1.3;
+        color: var(--text-main);
+      }
+
+      .desc {
+        margin: 18px 0 0;
+        font-size: 15px;
+        line-height: 1.6;
+        color: var(--text-sub);
+      }
+      .desc a {
+        color: var(--link);
+        text-decoration: none;
+        cursor: pointer;
+      }
+      .desc a:hover {
+        text-decoration: underline;
+      }
+
+      .code {
+        margin: 26px 0 0;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        color: var(--text-mute);
+      }
+
+      .actions {
+        margin: 44px 0 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      .btn {
+        height: 40px;
+        padding: 0 22px;
+        border-radius: 9999px;
+        border: 1px solid transparent;
+        font-family: inherit;
+        font-size: 14px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: filter 0.15s ease, background-color 0.15s ease;
+      }
+      .btn-primary {
+        background: var(--primary);
+        color: #fff;
+      }
+      .btn-primary:hover {
+        filter: brightness(1.06);
+      }
+      .btn:disabled {
+        opacity: 0.66;
+        cursor: default;
+      }
+      .btn-ghost {
+        background: transparent;
+        color: var(--link);
+        border: none;
+        padding: 0 8px;
+        font-weight: 600;
+      }
+      .btn-ghost:hover {
+        text-decoration: underline;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="wrap">
+      <svg class="face" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.4" />
+        <path d="M8.5 9.5h.01M15.5 9.5h.01" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" />
+        <path d="M8.5 16c1-1.4 5-1.4 7 0" stroke="currentColor"
+          stroke-width="1.4" stroke-linecap="round" />
+      </svg>
+
+      <h1 class="title" id="title"></h1>
+      <p class="desc" id="desc"></p>
+      <p class="code" id="code"></p>
+
+      <div class="actions">
+        <button class="btn btn-primary" id="btn-reload">重新加载</button>
+        <button class="btn btn-ghost" id="btn-ignore-certificate-error" hidden>忽略错误</button>
+        <button class="btn btn-ghost" id="btn-adblock-whitelist" hidden>添加到广告规律白名单</button>
+        <button class="btn btn-ghost" id="btn-network">检查网络</button>
+        <button class="btn btn-ghost" id="btn-home">返回主页</button>
+      </div>
+    </div>
+
+    <script>
+      (function () {
+        // 错误码字典:n 错误名 / t 标题 / d 说明(可含 {url} 占位)
+        var ERRORS = {
+          '-6': { n: 'ERR_FILE_NOT_FOUND', t: '找不到该文件', d: '请求的本地文件不存在,可能已被移动或删除。' },
+          '-7': { n: 'ERR_TIMED_OUT', t: '连接超时', d: '在规定时间内没有收到服务器响应,网络可能较慢或被阻断。' },
+          '-10': { n: 'ERR_ACCESS_DENIED', t: '无法访问此资源', d: '系统或站点拒绝了对该资源的访问。' },
+          '-15': { n: 'ERR_SOCKET_NOT_CONNECTED', t: '连接尚未建立', d: '与服务器的连接尚未建立或已中断,请重试。' },
+          '-20': { n: 'ERR_BLOCKED_BY_CLIENT', t: '该内容已被拦截', d: '请求被广告过滤、扩展或安全策略拦截,未能加载。请尝试添加白名单！' },
+          '-21': { n: 'ERR_NETWORK_CHANGED', t: '网络连接已发生变化', d: '加载过程中网络发生了切换,请求被中断,请重试。' },
+          '-100': { n: 'ERR_CONNECTION_CLOSED', t: '无法访问此网站', d: '{url} 主动关闭了连接,没有返回可显示的内容。这通常是临时问题。' },
+          '-101': { n: 'ERR_CONNECTION_RESET', t: '连接已被重置', d: '与 {url} 的连接在传输过程中被意外中断,数据没有完整送达。' },
+          '-102': { n: 'ERR_CONNECTION_REFUSED', t: '无法访问此网站', d: '{url} 拒绝了连接请求,通常是服务未启动或端口未开放。' },
+          '-103': { n: 'ERR_CONNECTION_ABORTED', t: '连接被中断', d: '连接在通信过程中被中止,未能完成数据传输。' },
+          '-104': { n: 'ERR_CONNECTION_FAILED', t: '无法建立连接', d: '与服务器建立连接时失败,请检查网络后重试。' },
+          '-105': { n: 'ERR_NAME_NOT_RESOLVED', t: '找不到该网站的服务器', d: '无法找到 {url} 的服务器 IP 地址,可能是网址有误或 DNS 异常。' },
+          '-106': { n: 'ERR_INTERNET_DISCONNECTED', t: '当前没有网络连接', d: '设备似乎未接入互联网,请检查网络连接后重试。' },
+          '-107': { n: 'ERR_SSL_PROTOCOL_ERROR', t: '无法建立安全连接', d: '与站点协商加密通道时出错,安全连接未能建立。' },
+          '-108': { n: 'ERR_ADDRESS_INVALID', t: '网址无效', d: '该地址格式不正确,浏览器无法据此发起请求。' },
+          '-109': { n: 'ERR_ADDRESS_UNREACHABLE', t: '无法连接到该服务器', d: '{url} 的服务器地址当前不可达,可能已下线或路由不通。' },
+          '-118': { n: 'ERR_CONNECTION_TIMED_OUT', t: '连接超时', d: '{url} 响应时间过长,网络可能较慢或被阻断。' },
+          '-130': { n: 'ERR_PROXY_CONNECTION_FAILED', t: '代理服务器连接失败', d: '无法连接到所配置的代理服务器,请检查代理设置。' },
+          '-137': { n: 'ERR_NAME_RESOLUTION_FAILED', t: '找不到该网站的服务器', d: '域名解析失败,无法找到 {url} 对应的服务器。' },
+          '-200': { n: 'ERR_CERT_COMMON_NAME_INVALID', t: '此站点的安全证书有问题', d: '{url} 出示的证书与域名不符,继续访问可能存在风险。' },
+          '-201': { n: 'ERR_CERT_DATE_INVALID', t: '此站点的安全证书已过期', d: '{url} 的证书已过期或尚未生效,无法被信任。' },
+          '-202': { n: 'ERR_CERT_AUTHORITY_INVALID', t: '此站点的安全证书不受信任', d: '颁发该证书的机构不在受信任列表中。' },
+          '-300': { n: 'ERR_INVALID_URL', t: '网址无效', d: '该网址格式不正确,无法访问。' },
+          '-310': { n: 'ERR_TOO_MANY_REDIRECTS', t: '页面重定向次数过多', d: '{url} 反复跳转导致无法打开,通常与登录状态或 Cookie 有关。' },
+          '-324': { n: 'ERR_EMPTY_RESPONSE', t: '站点没有返回任何数据', d: '{url} 关闭了连接且未返回内容,响应为空。' },
+          '-501': { n: 'ERR_INSECURE_RESPONSE', t: '安全连接存在风险', d: '{url} 的安全响应无法被验证,继续访问可能不安全。' }
+        };
+
+        function dec(v) {
+          if (!v) return '';
+          try {
+            return decodeURIComponent(v);
+          } catch (e) {
+            return v;
+          }
+        }
+        function byId(id) {
+          return document.getElementById(id);
+        }
+        function setText(id, t) {
+          var el = byId(id);
+          if (el) el.textContent = t;
+        }
+
+        var params = new URLSearchParams(location.search);
+
+        // 错误码:优先取 ?code=,否则从路径末段兜底
+        var code = params.get('code');
+        if (!code) {
+          var seg = location.href.split('?')[0].split('/');
+          code = seg[seg.length - 1] || '';
+        }
+        code = (code || '').trim();
+
+        var chromeDesc = dec(params.get('description'));
+        var failedUrl =
+          (typeof window.errorURL === 'string' && window.errorURL) ||
+          dec(params.get('validatedURL'));
+
+        // 取主机名作为说明里的友好标识
+        var host = failedUrl;
+        try {
+          host = new URL(failedUrl).host || failedUrl;
+        } catch (e) {}
+
+        var info =
+          ERRORS[code] || {
+            n: chromeDesc || '网络错误',
+            t: '无法显示此页面',
+            d: '加载该页面时出现了问题,请稍后重试。'
+          };
+
+        document.title = host || info.t;
+        setText('title', info.t);
+
+        // 说明:把 {url} 替换为带链接的主机名
+        var descEl = byId('desc');
+        var parts = info.d.split('{url}');
+        descEl.textContent = '';
+        parts.forEach(function (txt, i) {
+          descEl.appendChild(document.createTextNode(txt));
+          if (i < parts.length - 1) {
+            var a = document.createElement('a');
+            a.textContent = host || failedUrl || '该网站';
+            a.addEventListener('click', function () {
+              if (failedUrl) location.replace(failedUrl);
+            });
+            descEl.appendChild(a);
+          }
+        });
+
+        setText('code', info.n + (code ? '  ·  ' + code : ''));
+
+        // 按钮(errorReload/GoHome/CheckNetwork 由 view-preload 注入)
+        var ignoreCertificateBtn = byId('btn-ignore-certificate-error');
+        var numericCode = Number(code);
+        if (
+          ignoreCertificateBtn &&
+          numericCode <= -200 &&
+          numericCode >= -299 &&
+          typeof window.errorIgnoreCertificateError === 'function'
+        ) {
+          ignoreCertificateBtn.hidden = false;
+          ignoreCertificateBtn.addEventListener('click', async function () {
+            ignoreCertificateBtn.disabled = true;
+            try {
+              var result = await window.errorIgnoreCertificateError();
+              if (result && result.error) ignoreCertificateBtn.disabled = false;
+            } catch (e) {
+              ignoreCertificateBtn.disabled = false;
+            }
+          });
+        }
+        var whitelistBtn = byId('btn-adblock-whitelist');
+        if (
+          whitelistBtn &&
+          code === '-20' &&
+          typeof window.errorAddAdblockWhitelist === 'function'
+        ) {
+          whitelistBtn.hidden = false;
+          whitelistBtn.addEventListener('click', async function () {
+            whitelistBtn.disabled = true;
+            var originalText = whitelistBtn.textContent;
+            whitelistBtn.textContent = '正在添加...';
+            try {
+              var result = await window.errorAddAdblockWhitelist();
+              if (result && result.error && result.error !== '该域名已在白名单') {
+                whitelistBtn.disabled = false;
+                whitelistBtn.textContent = originalText;
+              }
+            } catch (e) {
+              whitelistBtn.disabled = false;
+              whitelistBtn.textContent = originalText;
+            }
+          });
+        }
+        byId('btn-reload').addEventListener('click', function () {
+          if (failedUrl) location.replace(failedUrl);
+          else if (window.errorReload) window.errorReload();
+          else location.reload();
+        });
+        byId('btn-network').addEventListener('click', function () {
+          if (window.errorCheckNetwork) window.errorCheckNetwork();
+        });
+        byId('btn-home').addEventListener('click', function () {
+          if (window.errorGoHome) window.errorGoHome();
+        });
+      })();
+    </script>
+  </body>
+</html>

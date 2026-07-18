@@ -1,0 +1,18 @@
+node_modules
+*.log
+*.log*
+/build
+dist
+.DS_Store
+.fusebox
+filters
+package-lock.json
+temp-electron-builder.json
+temp-package.json
+chunks-entries-map.json
+.idea
+data/
+koodo-reader/
+# koodoreader 阅读器自带 pdf.js,其 lib/pdf/build/ 不应被上面的 build 规则忽略
+!web.koodoreader.com/lib/pdf/build/
+!web.koodoreader.com/lib/**

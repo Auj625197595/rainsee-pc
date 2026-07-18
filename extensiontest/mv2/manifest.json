@@ -1,0 +1,20 @@
+{
+  "manifest_version": 2,
+  "name": "__MSG_ext_name__",
+  "version": "1.0.0",
+  "default_locale": "en",
+  "description": "__MSG_ext_desc__",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzebLdLATJlZp8ZRrAR4/E6XK8m48v2TsfG5BBcjL4JA6D0o7qqsvek5/p0r03n8KsXhMu+pJMFzm2mFzs69DlTucZ4qaeVJlAdcpv1bdR7O9eByUypZM2wA04TQ2X7Yu/Knf0iySTozpbQMqEwVsWZ3R1rTJwJodAiuB5IxNwWf0UNiFn1xcQJnMlmf648envM6abHklHS8p1bfaePBNo98RPBSypxLFmI/bJEFp3t2t4U2iIAVqPdJ2yPDXex4wKoj92p+qTKQiQO4zZtBRA8kps90Hu8ijBbcfm/FaSmCulHN4ipBVIdoBPxEfW9syWk6fTMUy3EGT1pp3r/hloQIDAQAB",
+  "page_action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "CRX Test (MV2) page action",
+    "default_icon": { "16": "icon.png", "48": "icon.png", "128": "icon.png" }
+  },
+  "icons": { "16": "icon.png", "48": "icon.png", "128": "icon.png" },
+  "background": { "scripts": ["background.js"], "persistent": true },
+  "content_scripts": [
+    { "matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_idle" }
+  ],
+  "permissions": ["alarms", "storage", "tabs", "identity", "https://*/*"],
+  "optional_permissions": ["cookies", "*://*.example.com/*"]
+}

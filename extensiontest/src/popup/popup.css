@@ -1,0 +1,191 @@
+:root {
+  --bg: #1e1f22;
+  --panel: #2b2d31;
+  --row: #313338;
+  --row-hover: #383a40;
+  --text: #e6e7e9;
+  --muted: #9a9ca3;
+  --pass: #3ba55d;
+  --fail: #d83c3e;
+  --idle: #6d6f78;
+  --accent: #5865f2;
+  --border: #3a3c43;
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+body {
+  width: 380px;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.4 -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.badge {
+  font-size: 10px;
+  font-weight: 700;
+  background: var(--accent);
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 8px;
+}
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.summary {
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 70px;
+  text-align: right;
+}
+button {
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+main {
+  padding: 6px 8px 8px;
+}
+.group {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 8px 4px 4px;
+}
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
+  margin: 2px 0;
+  background: var(--row);
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.row:hover {
+  background: var(--row-hover);
+  border-color: var(--border);
+}
+.row.busy {
+  cursor: default;
+  opacity: 0.85;
+}
+.label {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+.label .id {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  min-width: 22px;
+}
+.label .text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--idle);
+  flex: none;
+}
+.dot.pass {
+  background: var(--pass);
+}
+.dot.fail {
+  background: var(--fail);
+}
+.detail {
+  color: var(--muted);
+  font-size: 11px;
+  padding: 0 8px 6px 38px;
+  margin-top: -2px;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.detail.fail {
+  color: #f0a8a8;
+}
+footer {
+  padding: 6px 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+.conn {
+  font-size: 11px;
+  color: var(--muted);
+}
+.conn.live {
+  color: var(--pass);
+}
+
+/* Manual (side-effecting) section: explicit buttons, not in run-all. */
+.manual-group {
+  color: var(--accent);
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+  padding-top: 12px;
+}
+.manual-row {
+  cursor: default;
+}
+.manual-row:hover {
+  background: var(--row);
+  border-color: transparent;
+}
+.manual-btn {
+  flex: 1;
+  text-align: left;
+  padding: 7px 10px;
+  font-weight: 500;
+}
+.manual-row .right .lat {
+  min-width: 34px;
+  text-align: right;
+}

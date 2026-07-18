@@ -1,0 +1,92 @@
+{
+  "appId": "com.rainsee.pcbrowser",
+  "productName": "雨见浏览器",
+  "nsis": {
+    "installerLanguages": [
+      "zh_CN"
+    ],
+     "unicode": true,  
+    "oneClick": false,
+    "allowElevation": true,
+    "allowToChangeInstallationDirectory": true,
+    "installerIcon": "./static/icons/icon.ico",
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "雨见浏览器"
+  },
+  "generateUpdatesFilesForAllChannels": true,
+  "asar": true,
+  "directories": {
+    "output": "dist",
+    "buildResources": "static/icons"
+  },
+  "afterPack": "./removeLocales.js",
+  "extraFiles": [
+    {
+      "from": "src/preloads/preload.js",
+      "to": "./resources/app/build/node_modules/electron-chrome-extensions/dist/preload.js"
+    },
+    {
+      "from": "web.koodoreader.com",
+      "to": "./resources/app/build/web.koodoreader.com"
+    }
+  ],
+  "files": [
+    "build/**/*",
+    "package.json",
+    "static/**/*"
+  ],
+  "publish": "github",
+  "linux": {
+    "category": "Network",
+    "target": [
+      {
+        "target": "AppImage",
+        "arch": [
+          "x64"
+        ]
+      },
+      {
+        "target": "deb",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      },
+      {
+        "target": "zip",
+        "arch": [
+          "x64"
+        ]
+      }
+    ],
+    "artifactName": "${productName}电脑版-${version}-${arch}.${ext}"
+  },
+  "mac": {
+    "category": "public.app-category.navigation"
+  },
+  "fileAssociations": [
+    {
+      "name": "Document",
+      "description": "Wexond",
+      "role": "Viewer",
+      "ext": "html"
+    },
+    {
+      "name": "PDF Document",
+      "description": "PDF 文档",
+      "role": "Viewer",
+      "ext": "pdf",
+      "icon": "./static/icons/icon.ico"
+    }
+  ]
+}

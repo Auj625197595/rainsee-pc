@@ -1,0 +1,16 @@
+{
+  "ext_name": { "message": "CRX Framework Test" },
+  "ext_desc": { "message": "Regression-test fixture for the extension framework (popup/content/background messaging + core APIs)." },
+  "test_placeholder": { "message": "hello $1", "placeholders": { "1": { "content": "$1" } } },
+  "run_all": { "message": "Run all" },
+  "rerun": { "message": "Re-run" },
+  "group_messaging": { "message": "Messaging (popup ↔ background ↔ content)" },
+  "group_apis": { "message": "Core APIs" },
+  "group_dnr": { "message": "declarativeNetRequest (MV3)" },
+  "group_identity": { "message": "Identity (OAuth)" },
+  "group_pageaction": { "message": "pageAction (MV2)" },
+  "group_permissions": { "message": "Permissions API" },
+  "group_userscripts": { "message": "userScripts API (MV3)" },
+  "group_manual": { "message": "Manual (opens a window/tab/prompt — click to run; not in run-all)" },
+  "need_page": { "message": "Open a normal http(s) page so the content script is injected, then re-run the content tests." }
+}

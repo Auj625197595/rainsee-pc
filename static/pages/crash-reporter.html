@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>浏览器无响应</title>
+    <style>
+      /* 白屏/卡死恢复覆盖层:样式全部内联,不依赖任何外部资源(主 UI 渲染进程
+         可能已经崩或卡死,本页运行在独立 BrowserWindow 里,必须零外部依赖)。
+         配色随 prefers-color-scheme(Electron nativeTheme 驱动),与应用主题一致。 */
+      :root {
+        color-scheme: light dark;
+        --primary: #3452ff;
+        --bg: #ffffff;
+        --panel: #f1f3f4;
+        --border: #dadce0;
+        --text-main: #202124;
+        --text-sub: #5f6368;
+        --text-mute: #9aa0a6;
+        --link: #3452ff;
+        --danger: #d93025;
+        --code-bg: #f8f9fa;
+        --code-text: #202124;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --primary: #6e86ff;
+          --bg: #191c26;
+          --panel: #20242f;
+          --border: #2e3340;
+          --text-main: #e8eaed;
+          --text-sub: #9aa6be;
+          --text-mute: #6b7488;
+          --link: #8ab4f8;
+          --danger: #f28b82;
+          --code-bg: #14161d;
+          --code-text: #e8eaed;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text-main);
+        font-family: 'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+          'Microsoft YaHei', system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      /* 顶栏:标题 + 关闭按钮 */
+      .topbar {
+        display: flex;
+        align-items: flex-start;
+        gap: 16px;
+        padding: 22px 24px 14px;
+        flex-shrink: 0;
+      }
+      .icon {
+        width: 36px;
+        height: 36px;
+        flex-shrink: 0;
+        color: var(--danger);
+        margin-top: 2px;
+      }
+      .heading {
+        flex: 1;
+        min-width: 0;
+      }
+      .title {
+        margin: 0;
+        font-size: 19px;
+        font-weight: 700;
+        line-height: 1.3;
+      }
+      .desc {
+        margin: 8px 0 0;
+        font-size: 13px;
+        line-height: 1.55;
+        color: var(--text-sub);
+      }
+      .close-btn {
+        width: 32px;
+        height: 32px;
+        flex-shrink: 0;
+        border: none;
+        background: transparent;
+        color: var(--text-sub);
+        font-size: 20px;
+        line-height: 1;
+        cursor: pointer;
+        border-radius: 8px;
+        transition: background-color 0.15s ease;
+      }
+      .close-btn:hover {
+        background: var(--panel);
+        color: var(--text-main);
+      }
+
+      /* 日志框 */
+      .log-wrap {
+        flex: 1;
+        min-height: 0;
+        margin: 0 24px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--code-bg);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .log-meta {
+        padding: 8px 14px;
+        font-size: 12px;
+        color: var(--text-mute);
+        border-bottom: 1px solid var(--border);
+        background: var(--panel);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-shrink: 0;
+      }
+      .log-meta .dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--danger);
+        margin-right: 6px;
+        vertical-align: middle;
+      }
+      .log {
+        flex: 1;
+        overflow: auto;
+        margin: 0;
+        padding: 12px 14px;
+        font-family: 'Cascadia Code', Consolas, 'SF Mono', Menlo, monospace;
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--code-text);
+        white-space: pre-wrap;
+        word-break: break-all;
+        user-select: text;
+        cursor: text;
+      }
+      .log.loading::after {
+        content: '正在读取日志…';
+        color: var(--text-mute);
+      }
+
+      /* 底部按钮区 */
+      .actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 16px 24px 22px;
+        flex-shrink: 0;
+      }
+      .btn {
+        height: 38px;
+        padding: 0 20px;
+        border-radius: 9999px;
+        border: 1px solid transparent;
+        font-family: inherit;
+        font-size: 14px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: filter 0.15s ease, background-color 0.15s ease,
+          opacity 0.15s ease;
+      }
+      .btn:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+      .btn-primary {
+        background: var(--primary);
+        color: #fff;
+      }
+      .btn-primary:hover {
+        filter: brightness(1.06);
+      }
+      .btn-secondary {
+        background: var(--panel);
+        color: var(--text-main);
+        border-color: var(--border);
+      }
+      .btn-secondary:hover {
+        background: var(--border);
+      }
+      .spacer {
+        flex: 1;
+      }
+      .link-btn {
+        background: none;
+        border: none;
+        color: var(--link);
+        font-family: inherit;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        padding: 0 6px;
+      }
+      .link-btn:hover {
+        text-decoration: underline;
+      }
+
+      /* 复制成功的瞬态提示 */
+      .toast {
+        position: fixed;
+        left: 50%;
+        bottom: 26px;
+        transform: translateX(-50%) translateY(20px);
+        background: var(--text-main);
+        color: var(--bg);
+        padding: 8px 16px;
+        border-radius: 8px;
+        font-size: 13px;
+        font-weight: 600;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s ease, transform 0.2s ease;
+        z-index: 10;
+      }
+      .toast.show {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="topbar">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path
+          d="M12 3L1.5 21h21L12 3z"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linejoin="round"
+          fill="rgba(217,48,37,0.12)"
+        />
+        <path
+          d="M12 10v4"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+        />
+        <circle cx="12" cy="17" r="1.1" fill="currentColor" />
+      </svg>
+      <div class="heading">
+        <h1 class="title">浏览器界面无响应了</h1>
+        <p class="desc">
+          界面渲染进程崩溃或长时间卡死时会出现此窗口。已自动捕获诊断日志,可点「复制日志」发给作者帮助定位问题;点「重启浏览器」可恢复(会自动还原之前的标签页)。
+        </p>
+      </div>
+      <button class="close-btn" id="btn-close" title="关闭">×</button>
+    </div>
+
+    <div class="log-wrap">
+      <div class="log-meta">
+        <span><span class="dot"></span><span id="meta-text">诊断日志</span></span>
+        <span id="meta-size"></span>
+      </div>
+      <pre class="log loading" id="log"></pre>
+    </div>
+
+    <div class="actions">
+      <button class="btn btn-primary" id="btn-restart">重启浏览器</button>
+      <button class="btn btn-secondary" id="btn-copy">复制日志</button>
+      <div class="spacer"></div>
+      <button class="link-btn" id="btn-open-dir">打开日志目录</button>
+    </div>
+
+    <div class="toast" id="toast">已复制到剪贴板</div>
+
+    <script>
+      (function () {
+        // 本页运行在独立 BrowserWindow 且 nodeIntegration=true,可直接 require。
+        var electron = require('electron');
+        var ipc = electron.ipcRenderer;
+        var clipboard = electron.clipboard;
+
+        var logEl = document.getElementById('log');
+        var metaText = document.getElementById('meta-text');
+        var metaSize = document.getElementById('meta-size');
+        var toastEl = document.getElementById('toast');
+
+        var currentLog = '';
+
+        function showToast(text) {
+          toastEl.textContent = text || '已复制到剪贴板';
+          toastEl.classList.add('show');
+          setTimeout(function () {
+            toastEl.classList.remove('show');
+          }, 1600);
+        }
+
+        function fmtBytes(n) {
+          if (typeof n !== 'number' || n <= 0) return '';
+          if (n < 1024) return n + ' B';
+          if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+          return (n / 1024 / 1024).toFixed(2) + ' MB';
+        }
+
+        // 拉取日志。主进程返回 { text, bytes, reason, truncated }。
+        function loadLog() {
+          logEl.classList.add('loading');
+          logEl.textContent = '';
+          ipc.invoke('crash-reporter-get-log').then(function (res) {
+            logEl.classList.remove('loading');
+            if (!res || typeof res !== 'object') {
+              logEl.textContent = '(读取日志失败)';
+              currentLog = '';
+              return;
+            }
+            currentLog = res.text || '(日志为空)';
+            // 用 textContent 渲染(非 innerHTML),日志内容不会被当作 HTML。
+            logEl.textContent = currentLog;
+            metaText.textContent =
+              '诊断日志' +
+              (res.reason ? '  ·  触发原因:' + res.reason : '') +
+              (res.truncated ? '  ·  已截断' : '');
+            metaSize.textContent = fmtBytes(res.bytes);
+            // 默认滚到末尾(最近的崩溃信息在尾部)。
+            requestAnimationFrame(function () {
+              logEl.scrollTop = logEl.scrollHeight;
+            });
+          }).catch(function (e) {
+            logEl.classList.remove('loading');
+            logEl.textContent = '(读取日志失败:' + (e && e.message ? e.message : e) + ')';
+          });
+        }
+
+        document.getElementById('btn-restart').addEventListener('click', function () {
+          this.disabled = true;
+          this.textContent = '重启中…';
+          ipc.send('crash-reporter-restart');
+        });
+
+        document.getElementById('btn-copy').addEventListener('click', function () {
+          if (!currentLog) return;
+          try {
+            clipboard.writeText(currentLog);
+            showToast('已复制日志到剪贴板');
+          } catch (e) {
+            showToast('复制失败');
+          }
+        });
+
+        document.getElementById('btn-open-dir').addEventListener('click', function () {
+          ipc.send('crash-reporter-open-dir');
+        });
+
+        document.getElementById('btn-close').addEventListener('click', function () {
+          window.close();
+        });
+
+        loadLog();
+      })();
+    </script>
+  </body>
+</html>
