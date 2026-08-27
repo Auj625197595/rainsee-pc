@@ -2,13 +2,15 @@
   "appId": "com.rainsee.pcbrowser",
   "productName": "雨见浏览器",
   "nsis": {
+    "guid": "36820975-1f67-5b1a-887f-6b7db9a305e8",
     "installerLanguages": [
       "zh_CN"
     ],
      "unicode": true,  
     "oneClick": false,
     "allowElevation": true,
-    "allowToChangeInstallationDirectory": true,
+    "allowToChangeInstallationDirectory": false,
+    "include": "./static/nsis-installer.nsh",
     "installerIcon": "./static/icons/icon.ico",
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
@@ -29,6 +31,12 @@
     {
       "from": "web.koodoreader.com",
       "to": "./resources/app/build/web.koodoreader.com"
+    }
+  ],
+  "extraResources": [
+    {
+      "from": "static/win-hello.ps1",
+      "to": "win-hello.ps1"
     }
   ],
   "files": [
@@ -55,6 +63,7 @@
     ]
   },
   "win": {
+    "executableName": "雨见浏览器",
     "target": [
       {
         "target": "nsis",
@@ -72,7 +81,17 @@
     "artifactName": "${productName}电脑版-${version}-${arch}.${ext}"
   },
   "mac": {
-    "category": "public.app-category.navigation"
+    "category": "public.app-category.navigation",
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false,
+    "entitlements": "entitlements.mac.plist",
+    "entitlementsInherit": "entitlements.mac.plist",
+    "notarize": true,
+    "artifactName": "${productName}电脑版-${version}-${arch}.${ext}",
+    "target": [
+      { "target": "dmg", "arch": ["x64", "arm64"] },
+      { "target": "zip", "arch": ["x64", "arm64"] }
+    ]
   },
   "fileAssociations": [
     {

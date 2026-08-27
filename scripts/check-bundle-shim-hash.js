@@ -2,6 +2,24 @@ const fs = require('fs');
 const crypto = require('crypto');
 const b = fs.readFileSync(require('path').join(__dirname, '..', 'build', 'main.bundle.js'), 'utf8');
 
+// Webpack leaves the imported module binding in the extracted expression;
+// provide its JSON-compatible value so this standalone validator can eval it.
+const runtime_context_type_1 = {
+  RUNTIME_CONTEXT_TYPE: {
+    TAB: 'TAB',
+    POPUP: 'POPUP',
+    BACKGROUND: 'BACKGROUND',
+    OFFSCREEN_DOCUMENT: 'OFFSCREEN_DOCUMENT',
+    SIDE_PANEL: 'SIDE_PANEL',
+    DEVELOPER_TOOLS: 'DEVELOPER_TOOLS',
+    ALL: 'ALL',
+    CONTENT_SCRIPT: 'CONTENT_SCRIPT',
+    SERVICE_WORKER: 'SERVICE_WORKER',
+    PANEL: 'PANEL',
+  },
+};
+const RUNTIME_CONTEXT_TYPE = runtime_context_type_1.RUNTIME_CONTEXT_TYPE;
+
 function findExpr(src, startKw, endKw) {
   // startKw is the declaration keyword (e.g. 'const SHIM_BODY'); tolerate any
   // whitespace between it and the '=' and after the '='. The TS source puts the
@@ -65,16 +83,23 @@ function extractBundleShim(src) {
   throw new Error('could not locate minified SHIM_BODY assignment');
 }
 
-const shim = extractBundleShim(b);
-const hash = crypto.createHash('sha256').update(shim).digest('hex').slice(0, 12);
-console.log('bundle shim hash:', hash, 'len:', shim.length, 'hasNewlines:', shim.indexOf('\n') >= 0);
+function checkBundleShimHash() {
+  const shim = extractBundleShim(b);
+  const hash = crypto.createHash('sha256').update(shim).digest('hex').slice(0, 12);
+  console.log('bundle shim hash:', hash, 'len:', shim.length, 'hasNewlines:', shim.indexOf('\n') >= 0);
 
-// Source hash: eval SHIM_BODY from the TS source.
-const fs2 = require('fs');
-const src = fs2.readFileSync(require('path').join(__dirname, '..', 'src', 'main', 'extension-storage-patch.ts'), 'utf8');
-const srcBody = eval(findExpr(src, 'const SHIM_BODY', 'const SHIM_VERSION'));
-const srcHash = crypto.createHash('sha256').update(srcBody).digest('hex').slice(0, 12);
-console.log('source hash:', srcHash);
-const matches = hash === srcHash;
-console.log('MATCH:', matches);
-if (!matches) process.exitCode = 1;
+  // Source hash: eval SHIM_BODY from the TS source.
+  const fs2 = require('fs');
+  const src = fs2.readFileSync(require('path').join(__dirname, '..', 'src', 'main', 'extension-storage-patch.ts'), 'utf8');
+  const srcBody = eval(findExpr(src, 'const SHIM_BODY', 'const SHIM_VERSION'));
+  const srcHash = crypto.createHash('sha256').update(srcBody).digest('hex').slice(0, 12);
+  console.log('source hash:', srcHash);
+  const matches = hash === srcHash;
+  console.log('MATCH:', matches);
+  if (!matches) process.exitCode = 1;
+  return { shim, hash, srcHash, matches };
+}
+
+if (require.main === module) checkBundleShimHash();
+
+module.exports = { extractBundleShim, checkBundleShimHash };

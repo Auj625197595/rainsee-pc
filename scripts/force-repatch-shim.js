@@ -1,11 +1,25 @@
 // Force-repatch every extension JS AND HTML file on disk with the CURRENT
 // source SHIM. Use after editing extension-storage-patch.ts so files are
 // correct immediately, independent of the app's startup patcher. Mirrors
-// patchExtensionStorage logic: prepend SHIM to .js entries, inject SHIM as the
-// first <head> child of .html pages.
+// patchExtensionStorage logic: inject SHIM after any directive prologue in JS
+// entries, and inject SHIM as the first <head> child of HTML pages.
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+
+// Mirrors runtime-context-type.ts for the source-expression eval below.
+const RUNTIME_CONTEXT_TYPE = {
+  TAB: 'TAB',
+  POPUP: 'POPUP',
+  BACKGROUND: 'BACKGROUND',
+  OFFSCREEN_DOCUMENT: 'OFFSCREEN_DOCUMENT',
+  SIDE_PANEL: 'SIDE_PANEL',
+  DEVELOPER_TOOLS: 'DEVELOPER_TOOLS',
+  ALL: 'ALL',
+  CONTENT_SCRIPT: 'CONTENT_SCRIPT',
+  SERVICE_WORKER: 'SERVICE_WORKER',
+  PANEL: 'PANEL',
+};
 
 const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'extension-storage-patch.ts'), 'utf8');
 // Tolerate either `const SHIM_BODY = \`...` (single line) or `const SHIM_BODY =\n  \`...`
@@ -27,15 +41,93 @@ const SHIM_BODY = eval(src.slice(exprStart, end));
 const SHIM_VERSION = crypto.createHash('sha256').update(SHIM_BODY).digest('hex').slice(0, 12);
 const MARKER_PREFIX = '/*__crx_storage_sync_shim';
 const MARKER = `${MARKER_PREFIX}_${SHIM_VERSION}__*/`;
-const SHIM = `${MARKER}${SHIM_BODY}`;
+const SHIM = `${MARKER};${SHIM_BODY}`;
 console.log('current SHIM_VERSION:', SHIM_VERSION, 'len:', SHIM_BODY.length);
 
-const SHIM_BLOCK_MARKER_ANYWHERE = /\/\*__crx_storage_sync_shim_[^*]*\*\/\s*\(function\s*\(\s*\)\s*\{[\s\S]*?\}\s*\)\s*\(\s*\)\s*;\r?\n/g;
+const SHIM_BLOCK_MARKER_ANYWHERE = /\/\*__crx_storage_sync_shim_[^*]*\*\/\s*;?\s*\(function\s*\(\s*\)\s*\{[\s\S]*?\}\s*\)\s*\(\s*\)\s*;\r?\n/g;
 const SHIM_BLOCK_ORPHAN = /^\(function\s*\(\s*\)\s*\{\s*try\s*\{\s*var\s+GB\s*=[\s\S]*?\}\s*\)\s*\(\s*\)\s*;\r?\n/;
 function stripLeadingShims(s) {
   s = s.replace(SHIM_BLOCK_MARKER_ANYWHERE, '');
   for (;;) { const m = s.match(SHIM_BLOCK_ORPHAN); if (!m) break; s = s.slice(m[0].length); }
   return s;
+}
+
+// Preserve JavaScript directive prologues (especially "use strict") so the
+// injected shim does not silently change the bundle's `this` semantics.
+function injectShimPreservingDirectives(source) {
+  const findLineEnd = (from) => {
+    const match = /[\r\n]/u.exec(source.slice(from));
+    return match ? from + match.index : -1;
+  };
+  let offset = source.charCodeAt(0) === 0xfeff ? 1 : 0;
+  if (source.slice(offset, offset + 2) === '#!') {
+    const lineEnd = findLineEnd(offset + 2);
+    if (lineEnd < 0) return source + '\n' + SHIM;
+    offset = lineEnd;
+    offset += source[offset] === '\r' && source[offset + 1] === '\n' ? 2 : 1;
+  }
+  let cursor = offset;
+  let directiveEnd = -1;
+  for (;;) {
+    while (cursor < source.length) {
+      const ch = source[cursor];
+      if (ch === '/' && source[cursor + 1] === '/') {
+        const lineEnd = findLineEnd(cursor + 2);
+        cursor = lineEnd < 0 ? source.length : lineEnd;
+        continue;
+      }
+      if (ch === '/' && source[cursor + 1] === '*') {
+        const end = source.indexOf('*/', cursor + 2);
+        if (end < 0) return source.slice(0, offset) + SHIM + source.slice(offset);
+        cursor = end + 2;
+        continue;
+      }
+      if (/\s/u.test(ch)) { cursor += 1; continue; }
+      break;
+    }
+    const quote = source[cursor];
+    if (quote !== '"' && quote !== "'") break;
+    let end = cursor + 1;
+    let closed = false;
+    for (; end < source.length; end += 1) {
+      const ch = source[end];
+      if (ch === '\\') { end += 1; continue; }
+      if (ch === quote) { end += 1; closed = true; break; }
+      if (ch === '\r' || ch === '\n' || ch === '\u2028' || ch === '\u2029') break;
+    }
+    if (!closed) break;
+    let probe = end;
+    let statementEnd = -1;
+    for (;;) {
+      if (probe >= source.length) { statementEnd = source.length; cursor = source.length; break; }
+      const ch = source[probe];
+      if (ch === ';') { statementEnd = ++probe; cursor = probe; break; }
+      if (ch === '\r' || ch === '\n' || ch === '\u2028' || ch === '\u2029') {
+        probe += ch === '\r' && source[probe + 1] === '\n' ? 2 : 1;
+        statementEnd = probe; cursor = probe; break;
+      }
+      if (ch === '/' && source[probe + 1] === '/') {
+        const lineEnd = findLineEnd(probe + 2);
+        if (lineEnd < 0) { statementEnd = source.length; cursor = source.length; break; }
+        probe = lineEnd; continue;
+      }
+      if (ch === '/' && source[probe + 1] === '*') {
+        const commentEnd = source.indexOf('*/', probe + 2);
+        if (commentEnd < 0) break;
+        if (/[\r\n\u2028\u2029]/u.test(source.slice(probe, commentEnd + 2))) {
+          statementEnd = commentEnd + 2; cursor = statementEnd; break;
+        }
+        probe = commentEnd + 2; continue;
+      }
+      if (ch === ' ' || ch === '\t' || ch === '\v' || ch === '\f') { probe += 1; continue; }
+      break;
+    }
+    if (statementEnd < 0) break;
+    directiveEnd = statementEnd;
+    if (cursor >= source.length) break;
+  }
+  const insertionPoint = directiveEnd >= 0 ? directiveEnd : offset;
+  return source.slice(0, insertionPoint) + SHIM + source.slice(insertionPoint);
 }
 
 // ---- HTML head injection via external crx-shim.js (mirrors the TS source) ----
@@ -97,8 +189,9 @@ function walk(dir) {
         // files carry our marker); never prepend to arbitrary non-entry .js.
         if (!orig.includes(MARKER_PREFIX)) { skipped++; continue; }
         const stripped = stripLeadingShims(orig);
-        if (SHIM + stripped === orig) { skipped++; continue; }
-        fs.writeFileSync(full, SHIM + stripped, 'utf8');
+        const next = injectShimPreservingDirectives(stripped);
+        if (next === orig) { skipped++; continue; }
+        fs.writeFileSync(full, next, 'utf8');
         // verify it parses
         try { new Function(SHIM_BODY); } catch (e) { failed++; console.error('SHIM itself broken:', e.message); return; }
         jsPatched++;

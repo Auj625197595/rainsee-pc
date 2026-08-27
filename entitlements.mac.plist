@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Electron / V8 需要 JIT 执行 JavaScript -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <!-- 允许未签名的可执行内存（V8 后台与部分原生模块需要） -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <!-- 关闭库校验：浏览器需加载第三方扩展、PDF/阅读器等动态库 -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <!-- 允许 DYLD_* 环境变量：辅助功能 / 调试注入 -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <!-- WebRTC 视频通话：摄像头 -->
+    <key>com.apple.security.device.camera</key>
+    <true/>
+    <!-- WebRTC 语音通话：麦克风 -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>

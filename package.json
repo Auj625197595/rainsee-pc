@@ -1,8 +1,8 @@
 {
   "name": "rainsee-pc",
-  "version": "1.2.4",
+  "version": "1.4.3",
   "sideEffects": false,
-  "description": "为桌面端打造的现代浏览体验，轻盈、清爽，也保留了雨见生态的连续感。",
+  "description": "为桌面端打造的现代浏览体验——轻盈、清爽、本地优先。",
   "keywords": [
     "web-browser",
     "material",
@@ -12,9 +12,8 @@
     "styled-components"
   ],
   "homepage": "https://github.com/Auj625197595/rainsee-pc",
-  "main": "build/main.bundle.js",
-  "author": "Auj625197595 <yjbrowserjyt@gmail.com>",
-  "repository": {
+  "main": "build/main-launcher.js",
+  "author": "Auj625197595 <yjbrowserjyt@gmail.com>", "repository": {
     "type": "git",
     "url": "git+https://github.com/Auj625197595/rainsee-pc.git"
   },
@@ -30,8 +29,32 @@
     "ci-build": "node scripts/ci-build.js",
     "start": "electron .",
     "watch": "concurrently \"npm run dev-renderer\" \"npm run dev-webpack\"",
+    "test-extension-storage-patch": "node scripts/test-extension-storage-patch.js",
+    "test-content-bridge-handshake": "node scripts/test-content-bridge-handshake.js",
+    "test-runtime-lifecycle": "node scripts/test-runtime-lifecycle.js",
+    "test-memory-lifecycle": "node scripts/test-memory-lifecycle.js",
+    "test-external-navigation-permission": "node scripts/test-external-navigation-permission.js",
+    "test-offscreen-recovery": "node scripts/test-offscreen-recovery.js",
+    "test-dnr-index": "node scripts/test-dnr-index.js",
+    "test-tabs-highlight": "node scripts/test-tabs-highlight.js",
+    "test-winreg": "node scripts/test-winreg.js",
+    "test-native-messaging-lifecycle": "node scripts/test-native-messaging-lifecycle.js",
+    "test-download-extension-hold": "node scripts/test-download-extension-hold.js",
+    "test-data-location": "node scripts/test-data-location.js",
+    "test-profiles": "node scripts/test-profiles.js",
+    "test-workspaces": "node scripts/test-workspaces.cjs",
+    "test-profile-data-clone": "node scripts/test-profile-data-clone.js",
+    "test-browser-history-import": "node scripts/test-browser-history-import.js",
+    "test-internal-flags": "node scripts/test-internal-flags.js",
+    "test-browser-internal-url": "node scripts/test-browser-internal-url.js",
+    "test-autofill-picker": "node scripts/test-autofill-picker.js",
+    "test-gesture-recognizer": "node scripts/test-gesture-recognizer.js",
+    "test-single-instance": "node scripts/test-single-instance.js",
+    "test-window-state": "node scripts/test-window-state.js",
+    "test-chrome-windows-create": "node scripts/test-chrome-windows-create.js",
     "compile-win32": "rimraf dist && npm run build && electron-builder -w --x64 --publish never --config.electronDist=node_modules/electron/dist",
     "compile-darwin": "npm run build && electron-builder -m",
+    "compile-darwin-signed": "node scripts/build-mac.js",
     "compile-linux": "npm run build && electron-builder -l",
     "lint": "eslint \"src/**/*.ts*\" \"src/**/*.tsx*\"",
     "lint-fix": "npm run lint -- --fix",
@@ -41,6 +64,7 @@
     "@babel/core": "^7.14.6",
     "@cliqz/adblocker-electron": "1.34.0",
     "@electron/remote": "^2.1.1",
+    "@phosphor-icons/react": "^2.1.10",
     "@pmmmwh/react-refresh-webpack-plugin": "^0.5.11",
     "@types/animejs": "^3.1.3",
     "@types/chrome": "0.0.145",
@@ -49,6 +73,7 @@
     "@types/nedb": "1.8.11",
     "@types/node": "15.12.5",
     "@types/node-fetch": "^3.0.3",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "17.0.11",
     "@types/react-dom": "17.0.8",
     "@types/rimraf": "^3.0.0",
@@ -62,7 +87,7 @@
     "copy-webpack-plugin": "^9.0.1",
     "cross-env": "7.0.3",
     "cross-fetch": "^4.0.0",
-    "electron": "^42.5.0",
+    "electron": "^43.1.1",
     "electron-builder": "26.15.3",
     "eslint": "^7.29.0",
     "eslint-config-prettier": "^8.3.0",
@@ -81,6 +106,7 @@
     "node-fetch": "^3.3.2",
     "prettier": "2.3.2",
     "pretty-bytes": "5.6.0",
+    "qrcode": "^1.5.4",
     "react": "17.0.2",
     "react-dom": "17.0.2",
     "react-refresh": "^0.18.0",
@@ -92,6 +118,7 @@
     "terser-webpack-plugin": "^5.1.4",
     "ts-loader": "^9.2.3",
     "tsconfig-paths-webpack-plugin": "^3.5.1",
+    "tldts": "^7.4.8",
     "typescript": "^4.3.4",
     "typescript-plugin-styled-components": "^1.6.0",
     "webpack": "5.40.0",
@@ -101,10 +128,6 @@
     "webpack-merge": "^5.8.0"
   },
   "dependencies": {
-    "@phosphor-icons/react": "^2.1.10",
-    "@types/qrcode": "^1.5.6",
-    "electron-updater": "^4.6.5",
-    "qrcode": "^1.5.4",
-    "tldts": "^7.4.8"
+    "electron-updater": "^4.6.5"
   }
 }
