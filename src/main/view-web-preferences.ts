@@ -1,0 +1,21 @@
+export const createViewWebPreferences = (
+  session: Electron.Session,
+  preload: string,
+  incognito: boolean,
+): Electron.WebPreferences => ({
+  session,
+  preload,
+  nodeIntegration: false,
+  nodeIntegrationInWorker: false,
+  nodeIntegrationInSubFrames: false,
+  allowRunningInsecureContent: true,
+  contextIsolation: false,
+  sandbox: false,
+  enableRemoteModule: false,
+  partition: incognito ? 'persist:view_incognito' : 'persist:view',
+  plugins: true,
+  nativeWindowOpen: true,
+  webSecurity: true,
+  javascript: true,
+  worldSafeExecuteJavaScript: true,
+});
