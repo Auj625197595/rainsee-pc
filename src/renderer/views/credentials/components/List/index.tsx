@@ -3,7 +3,13 @@ import { observer } from 'mobx-react-lite';
 
 import store from '../../store';
 import { IFormFillData } from '~/interfaces';
-import { StyledItem, Username, Password, DeleteIcon } from './styles';
+import {
+  StyledList,
+  StyledItem,
+  Username,
+  Password,
+  DeleteIcon,
+} from './styles';
 
 const onDelete = (data: IFormFillData) => () => {
   store.remove(data);
@@ -23,10 +29,10 @@ const Item = ({ data }: { data: IFormFillData }) => {
 
 export default observer(() => {
   return (
-    <div style={{ display: store.content === 'list' ? 'block' : 'none' }}>
+    <StyledList $visible={store.content === 'list'}>
       {store.list.map((data) => (
         <Item key={data._id} data={data} />
       ))}
-    </div>
+    </StyledList>
   );
 });

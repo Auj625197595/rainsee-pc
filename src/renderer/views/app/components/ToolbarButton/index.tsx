@@ -13,6 +13,7 @@ interface Props {
   onMouseDown?: (e?: React.MouseEvent<HTMLDivElement>) => void;
   onMouseUp?: (e?: React.MouseEvent<HTMLDivElement>) => void;
   onMouseEnter?: (e?: React.MouseEvent<HTMLDivElement>) => void;
+  onMouseLeave?: (e?: React.MouseEvent<HTMLDivElement>) => void;
   onContextMenu?: (e?: React.MouseEvent<HTMLDivElement>) => void;
   size?: number;
   style?: any;
@@ -27,6 +28,7 @@ interface Props {
     | 'duotone';
   divRef?: (ref: HTMLDivElement) => void;
   disabled?: boolean;
+  title?: string;
   className?: string;
   children?: any;
   opacity?: number;
@@ -43,6 +45,8 @@ interface Props {
   dense?: boolean;
   iconStyle?: any;
   id?: string;
+  rainseeAction?: string;
+  rainseeExtensionId?: string;
 }
 
 export const ToolbarButton = observer(
@@ -54,6 +58,7 @@ export const ToolbarButton = observer(
     onMouseDown,
     size,
     disabled,
+    title,
     className,
     divRef,
     children,
@@ -71,21 +76,29 @@ export const ToolbarButton = observer(
     onContextMenu,
     onMouseUp,
     onMouseEnter,
+    onMouseLeave,
     toggled,
     dense,
     iconStyle,
     id,
+    rainseeAction,
+    rainseeExtensionId,
   }: Props) => {
     style = { ...style };
 
     return (
       <Button
         id={id}
+        title={title}
+        data-rainsee-part="toolbar-button"
+        data-rainsee-action={rainseeAction}
+        data-rainsee-extension-id={rainseeExtensionId}
         onClick={onClick}
         onContextMenu={onContextMenu}
         onMouseDown={onMouseDown}
         onMouseUp={onMouseUp}
         onMouseEnter={onMouseEnter}
+        onMouseLeave={onMouseLeave}
         className={className}
         style={{ borderRadius: 99999, ...style }}
         toggled={toggled}
@@ -95,6 +108,7 @@ export const ToolbarButton = observer(
       >
         {typeof icon === 'string' ? (
           <Icon
+            data-rainsee-part="button-icon"
             style={{ backgroundImage: `url(${icon})`, ...iconStyle }}
             size={size}
             dense={dense}
@@ -104,6 +118,7 @@ export const ToolbarButton = observer(
           />
         ) : (
           <IconComponent
+            data-rainsee-part="button-icon"
             style={iconStyle}
             disabled={disabled}
             opacity={opacity}
@@ -118,6 +133,7 @@ export const ToolbarButton = observer(
         )}
         {badge && (
           <Badge
+            data-rainsee-part="button-badge"
             right={badgeRight}
             top={badgeTop}
             background={badgeBackground}

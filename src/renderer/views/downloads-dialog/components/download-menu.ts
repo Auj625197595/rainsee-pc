@@ -38,10 +38,10 @@ export const removeDownload = (item: IDownloadItem) => {
 };
 
 export const trashDownload = (item: IDownloadItem) => {
-  shell
-    .trashItem(item.savePath)
-    .then(() => {
-      removeDownload(item);
+  ipcRenderer
+    .invoke('download-trash', item.id)
+    .then((result: { ok: boolean }) => {
+      if (!result?.ok) throw new Error('Unable to trash download');
     })
     .catch(() => {
       // 文件可能正被占用或无删除权限,提示用户而不是静默失败。
@@ -77,7 +77,7 @@ export const getDownloadMenuTemplate = (
 
   if (!item.completed && !item.canceled) {
     template.push(
-      item.paused
+      item.paused && !item.retrying
         ? { label: '恢复下载', click: () => resumeDownload(item) }
         : { label: '暂停下载', click: () => pauseDownload(item) },
     );

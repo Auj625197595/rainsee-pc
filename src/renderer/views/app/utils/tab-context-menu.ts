@@ -64,9 +64,15 @@ const addTabToNewGroup = (tab: ITab): void => {
 };
 
 const tabGroupLabel = (tabGroup: ITabGroup): string => {
-  const tabs = store.tabs.list.filter((x) => x.tabGroupId === tabGroup.id);
+  const tabs = store.tabs.list.filter(
+    (x) => !x.isClosing && x.tabGroupId === tabGroup.id,
+  );
   const tabsLength = tabs.length;
-  const tabTitle = tabs[0].title;
+  const tabTitle = tabs[0]?.title || '新标签页';
+
+  // 分组成员可能在原生菜单异步构建期间全部关闭,此时仍保留可用的
+  // 文案兜底,避免访问 tabs[0].title 触发运行时异常。
+  if (tabsLength === 0) return tabGroup.name || '空标签组';
 
   let label =
     tabGroup.name ||
@@ -119,15 +125,55 @@ const tabGroupSubmenu = (tab: ITab, tabGroups: ITabGroup[]): Menu => {
   ]);
 };
 
+// 分组标签的左右范围只包含同组成员；未分组标签仍按整个标签列表计算。
+const getSiblingTabs = (tab: ITab): ITab[] => {
+  if (tab.tabGroupId === -1) return store.tabs.list;
+  return store.tabs.list.filter((t) => t.tabGroupId === tab.tabGroupId);
+};
+
+export const closeTabGroup = (tabGroup: ITabGroup) => {
+  for (const tab of [...tabGroup.tabs]) tab.close();
+};
+
+export const handleTabContextMenu = (
+  event: React.MouseEvent,
+  tab: ITab,
+) => {
+  event.preventDefault();
+  if (store.settings.object.closeTabOnRightClick && !event.shiftKey) {
+    tab.close();
+    return;
+  }
+  showTabContextMenu(tab);
+};
+
+export const handleTabGroupContextMenu = (
+  event: React.MouseEvent,
+  tabGroup: ITabGroup,
+) => {
+  event.preventDefault();
+  if (store.settings.object.closeTabOnRightClick && !event.shiftKey) {
+    closeTabGroup(tabGroup);
+    return;
+  }
+  showTabGroupContextMenu(tabGroup);
+};
+
 // 标签页原生右键菜单,顶部标签栏与左右侧栏共用同一份。
 // 原生菜单图标需提前栅格化(异步),并行解析后再构建模板。
-export const showTabContextMenu = async (tab: ITab) => {
+export const showTabContextMenu = async (tab: ITab, onClose?: () => void) => {
   const tabGroups: ITabGroup[] = store.tabGroups
     .getGroups()
-    .filter((t) => t.id !== tab.tabGroupId);
+    .filter(
+      (t) =>
+        t.id !== tab.tabGroupId &&
+        store.tabs.list.some(
+          (x) => !x.isClosing && x.tabGroupId === t.id,
+        ),
+    );
 
   // 顶部标签栏为横向(左/右),左右侧栏为纵向(上/下)。
-  // 仅文案与图标随布局变化,关闭逻辑(按下标关前/关后)不变。
+  // 仅文案与图标随布局变化,关闭逻辑按当前范围的下标关前/关后。
   const vertical = store.tabsLayout !== 'top';
 
   const [
@@ -216,7 +262,7 @@ export const showTabContextMenu = async (tab: ITab) => {
       icon: icReload,
       accelerator: 'CmdOrCtrl+R',
       click: () => {
-        tab.callViewMethod('webContents.reload');
+        tab.callViewMethod('reload');
       },
     },
     {
@@ -303,8 +349,9 @@ export const showTabContextMenu = async (tab: ITab) => {
         }
 
         // Chrome:批量关闭跳过固定标签(固定标签始终存活)。
+        // 同时跳过标签组内的标签(组作为整体保留),只关未分组的普通标签。
         const tabsToClose = store.tabs.list.filter(
-          (t) => t !== tab && !t.isPinned,
+          (t) => t !== tab && !t.isPinned && t.tabGroupId === -1,
         );
         for (const t of tabsToClose) {
           t.close();
@@ -315,10 +362,12 @@ export const showTabContextMenu = async (tab: ITab) => {
       label: vertical ? '关闭上方标签' : '关闭左侧标签',
       icon: icCloseLeft,
       click: () => {
+        const siblingTabs = getSiblingTabs(tab);
         // 跳过固定标签(位置无关判定:固定标签即便在上方/左侧也不关)。
-        for (let i = store.tabs.list.indexOf(tab) - 1; i >= 0; i--) {
-          const t = store.tabs.list[i];
-          if (!t.isPinned) t.close();
+        // 跳过其它标签组:标签组作为整体保留,只关与当前标签同组/同属未分组的标签。
+        for (let i = siblingTabs.indexOf(tab) - 1; i >= 0; i--) {
+          const t = siblingTabs[i];
+          if (!t.isPinned && t.tabGroupId === tab.tabGroupId) t.close();
         }
       },
     },
@@ -326,13 +375,14 @@ export const showTabContextMenu = async (tab: ITab) => {
       label: vertical ? '关闭下方标签' : '关闭右侧标签',
       icon: icCloseRight,
       click: () => {
+        const siblingTabs = getSiblingTabs(tab);
         for (
-          let i = store.tabs.list.length - 1;
-          i > store.tabs.list.indexOf(tab);
+          let i = siblingTabs.length - 1;
+          i > siblingTabs.indexOf(tab);
           i--
         ) {
-          const t = store.tabs.list[i];
-          if (!t.isPinned) t.close();
+          const t = siblingTabs[i];
+          if (!t.isPinned && t.tabGroupId === tab.tabGroupId) t.close();
         }
       },
     },
@@ -349,12 +399,15 @@ export const showTabContextMenu = async (tab: ITab) => {
     },
   ]);
 
-  menu.popup();
+  menu.popup({ callback: onClose } as any);
 };
 
 // 标签组芯片原生右键菜单(取代旧的"命名/颜色"编辑弹窗)。命名改到悬停弹窗内联
 // 输入框完成,这里只放整组操作。
-export const showTabGroupContextMenu = async (tabGroup: ITabGroup) => {
+export const showTabGroupContextMenu = async (
+  tabGroup: ITabGroup,
+  onClose?: () => void,
+) => {
   const [icNewTab, icPin, icUngroup, icClose] = await Promise.all([
     menuIcon(Plus),
     menuIcon(tabGroup.isPinned ? PushPinSlash : PushPin),
@@ -391,10 +444,10 @@ export const showTabGroupContextMenu = async (tabGroup: ITabGroup) => {
       label: '关闭分组',
       icon: icClose,
       click: () => {
-        for (const t of tabGroup.tabs) t.close();
+        closeTabGroup(tabGroup);
       },
     },
   ]);
 
-  menu.popup();
+  menu.popup({ callback: onClose } as any);
 };

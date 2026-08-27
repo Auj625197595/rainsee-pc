@@ -1,15 +1,19 @@
 import * as React from 'react';
 import { observer } from 'mobx-react-lite';
 import { ThemeProvider } from 'styled-components';
+import { Gear as GearIcon } from '@phosphor-icons/react';
 
 import store, { DownloadFilter } from '../../store';
 import { DownloadSection } from '../DownloadSection';
 import { Container } from '~/renderer/components/Pages';
 import { GlobalNavigationDrawer } from '~/renderer/components/GlobalNavigationDrawer';
 import { WebUIStyle } from '~/renderer/mixins/default-styles';
+import { getWebUIURL } from '~/common/webui';
 import {
   Sidebar,
+  SideHeader,
   SideTitle,
+  SettingsButton,
   SearchBox,
   SearchInput,
   SectionLabel,
@@ -92,6 +96,10 @@ const onClearClick = () => {
   store.clearFinished();
 };
 
+const onSettingsClick = () => {
+  window.location.href = `${getWebUIURL('settings')}?section=downloads`;
+};
+
 const FilterItem = observer(
   ({
     filter,
@@ -128,7 +136,13 @@ export default observer(() => {
         <GlobalNavigationDrawer></GlobalNavigationDrawer>
 
         <Sidebar>
-          <SideTitle>下载管理</SideTitle>
+          <SideHeader>
+            <SideTitle>下载管理</SideTitle>
+            <SettingsButton onClick={onSettingsClick} title="下载设置">
+              <GearIcon size={16} weight="bold" />
+              设置
+            </SettingsButton>
+          </SideHeader>
 
           <SearchBox>
             <IconSearch />

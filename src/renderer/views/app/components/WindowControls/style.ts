@@ -30,10 +30,14 @@ export const ControlButton = styled.div`
   height: 100%;
   width: 32px;
   cursor: default;
-  transition: color 0.16s ease, transform 0.16s ease;
+  transition: color 0.16s ease;
 
-  /* 32px 圆角药丸:垂直居中、垫在图标之后(z-index:-1)。
-     按钮建立 z-index:0 栈上下文,使负 z-index 仅相对按钮自身生效。 */
+  > svg {
+    transition: transform 0.16s ease;
+  }
+
+  /* 32px 圆角药丸:垂直居中、垫在图标之后(z-index:-1)。按钮建立
+     z-index:0 栈上下文,使负 z-index 仅相对按钮自身生效。 */
   &::after {
     content: '';
     position: absolute;
@@ -47,13 +51,19 @@ export const ControlButton = styled.div`
     transition: background-color 0.16s ease, box-shadow 0.16s ease;
   }
 
-  &:active {
+  &:active > svg {
     transform: scale(0.94);
+  }
+
+  &:active::after {
+    transform: translateY(-50%) scale(0.94);
   }
 
   ${({ close, theme }: ControlButtonProps) => {
     const light = theme['toolbar.lightForeground'];
-    const fg = light ? 'rgba(255, 255, 255, 0.82)' : 'rgba(117, 128, 154, 0.95)';
+    const fg = light
+      ? 'rgba(255, 255, 255, 0.82)'
+      : 'rgba(117, 128, 154, 0.95)';
     const hoverBg = light
       ? 'rgba(255, 255, 255, 0.12)'
       : 'rgba(255, 255, 255, 0.9)';
@@ -64,16 +74,18 @@ export const ControlButton = styled.div`
 
       ${close &&
       css`
-        /* 关闭按钮命中区向右延伸到窗口最右侧:覆盖容器 6px 右内边距,
-           与全高命中区共同构成屏幕右上角的「无限大目标」(Fitts)。
-           透明、无视觉,仅扩大可点击范围;宽度须与 ControlsContainer 右内边距一致。 */
+        /* 把右上角命中区直接锚定到视口,不再按按钮位置补固定宽度。
+           侧栏工具栏在控件外还有 12px padding,沉浸头部 BrowserView 在高 DPI
+           屏幕上也可能出现小数像素取整；position:fixed + right:0 可确保任意
+           宽度和缩放比例下，窗口最右上角始终归关闭按钮所有。 */
         &::before {
           content: '';
-          position: absolute;
+          position: fixed;
           top: 0;
-          bottom: 0;
-          left: 100%;
-          width: 6px;
+          right: 0;
+          width: 32px;
+          height: 54px;
+          -webkit-app-region: no-drag;
         }
       `}
 

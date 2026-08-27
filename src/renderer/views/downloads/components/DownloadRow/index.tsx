@@ -5,6 +5,7 @@ import { IDownloadItem } from '~/interfaces';
 import store from '../../store';
 import {
   formatBytes,
+  formatSpeed,
   getProgress,
   getFileCategory,
   FileCategory,
@@ -129,7 +130,7 @@ export const DownloadRow = observer(({ data }: { data: IDownloadItem }) => {
 
   const onPauseResume = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (data.paused) store.resume(data);
+    if (data.paused && !data.retrying) store.resume(data);
     else store.pause(data);
   };
 
@@ -165,16 +166,28 @@ export const DownloadRow = observer(({ data }: { data: IDownloadItem }) => {
               <SubText tone="accent">
                 {formatBytes(data.receivedBytes)} / {formatBytes(data.totalBytes)}
               </SubText>
-              {data.paused && (
+              {!data.paused && !data.interrupted && (
                 <>
                   <Dot />
-                  <SubText>已暂停</SubText>
+                  <SubText>{formatSpeed(data.speedBytesPerSecond)}</SubText>
+                </>
+              )}
+              {(data.paused || data.interrupted) && (
+                <>
+                  <Dot />
+                  <SubText>
+                    {data.retrying
+                      ? '网络中断，正在恢复'
+                      : data.interrupted
+                        ? '下载中断，点击恢复'
+                        : '已暂停'}
+                  </SubText>
                 </>
               )}
             </SubLine>
             <ProgressTrack>
               <ProgressFill
-                animated={!data.paused}
+                animated={!data.paused && !data.interrupted}
                 style={{ width: `${percent}%` }}
               />
             </ProgressTrack>
@@ -201,9 +214,9 @@ export const DownloadRow = observer(({ data }: { data: IDownloadItem }) => {
           <>
             <ActionBtn
               onClick={onPauseResume}
-              title={data.paused ? '恢复下载' : '暂停下载'}
+              title={data.paused && !data.retrying ? '恢复下载' : '暂停下载'}
             >
-              {data.paused ? <IconResume /> : <IconPause />}
+              {data.paused && !data.retrying ? <IconResume /> : <IconPause />}
             </ActionBtn>
             <ActionBtn danger onClick={onCancel} title="取消下载">
               <IconClose />

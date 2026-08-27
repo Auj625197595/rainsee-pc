@@ -1,6 +1,7 @@
 import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
 import debug from 'debug'
+import { normalizeWindowCreateData } from './window-create'
 
 const d = debug('electron-chrome-extensions:windows')
 
@@ -30,16 +31,23 @@ export class WindowsAPI {
 
   private observeWindow(window: Electron.BrowserWindow) {
     const windowId = window.id
+    let boundsChangedTimer: ReturnType<typeof setTimeout> | undefined
 
     window.on('focus', () => {
       this.onFocusChanged(windowId)
     })
 
     window.on('resized', () => {
-      this.onBoundsChanged(windowId)
+      if (boundsChangedTimer) clearTimeout(boundsChangedTimer)
+      boundsChangedTimer = setTimeout(() => {
+        boundsChangedTimer = undefined
+        if (!window.isDestroyed()) this.onBoundsChanged(windowId)
+      }, 100)
+      boundsChangedTimer.unref?.()
     })
 
     window.once('closed', () => {
+      if (boundsChangedTimer) clearTimeout(boundsChangedTimer)
       this.ctx.store.windowDetailsCache.delete(windowId)
       this.ctx.store.removeWindow(window)
       this.onRemoved(windowId)
@@ -51,6 +59,8 @@ export class WindowsAPI {
   }
 
   private createWindowDetails(win: Electron.BaseWindow) {
+    const windowType = (win as any).__crxWindowType
+    const priorIncognito = this.ctx.store.windowDetailsCache.get(win.id)?.incognito
     const details: Partial<chrome.windows.Window> = {
       id: win.id,
       focused: win.isFocused(),
@@ -65,8 +75,11 @@ export class WindowsAPI {
         })
         .map((tab) => this.ctx.store.tabDetailsCache.get(tab.id) as chrome.tabs.Tab)
         .filter(Boolean),
-      incognito: this.computeIncognito(win, undefined),
-      type: 'normal', // TODO
+      incognito: this.computeIncognito(win, priorIncognito),
+      type:
+        windowType === 'popup' || windowType === 'panel'
+          ? windowType
+          : 'normal',
       state: getWindowState(win),
       alwaysOnTop: win.isAlwaysOnTop(),
       sessionId: 'default', // TODO
@@ -77,18 +90,10 @@ export class WindowsAPI {
   }
 
   private getWindowDetails(win: Electron.BaseWindow) {
-    if (this.ctx.store.windowDetailsCache.has(win.id)) {
-      const cached = this.ctx.store.windowDetailsCache.get(win.id)
-      // incognito is intrinsic to the window, not derivable from current tab
-      // membership (an incognito window with zero tabs must still report
-      // incognito:true). Refresh it live, sticky-once-true: the cached value is
-      // carried as `prior` so once any tab in the window was observed incognito
-      // the flag stays true until the window is closed.
-      if (cached) cached.incognito = this.computeIncognito(win, cached.incognito)
-      return cached
-    }
-    const details = this.createWindowDetails(win)
-    return details
+    // Window bounds, focus, state and tab membership all change independently.
+    // Rebuild the descriptor so windows.create/get/getAll never return the
+    // partial snapshot cached when the first tab registered the window.
+    return this.createWindowDetails(win)
   }
 
   /**
@@ -145,7 +150,12 @@ export class WindowsAPI {
   }
 
   private async create(event: ExtensionEvent, details: chrome.windows.CreateData) {
-    const win = await this.ctx.store.createWindow(event, details)
+    const normalized = normalizeWindowCreateData(event, details)
+    if (normalized.setSelfAsOpener) {
+      const opener = this.ctx.store.getActiveTabOfCurrentWindow(event)
+      if (opener) (normalized as any).__openerTabId = opener.id
+    }
+    const win = await this.ctx.store.createWindow(event, normalized)
     return this.getWindowDetails(win)
   }
 
@@ -155,7 +165,7 @@ export class WindowsAPI {
     updateProperties: chrome.windows.UpdateInfo = {},
   ) {
     const win = this.getWindowFromId(event, windowId)
-    if (!win) return
+    if (!win) return undefined
 
     const props = updateProperties
 
@@ -171,8 +181,14 @@ export class WindowsAPI {
           if (win.isMinimized() || win.isMaximized()) {
             win.restore()
           }
+          if (win.isFullScreen()) {
+            win.setFullScreen(false)
+          }
           break
         }
+        case 'fullscreen':
+          win.setFullScreen(true)
+          break
       }
     }
 
@@ -196,9 +212,16 @@ export class WindowsAPI {
         /* setBounds not supported on this window type */
       }
     }
-    if (typeof props.focused === 'boolean' && props.focused) {
+    if (typeof props.focused === 'boolean') {
       try {
-        win.focus()
+        if (props.focused) {
+          win.focus()
+        } else {
+          // Let the window manager choose the next focused window. Explicitly
+          // focusing an arbitrary tracked window does not match Chrome and can
+          // interrupt a different application the user is working in.
+          win.blur()
+        }
       } catch {}
     }
     if (props.drawAttention) {
@@ -218,9 +241,9 @@ export class WindowsAPI {
   private async remove(event: ExtensionEvent, windowId: number = WindowsAPI.WINDOW_ID_CURRENT) {
     const win = this.getWindowFromId(event, windowId)
     if (!win) return
-    const removedWindowId = win.id
     await this.ctx.store.removeWindow(win)
-    this.onRemoved(removedWindowId)
+    // observeWindow emits onRemoved when the native window actually closes.
+    // Emitting here as well delivered the event twice for API-initiated closes.
   }
 
   onCreated(windowId: number) {

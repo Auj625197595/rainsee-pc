@@ -9,15 +9,16 @@ export const StyledApp = styled(DialogStyle)`
   border: 1px solid rgba(255, 255, 255, 0.55);
   backdrop-filter: blur(28px) saturate(180%);
   -webkit-backdrop-filter: blur(28px) saturate(180%);
-  box-shadow:
-    0 1px 4px rgba(20, 32, 72, 0.05),
-    0 4px 12px rgba(20, 32, 72, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.7);
 
   ${({ theme }: { theme?: ITheme; visible: boolean }) => css`
+    box-shadow: ${theme.dark
+      ? `inset 0 1px 0 rgba(255, 255, 255, 0.04)`
+      : `0 1px 4px rgba(20, 32, 72, 0.05),
+         0 4px 12px rgba(20, 32, 72, 0.06),
+         inset 0 1px 0 rgba(255, 255, 255, 0.7)`};
     background-color: ${theme.dark
-      ? 'rgba(40, 42, 48, 0.78)'
-      : 'rgba(255, 255, 255, 0.78)'};
+      ? 'rgba(15, 18, 24, 0.88)'
+      : 'rgba(255, 255, 255, 0.72)'};
     color: ${theme['dialog.textColor']};
   `}
 `;
@@ -301,8 +302,8 @@ export const TreeItemRow = styled.div`
 `;
 
 export const TreeToggle = styled.button`
-  height: 18px;
-  width: 18px;
+  height: 28px;
+  width: 28px;
   min-width: 18px;
   border: 0;
   border-radius: 999px;

@@ -7,21 +7,31 @@ import {
   Main,
   TitleRow,
   Title,
+  TitleActions,
+  PauseButton,
   MoreButton,
   StatusRow,
+  StatusPrimary,
   StatusBadge,
   Detail,
+  TransferInfo,
+  Speed,
   ProgressBackground,
   Progress,
   DownloadStatus,
 } from './style';
 import { IDownloadItem } from '~/interfaces';
+import { normalizeDownloadSpeed } from '~/common/download-speed';
 import prettyBytes = require('pretty-bytes');
 import { shell } from 'electron';
 import * as remote from '@electron/remote';
 import store from '../../store';
 import { DownloadItemMenu } from '../DownloadItemMenu';
-import { getDownloadMenuTemplate } from '../download-menu';
+import {
+  getDownloadMenuTemplate,
+  pauseDownload,
+  resumeDownload,
+} from '../download-menu';
 
 const onClick = (item: IDownloadItem) => () => {
   if (item.completed) {
@@ -45,10 +55,17 @@ const onMoreClick =
     e.stopPropagation();
   };
 
+const onPauseResume =
+  (item: IDownloadItem) => (e: React.MouseEvent<HTMLButtonElement>) => {
+    if (item.paused && !item.retrying) resumeDownload(item);
+    else pauseDownload(item);
+    e.stopPropagation();
+  };
+
 const getStatus = (item: IDownloadItem): DownloadStatus => {
   if (item.canceled) return 'failed';
   if (item.completed) return 'completed';
-  if (item.paused) return 'paused';
+  if (item.paused || item.interrupted) return 'paused';
   return 'downloading';
 };
 
@@ -67,6 +84,7 @@ const getIconLabel = (fileName = '') => {
 };
 
 const getStatusLabel = (
+  item: IDownloadItem,
   status: DownloadStatus,
   percent: number,
 ): string => {
@@ -74,6 +92,8 @@ const getStatusLabel = (
     case 'completed':
       return '已完成';
     case 'paused':
+      if (item.retrying) return '正在恢复';
+      if (item.interrupted) return '下载中断';
       return '已暂停';
     case 'failed':
       return '已取消';
@@ -99,13 +119,11 @@ export const DownloadItem = observer(({ item }: { item: IDownloadItem }) => {
 
   const host = getSource(item.url);
 
-  let detail: string;
+  let detail = '';
   if (status === 'completed') {
     detail = [host, total].filter(Boolean).join(' · ');
   } else if (status === 'failed') {
     detail = [host, '下载已取消'].filter(Boolean).join(' · ');
-  } else {
-    detail = [host, `${received} / ${total}`].filter(Boolean).join(' · ');
   }
 
   const showProgress = status === 'downloading' || status === 'paused';
@@ -117,29 +135,60 @@ export const DownloadItem = observer(({ item }: { item: IDownloadItem }) => {
         <Main>
           <TitleRow>
             <Title canceled={item.canceled}>{item.fileName}</Title>
-            <MoreButton
-              aria-label="更多操作"
-              toggled={item.menuIsOpen}
-              onClick={onMoreClick(item)}
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.3"
-                strokeLinecap="round"
+            <TitleActions>
+              {showProgress && (
+                <PauseButton
+                  aria-label={item.paused && !item.retrying ? '恢复下载' : '暂停下载'}
+                  title={item.paused && !item.retrying ? '恢复下载' : '暂停下载'}
+                  onClick={onPauseResume(item)}
+                >
+                  {item.paused && !item.retrying ? (
+                    <svg viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M7 4l13 8-13 8z" />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" fill="currentColor">
+                      <rect x="6" y="5" width="4" height="14" rx="1" />
+                      <rect x="14" y="5" width="4" height="14" rx="1" />
+                    </svg>
+                  )}
+                </PauseButton>
+              )}
+              <MoreButton
+                aria-label="更多操作"
+                toggled={item.menuIsOpen}
+                onClick={onMoreClick(item)}
               >
-                <path d="M12 5h.01" />
-                <path d="M12 12h.01" />
-                <path d="M12 19h.01" />
-              </svg>
-            </MoreButton>
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.3"
+                  strokeLinecap="round"
+                >
+                  <path d="M12 5h.01" />
+                  <path d="M12 12h.01" />
+                  <path d="M12 19h.01" />
+                </svg>
+              </MoreButton>
+            </TitleActions>
           </TitleRow>
           <StatusRow>
-            <StatusBadge status={status}>
-              {getStatusLabel(status, percent)}
-            </StatusBadge>
-            <Detail>{detail}</Detail>
+            <StatusPrimary>
+              <StatusBadge status={status}>
+                {getStatusLabel(item, status, percent)}
+              </StatusBadge>
+              {showProgress ? (
+                <TransferInfo>{received} / {total}</TransferInfo>
+              ) : (
+                <Detail>{detail}</Detail>
+              )}
+            </StatusPrimary>
+            {status === 'downloading' && (
+              <Speed>
+                {prettyBytes(normalizeDownloadSpeed(item.speedBytesPerSecond))}/s
+              </Speed>
+            )}
           </StatusRow>
           {showProgress && (
             <ProgressBackground>

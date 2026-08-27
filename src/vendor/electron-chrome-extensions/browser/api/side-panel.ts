@@ -22,9 +22,11 @@ interface PanelBehavior {
 }
 
 export class SidePanelAPI {
-  // per-tab options overrides (tabId -> {path, enabled}); globalOptions when no tabId.
-  private tabOptions = new Map<number, PanelOptions>()
-  private globalOptions: PanelOptions = {}
+  // Chrome stores side-panel options per extension. Keeping only one global
+  // value lets one extension's setOptions({enabled:false}) disable every other
+  // extension's panel.
+  private tabOptions = new Map<string, Map<number, PanelOptions>>()
+  private globalOptions = new Map<string, PanelOptions>()
   // per-extension behavior (openPanelOnActionClick). Defaults to false.
   private behaviors = new Map<string, PanelBehavior>()
 
@@ -52,24 +54,31 @@ export class SidePanelAPI {
   // panel is disabled for that context or no path is configured.
   private resolvePath(extensionId: string, tabId?: number): string | undefined {
     const manifestPath = this.manifestDefaultPath(extensionId)
-    if (typeof tabId === 'number' && this.tabOptions.has(tabId)) {
-      const o = this.tabOptions.get(tabId)!
+    const extensionTabOptions = this.tabOptions.get(extensionId)
+    if (typeof tabId === 'number' && extensionTabOptions?.has(tabId)) {
+      const o = extensionTabOptions.get(tabId)!
       if (o.enabled === false) return undefined
       return o.path || manifestPath
     }
-    if (this.globalOptions.enabled === false) return undefined
-    return this.globalOptions.path || manifestPath
+    const globalOptions = this.globalOptions.get(extensionId)
+    if (globalOptions?.enabled === false) return undefined
+    return globalOptions?.path || manifestPath
   }
 
   private setOptions = (
-    _event: ExtensionEvent,
+    { extension }: ExtensionEvent,
     options: PanelOptions & { tabId?: number } = {},
   ) => {
     const o: PanelOptions = { path: options.path, enabled: options.enabled }
     if (options && typeof options.tabId === 'number') {
-      this.tabOptions.set(options.tabId, o)
+      let extensionTabOptions = this.tabOptions.get(extension.id)
+      if (!extensionTabOptions) {
+        extensionTabOptions = new Map<number, PanelOptions>()
+        this.tabOptions.set(extension.id, extensionTabOptions)
+      }
+      extensionTabOptions.set(options.tabId, o)
     } else {
-      this.globalOptions = o
+      this.globalOptions.set(extension.id, o)
     }
   }
 
@@ -81,10 +90,32 @@ export class SidePanelAPI {
   }
 
   private open = (
-    { extension }: ExtensionEvent,
+    event: ExtensionEvent,
     details: { windowId?: number; tabId?: number } = {},
   ) => {
-    this.openFor(extension.id, details.tabId, details.windowId)
+    const requestedTabId = typeof details?.tabId === 'number' ? details.tabId : undefined
+    const windowId = typeof details?.windowId === 'number' ? details.windowId : undefined
+
+    // Chrome resolves an omitted tabId to the active tab in the requested
+    // window (or the caller's current window). Passing -1 to the host makes
+    // SidePanelManager silently ignore the request, so resolve it here before
+    // applying per-tab options and opening the panel.
+    let tabId = requestedTabId
+    let resolvedWindowId = windowId
+    if (typeof tabId !== 'number') {
+      const win = windowId === -2
+        ? this.ctx.store.getCurrentWindow(event)
+        : typeof windowId === 'number'
+          ? this.ctx.store.getWindowById(windowId)
+          : this.ctx.store.getCurrentWindow(event)
+      tabId = win ? this.ctx.store.getActiveTabFromWindow(win)?.id : undefined
+      // Keep tab and window resolution tied to the same store snapshot. The
+      // host has a separate focus tracker, so forwarding -2/undefined here
+      // could show the panel in a different window than the resolved tab.
+      if (win) resolvedWindowId = win.id
+    }
+
+    this.openFor(event.extension.id, tabId, resolvedWindowId)
   }
 
   private getOptions = (

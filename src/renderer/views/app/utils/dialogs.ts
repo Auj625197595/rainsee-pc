@@ -8,6 +8,7 @@ export interface IAddressBarSearchAnchor {
   x: number;
   y: number;
   width: number;
+  anchorHeight: number;
 }
 
 export const getAddressBarSearchAnchor = (
@@ -16,11 +17,12 @@ export const getAddressBarSearchAnchor = (
   const anchor = element || document.getElementById('addressbar');
   if (!anchor) return null;
 
-  const { left, top, width } = anchor.getBoundingClientRect();
+  const { left, top, width, height } = anchor.getBoundingClientRect();
 
   return {
     x: left,
     y: top,
     width,
+    anchorHeight: height,
   };
 };

@@ -18,13 +18,13 @@ export const StyledTabbar = styled.div`
   margin-left: 0px;
 `;
 
-export const TabsContainer = styled.div`
+export const TabsContainer = styled.div<{ $allowScroll: boolean }>`
   height: 100%;
   flex: 1;
   min-width: 0;
   position: relative;
   overflow: hidden;
-  overflow-x: overlay;
+  overflow-x: ${({$allowScroll}) => ($allowScroll ? 'overlay' : 'hidden')};
   white-space: nowrap;
   /* 为最右侧浮动的「+ 新建标签」按钮预留尾部空间,
      避免滚动到末尾时最后一个标签被按钮压住、出现重叠。 */

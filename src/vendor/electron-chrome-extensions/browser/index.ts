@@ -2,7 +2,6 @@ import { session as electronSession, webFrameMain } from 'electron'
 import { EventEmitter } from 'node:events'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
-
 import { BrowserActionAPI } from './api/browser-action'
 import { TabsAPI } from './api/tabs'
 import { WindowsAPI } from './api/windows'
@@ -38,6 +37,7 @@ import { SessionsAPI } from './api/sessions'
 import { TopSitesAPI } from './api/topsites'
 import { TabGroupsAPI } from './api/tab-groups'
 import { FontSettingsAPI } from './api/font-settings'
+import { PrivacyAPI } from './api/privacy'
 import { TtsAPI } from './api/tts'
 import { SidePanelAPI } from './api/side-panel'
 import { OffscreenAPI } from './api/offscreen'
@@ -187,6 +187,7 @@ export class ElectronChromeExtensions extends EventEmitter {
     topSites: TopSitesAPI
     tabGroups: TabGroupsAPI
     fontSettings: FontSettingsAPI
+    privacy: PrivacyAPI
     tts: TtsAPI
     sidePanel: SidePanelAPI
     identity: IdentityAPI
@@ -208,10 +209,12 @@ export class ElectronChromeExtensions extends EventEmitter {
 
     const router = new ExtensionRouter(session)
     const store = new ExtensionStore(impl)
+    const preloadPath = resolvePreloadPath(opts.modulePath)
 
     this.ctx = {
       dynamicContentScripts: createDynamicContentScriptRegistry(),
       emit: this.emit.bind(this),
+      preloadPath,
       router,
       session,
       store,
@@ -248,6 +251,7 @@ export class ElectronChromeExtensions extends EventEmitter {
       topSites: new TopSitesAPI(this.ctx),
       tabGroups: new TabGroupsAPI(this.ctx),
       fontSettings: new FontSettingsAPI(this.ctx),
+      privacy: new PrivacyAPI(this.ctx),
       tts: new TtsAPI(this.ctx),
       sidePanel: new SidePanelAPI(this.ctx),
       offscreen: new OffscreenAPI(this.ctx),
@@ -259,6 +263,8 @@ export class ElectronChromeExtensions extends EventEmitter {
 
     // Expose the SidePanelAPI on ctx so BrowserActionAPI.activateClick can
     // consult openPanelOnActionClick and divert action clicks to the panel.
+    this.ctx.tabs = this.api.tabs
+    this.ctx.tabGroups = this.api.tabGroups
     this.ctx.sidePanel = this.api.sidePanel
 
     // Wire `_execute_action` / `_execute_browser_action` command shortcuts to
@@ -286,7 +292,7 @@ export class ElectronChromeExtensions extends EventEmitter {
       .apiHandler()('tabs.ungroup', this.api.tabGroups.ungroup.bind(this.api.tabGroups))
 
     this.listenForExtensions()
-    this.prependPreload(opts.modulePath)
+    this.prependPreload(preloadPath)
   }
 
   private listenForExtensions() {
@@ -296,14 +302,8 @@ export class ElectronChromeExtensions extends EventEmitter {
     })
   }
 
-  private async prependPreload(modulePath?: string) {
+  private prependPreload(preloadPath: string) {
     const { session } = this.ctx
-
-    const preloadPath = resolvePreloadPath(modulePath)
-
-    // Expose the resolved preload path so APIs that create their own hidden
-    // extension-page renderer (OffscreenAPI) can set webPreferences.preload.
-    this.ctx.preloadPath = preloadPath
 
     if ('registerPreloadScript' in session) {
       session.registerPreloadScript({
@@ -396,10 +396,53 @@ export class ElectronChromeExtensions extends EventEmitter {
     this.api.commands.detachWebContents(tab)
   }
 
+  /**
+   * Start an MV3 background worker, wait until its hosted API bridge is ready,
+   * and keep it alive until the returned release function is called.
+   */
+  acquireServiceWorker(extensionId: string, timeoutMs?: number) {
+    if (this.ctx.recoverServiceWorker) {
+      return this.ctx.recoverServiceWorker(extensionId, timeoutMs, false)
+    }
+    return this.api.messaging.acquireServiceWorker(extensionId, timeoutMs)
+  }
+
+  /** Internal raw acquisition used by the host recovery handler itself. */
+  acquireServiceWorkerRaw(extensionId: string, timeoutMs?: number) {
+    return this.api.messaging.acquireServiceWorker(extensionId, timeoutMs)
+  }
+
+  /** Record the explicit API-bridge handshake from a specific ServiceWorkerMain. */
+  markServiceWorkerReady(
+    serviceWorker: any,
+    details?: any,
+  ) {
+    this.api.messaging.markServiceWorkerReady(serviceWorker, details)
+  }
+
+  setServiceWorkerRecoveryHandler(
+    handler: (
+      extensionId: string,
+      timeoutMs?: number,
+      provenFailure?: boolean,
+    ) => Promise<(() => void) | undefined>,
+  ) {
+    this.ctx.recoverServiceWorker = handler
+  }
+
+  /** Keep chrome.tabs window ownership in sync when the host moves a live tab. */
+  moveTabToWindow(tab: Electron.WebContents, window: Electron.BaseWindow) {
+    this.checkWebContentsArgument(tab)
+    this.ctx.store.moveTabToWindow(tab, window)
+  }
+
   /** Notify extension system that the active tab has changed. */
   selectTab(tab: Electron.WebContents) {
     this.checkWebContentsArgument(tab)
     if (this.ctx.store.tabs.has(tab)) {
+      // Heal command listeners when a restored/reused WebContents becomes
+      // active. attachWebContents is idempotent.
+      this.api.commands.attachWebContents(tab)
       this.api.tabs.onActivated(tab.id)
     }
   }
@@ -411,6 +454,11 @@ export class ElectronChromeExtensions extends EventEmitter {
    */
   setTabOrder(windowId: number, orderedTabIds: number[]) {
     this.ctx.store.setTabOrder(windowId, orderedTabIds)
+  }
+
+  /** Return the session-local Chrome tab-group id for a host tab. */
+  getTabGroupId(tabId: number) {
+    return this.api.tabGroups.getTabGroupId(tabId)
   }
 
   /**
@@ -570,10 +618,10 @@ export class ElectronChromeExtensions extends EventEmitter {
     extensionId: string,
     details: chrome.runtime.InstalledDetails,
   ) {
-    this.ctx.router.sendEvent(extensionId, 'runtime.onInstalled', details)
+    return this.ctx.router.sendEvent(extensionId, 'runtime.onInstalled', details)!
   }
 
   notifyRuntimeStartup(extensionId: string) {
-    this.ctx.router.sendEvent(extensionId, 'runtime.onStartup')
+    return this.ctx.router.sendEvent(extensionId, 'runtime.onStartup')!
   }
 }

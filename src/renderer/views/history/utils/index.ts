@@ -13,16 +13,13 @@ export const compareDates = (first: Date, second: Date) => {
 export const getSectionLabel = (date: Date) => {
   let prefix = '';
   const current = new Date();
+  const yesterday = new Date(current);
+  yesterday.setDate(current.getDate() - 1);
 
-  if (
-    date.getFullYear() === current.getFullYear() &&
-    date.getMonth() === current.getMonth()
-  ) {
-    if (current.getDate() === date.getDate()) {
-      prefix = '今天 - ';
-    } else if (current.getDate() - 1 === date.getDate()) {
-      prefix = '昨天 - ';
-    }
+  if (compareDates(date, current)) {
+    prefix = '今天 - ';
+  } else if (compareDates(date, yesterday)) {
+    prefix = '昨天 - ';
   }
 
   return `${prefix}${daysList[date.getDay()]}, ${
@@ -41,14 +38,11 @@ export const formatTime = (date: Date) => {
 
 export const getSectionTitle = (date: Date) => {
   const current = new Date();
+  const yesterday = new Date(current);
+  yesterday.setDate(current.getDate() - 1);
 
-  if (
-    date.getFullYear() === current.getFullYear() &&
-    date.getMonth() === current.getMonth()
-  ) {
-    if (current.getDate() === date.getDate()) return '今天';
-    if (current.getDate() - 1 === date.getDate()) return '昨天';
-  }
+  if (compareDates(date, current)) return '今天';
+  if (compareDates(date, yesterday)) return '昨天';
 
   return daysList[date.getDay()];
 };

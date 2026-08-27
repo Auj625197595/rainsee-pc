@@ -27,11 +27,20 @@ interface DownloadItem {
   endTime?: number
   filePath: string
   byExtensionId: string
+  interruptReason?: DownloadInterruptReason
+  emittedInterruptReason?: DownloadInterruptReason
   nativeItem?: Electron.DownloadItem
   request?: Electron.ClientRequest
 }
 
 type DownloadConflictAction = 'overwrite' | 'prompt' | 'uniquify'
+type DownloadInterruptReason =
+  | 'FILE_FAILED'
+  | 'NETWORK_FAILED'
+  | 'SERVER_FAILED'
+  | 'SERVER_UNAUTHORIZED'
+  | 'SERVER_FORBIDDEN'
+  | 'USER_CANCELED'
 
 interface NormalizedDownloadOptions {
   body?: string
@@ -88,6 +97,18 @@ export class DownloadsAPI {
       id,
       ...delta,
     })
+  }
+
+  private setInterruptReason(
+    item: DownloadItem,
+    delta: Partial<chrome.downloads.DownloadDelta>,
+    reason: DownloadInterruptReason,
+  ) {
+    const previous = item.emittedInterruptReason
+    item.interruptReason = reason
+    if (previous === reason) return
+    item.emittedInterruptReason = reason
+    delta.error = previous ? { previous, current: reason } : { current: reason }
   }
 
   private toIsoTime(value?: number): string | undefined {
@@ -446,9 +467,39 @@ export class DownloadsAPI {
     setImmediate(() => {
       if (event.defaultPrevented) return
       if ((nativeItem as any).isDestroyed?.()) return
+
+      // onCreated is an observation event and is too broad to imply takeover.
+      // onDeterminingFilename is the explicit signal used by download-manager
+      // extensions, so only its listeners get a short pause window.
+      const holdForExtension = this.hasDeterminingFilenameListeners()
+      if (holdForExtension) {
+        try {
+          nativeItem.pause()
+          this.diag('will-download hold for extension', nativeItem.getURL())
+        } catch (error) {
+          this.diag(
+            'will-download hold failed',
+            error instanceof Error ? error.message : String(error),
+          )
+        }
+
+        setTimeout(() => {
+          if ((nativeItem as any).__crxExtIntercepted) return
+          try {
+            if (nativeItem.isPaused()) nativeItem.resume()
+            this.diag('will-download extension hold expired', nativeItem.getURL())
+          } catch {}
+        }, 2000)
+      }
+
       try {
         this.registerNativeBrowserDownload(nativeItem)
       } catch (error) {
+        if (holdForExtension) {
+          try {
+            if (nativeItem.isPaused()) nativeItem.resume()
+          } catch {}
+        }
         this.diag(
           'native onCreated error',
           error instanceof Error ? error.message : String(error),
@@ -489,6 +540,9 @@ export class DownloadsAPI {
       if (item.filePath !== prevFilePath) {
         delta.filename = { previous: prevFilePath, current: item.filePath }
       }
+      if (state === 'interrupted') {
+        this.setInterruptReason(item, delta, item.interruptReason || 'NETWORK_FAILED')
+      }
       if (Object.keys(delta).length > 0) this.fireChanged(item.id, delta)
       if (state === 'interrupted') {
         this.diag('updated interrupted', 'id', item.id, 'canResume', nativeItem.canResume(), 'url', nativeItem.getURL())
@@ -508,8 +562,13 @@ export class DownloadsAPI {
         mime: { current: item.mime },
         totalBytes: { current: item.totalBytes },
       }
-      if (item.state !== prevState || state !== 'completed') {
+      if (item.state !== prevState) {
         delta.state = { previous: prevState, current: item.state }
+      }
+      if (state === 'cancelled') {
+        this.setInterruptReason(item, delta, 'USER_CANCELED')
+      } else if (state === 'interrupted') {
+        this.setInterruptReason(item, delta, item.interruptReason || 'NETWORK_FAILED')
       }
       this.fireChanged(item.id, delta)
       this.diag('done', 'id', item.id, 'state', state, 'path', item.filePath)
@@ -528,10 +587,12 @@ export class DownloadsAPI {
       item.state = 'interrupted'
       item.endTime = Date.now()
       this.diag('native timeout', 'id', item.id, 'url', item.url)
-      this.fireChanged(item.id, {
+      const delta: Partial<chrome.downloads.DownloadDelta> = {
         endTime: { current: this.toIsoTime(item.endTime) },
         state: { previous: 'in_progress', current: 'interrupted' },
-      })
+      }
+      this.setInterruptReason(item, delta, 'NETWORK_FAILED')
+      this.fireChanged(item.id, delta)
     }, 10000)
 
     this.pendingNativeDownloads.push({
@@ -595,10 +656,12 @@ export class DownloadsAPI {
       item.state = 'interrupted'
       item.endTime = Date.now()
       this.diag('downloadURL throw', 'id', item.id, 'url', options.url)
-      this.fireChanged(item.id, {
+      const delta: Partial<chrome.downloads.DownloadDelta> = {
         endTime: { current: this.toIsoTime(item.endTime) },
         state: { previous: 'in_progress', current: 'interrupted' },
-      })
+      }
+      this.setInterruptReason(item, delta, 'NETWORK_FAILED')
+      this.fireChanged(item.id, delta)
       return undefined
     }
   }
@@ -616,9 +679,11 @@ export class DownloadsAPI {
         } as any)
       } catch {
         item.state = 'interrupted'
-        this.fireChanged(item.id, {
+        const delta: Partial<chrome.downloads.DownloadDelta> = {
           state: { previous: 'in_progress', current: 'interrupted' },
-        })
+        }
+        this.setInterruptReason(item, delta, 'NETWORK_FAILED')
+        this.fireChanged(item.id, delta)
         resolve(item.id)
         return
       }
@@ -627,10 +692,11 @@ export class DownloadsAPI {
       const stream = fs.createWriteStream(item.filePath)
       let finished = false
 
-      const interrupt = () => {
+      const interrupt = (reason: DownloadInterruptReason) => {
         if (finished) return
         finished = true
         item.state = 'interrupted'
+        const effectiveReason = item.interruptReason || reason
         try {
           request.destroy()
         } catch {
@@ -642,12 +708,14 @@ export class DownloadsAPI {
           /* ignore */
         }
         void fs.promises.unlink(item.filePath).catch(() => undefined)
-        this.fireChanged(item.id, {
+        const delta: Partial<chrome.downloads.DownloadDelta> = {
           state: { previous: 'in_progress', current: 'interrupted' },
-        })
+        }
+        this.setInterruptReason(item, delta, effectiveReason)
+        this.fireChanged(item.id, delta)
       }
 
-      stream.on('error', interrupt)
+      stream.on('error', () => interrupt('FILE_FAILED'))
 
       request.on('response', (response) => {
         const totalHeader = response.headers['content-length']
@@ -659,7 +727,13 @@ export class DownloadsAPI {
         item.mime = Array.isArray(contentType) ? contentType[0] || '' : contentType || ''
 
         if (response.statusCode && response.statusCode >= 400) {
-          interrupt()
+          interrupt(
+            response.statusCode === 401
+              ? 'SERVER_UNAUTHORIZED'
+              : response.statusCode === 403
+                ? 'SERVER_FORBIDDEN'
+                : 'SERVER_FAILED',
+          )
           return
         }
 
@@ -687,10 +761,10 @@ export class DownloadsAPI {
           })
         })
 
-        response.on('error', interrupt)
+        response.on('error', () => interrupt('NETWORK_FAILED'))
       })
 
-      request.on('error', interrupt)
+      request.on('error', () => interrupt('NETWORK_FAILED'))
 
       if (options.body) {
         request.write(options.body)
@@ -762,6 +836,7 @@ export class DownloadsAPI {
       incognito: item.incognito,
       startTime: this.toIsoTime(item.startTime) as any,
       endTime: this.toIsoTime(item.endTime) as any,
+      error: item.interruptReason as any,
     } as chrome.downloads.DownloadItem
   }
 
@@ -842,6 +917,10 @@ export class DownloadsAPI {
     if (item.nativeItem) {
       ;(item.nativeItem as any).__crxExtIntercepted = true
     }
+    // Electron may emit `done` synchronously from cancel(). Record the Chrome
+    // interrupt reason first so that listener cannot misclassify it as a
+    // network interruption.
+    item.interruptReason = 'USER_CANCELED'
     try {
       item.nativeItem?.cancel()
     } catch {
@@ -852,10 +931,14 @@ export class DownloadsAPI {
     } catch {
       /* ignore */
     }
-    item.state = 'interrupted'
-    this.fireChanged(id, {
-      state: { previous: 'in_progress', current: 'interrupted' },
-    })
+    const delta: Partial<chrome.downloads.DownloadDelta> = {}
+    if (item.state !== 'interrupted') {
+      const previous = item.state
+      item.state = 'interrupted'
+      delta.state = { previous, current: 'interrupted' }
+    }
+    this.setInterruptReason(item, delta, 'USER_CANCELED')
+    if (Object.keys(delta).length > 0) this.fireChanged(id, delta)
     return true
   }
 
@@ -865,6 +948,10 @@ export class DownloadsAPI {
    *  immediately. */
   hasCreatedListeners(): boolean {
     return this.ctx.router.hasListeners('downloads.onCreated')
+  }
+
+  private hasDeterminingFilenameListeners(): boolean {
+    return this.ctx.router.hasListeners('downloads.onDeterminingFilename')
   }
 
   private erase = async (

@@ -2,7 +2,6 @@ import styled, { css } from 'styled-components';
 
 import {
   CHIP_PAD_LR,
-  CHIP_NAME_MAX,
   CHIP_FAV_W,
   CHIP_ACTIVE_TITLE_W,
 } from '../../constants';
@@ -20,12 +19,15 @@ function tint(hex: string, alpha: number): string {
 // 芯片 slot 容器:由布局引擎经 transform/width 动画驱动(等同单个标签的位置)。
 // 不设 align-items(沿用默认 stretch),与普通标签 StyledTab 一致——Chip 靠
 // margin-top:tabMarginTop 下沉,与 TabContainer 处于同一水平基线。
-export const StyledTabGroup = styled.div`
+export const StyledTabGroup = styled.div<{ $dragging: boolean }>`
   position: absolute;
   left: 0;
   display: flex;
   height: 100%;
   -webkit-app-region: no-drag;
+  user-select: none;
+  cursor: ${({ $dragging }) => ($dragging ? 'grabbing' : 'grab')};
+  z-index: ${({ $dragging }) => ($dragging ? 20 : 'auto')};
 `;
 
 interface ChipProps {
@@ -33,6 +35,7 @@ interface ChipProps {
   containsActive: boolean;
   pinned: boolean;
   dropTarget?: boolean;
+  $density: number;
   theme?: any;
 }
 
@@ -45,16 +48,16 @@ export const Chip = styled.div`
   display: flex;
   align-items: center;
   width: 100%;
-  padding: 0 ${CHIP_PAD_LR}px;
   border-radius: 9999px;
   border: 1px solid transparent;
   overflow: hidden;
   box-sizing: border-box;
   transition: 0.12s background-color, 0.12s box-shadow, 0.12s border-color;
-  cursor: default;
+  cursor: inherit;
 
-  ${({ color, containsActive, pinned, dropTarget, theme }: ChipProps) => css`
+  ${({ color, containsActive, pinned, dropTarget, $density, theme }: ChipProps) => css`
     height: ${theme.isCompact ? theme.tabHeight : 34}px;
+    padding: 0 ${CHIP_PAD_LR * $density}px;
     margin: ${theme.isCompact ? 'auto 0' : `${theme.tabMarginTop}px 0 4px`};
     background: ${pinned
       ? color
@@ -108,10 +111,10 @@ export const FavRow = styled.div`
 
 interface FavProps {
   selected: boolean;
+  $density: number;
 }
 
 export const Fav = styled.div`
-  width: ${CHIP_FAV_W}px;
   height: ${CHIP_FAV_W}px;
   display: flex;
   align-items: center;
@@ -119,9 +122,11 @@ export const Fav = styled.div`
   border-radius: 6px;
   cursor: pointer;
   flex-shrink: 0;
-  transition: 0.1s background-color;
+  overflow: hidden;
+  transition: 0.1s background-color, 0.1s width;
 
-  ${({ selected }: FavProps) => css`
+  ${({ selected, $density }: FavProps) => css`
+    width: ${CHIP_FAV_W * $density}px;
     background-color: ${selected ? 'rgba(255, 255, 255, 0.92)' : 'transparent'};
     box-shadow: ${selected ? '0 4px 10px rgba(42, 152, 101, 0.16)' : 'none'};
   `};
@@ -138,12 +143,12 @@ export const Fav = styled.div`
 `;
 
 // 含选中标签时显示的标题槽(~5 格,超出 ellipsis)。
-export const ActiveTitle = styled.div`
+export const ActiveTitle = styled.div<{ $density: number }>`
   font-size: 12px;
   font-weight: 900;
   letter-spacing: 0.12em;
-  width: ${CHIP_ACTIVE_TITLE_W}px;
-  margin-left: 6px;
+  width: ${({$density}) => `${CHIP_ACTIVE_TITLE_W * $density}px`};
+  margin-left: ${({$density}) => `${6 * $density}px`};
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -152,9 +157,9 @@ export const ActiveTitle = styled.div`
   cursor: pointer;
 `;
 
-export const CountBadge = styled.div`
-  margin-left: 8px;
-  padding: 2px 10px;
+export const CountBadge = styled.div<{ $density: number }>`
+  margin-left: ${({$density}) => `${8 * $density}px`};
+  padding: 2px ${({$density}) => `${10 * $density}px`};
   border-radius: 9999px;
   background: rgba(255, 255, 255, 0.88);
   box-shadow: inset 0 0 0 1px #cfefdd;
@@ -163,6 +168,7 @@ export const CountBadge = styled.div`
   font-weight: 900;
   line-height: 1.4;
   flex-shrink: 0;
+  overflow: hidden;
 `;
 
 // ===== 悬停列表弹窗(Portal 到 document.body,逃逸 TabsContainer 的 overflow:hidden)=====

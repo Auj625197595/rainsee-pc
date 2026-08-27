@@ -1,24 +1,24 @@
-import {ipcRenderer} from 'electron';
-import {observable, computed, action, makeObservable} from 'mobx';
+import { ipcRenderer } from 'electron';
+import { observable, computed, action, makeObservable } from 'mobx';
 import * as React from 'react';
-import {parse as parseUrl} from 'url';
+import { parse as parseUrl } from 'url';
 
 import store from '../store';
 import {
-  TABS_PADDING,
   TAB_ANIMATION_DURATION,
   TAB_MIN_WIDTH,
   TAB_MAX_WIDTH,
   TAB_PINNED_WIDTH,
-  CHIP_SLOT_MARGIN,
 } from '../constants';
-import {callViewMethod} from '~/utils/view';
-import {animateTab} from '../utils/tabs';
-import {getWebUIURL} from "~/common/webui";
-import {ADD_TAB_BUTTON_WIDTH} from '~/constants/design';
-import {isImmersiveHeaderWindow} from '../utils/windows';
+import { callViewMethod } from '~/utils/view';
+import { animateTab } from '../utils/tabs';
+import { getWebUIURL } from '~/common/webui';
+import { ADD_TAB_BUTTON_WIDTH } from '~/constants/design';
+import { isImmersiveHeaderWindow } from '../utils/windows';
 
 export class ITab {
+  // 工作区文档中的稳定键。普通窗口留空;工作区重开后用它维持标签身份。
+  public workspaceKey?: string;
   private static nextViewKey = 0;
 
   public readonly viewKey = `tab-${++ITab.nextViewKey}`;
@@ -64,6 +64,9 @@ export class ITab {
 
   public tabGroupId = -1;
 
+  // 创建当前标签的来源标签。关闭当前标签时优先回到来源页，保持 Chrome 的行为。
+  public openerTabId = -1;
+
   // True for an incognito ("无痕") tab — either an individually-opened
   // incognito tab inside a normal window, or any tab in an incognito window.
   // Drives the distinct tab styling and skips history/startup persistence.
@@ -104,15 +107,19 @@ export class ITab {
 
   // Computed
   public get isSelected() {
-    return store.tabs.selectedTabId === this.id;
+    return this.id !== -1 && store.tabs.selectedTabId === this.id;
   }
 
   public get isHovered() {
-    return store.tabs.hoveredTabId === this.id;
+    return this.id !== -1 && store.tabs.hoveredTabId === this.id;
   }
 
   public get isExpanded() {
-    return this.isHovered || this.isSelected || !store.tabs.scrollable;
+    return (
+      this.isHovered ||
+      this.isSelected ||
+      (!store.tabs.scrollable && this.width > TAB_MIN_WIDTH)
+    );
   }
 
   public get isIconSet() {
@@ -137,6 +144,9 @@ export class ITab {
     id: number,
   ) {
     makeObservable(this, {
+      // 顶部标签的关闭按钮密度取决于 width。新标签首帧宽度为 0，布局完成
+      // 后必须通知 React 重渲染，否则悬停按钮会一直维持 0 宽。
+      width: observable,
       addressbarValue: observable,
       url: observable,
       favicon: observable,
@@ -180,7 +190,7 @@ export class ITab {
     if (favicon) this.favicon = favicon;
     this.loading = !this.discarded;
 
-    if (getWebUIURL("newtab").startsWith(url)) {
+    if (getWebUIURL('newtab').startsWith(url)) {
       this.addressbarFocused = true;
     }
 
@@ -193,7 +203,7 @@ export class ITab {
     if (process.env.ENABLE_EXTENSIONS && !this.discarded) {
       // 占位标签(discarded)不注册 browser action:它未加载、非选中,工具栏不
       // 显示其按钮;loadDiscardedTab 走新建流程时再按真实 id 注册,避免错位。
-      const {defaultBrowserActions} = store.extensions;
+      const { defaultBrowserActions } = store.extensions;
 
       for (const item of defaultBrowserActions) {
         store.extensions.addBrowserActionToTab(this.id, item);
@@ -226,7 +236,10 @@ export class ITab {
         this.siteWhitelisted = false;
         return;
       }
-      this.siteWhitelisted = await ipcRenderer.invoke('is-site-whitelisted', hostname);
+      this.siteWhitelisted = await ipcRenderer.invoke(
+        'is-site-whitelisted',
+        hostname,
+      );
     } catch (e) {
       this.siteWhitelisted = false;
     }
@@ -282,6 +295,16 @@ export class ITab {
     }
   }
 
+  // 悬停可只在后台恢复，也可恢复后切换到该标签。
+  public async activateOnHover(switchToTab = false) {
+    if (this.isClosing) return;
+    if (this.discarded) {
+      await store.tabs.loadDiscardedTab(this, switchToTab);
+    } else if (switchToTab && !this.isSelected) {
+      await this.select();
+    }
+  }
+
   public getWidth(containerWidth: number = null, tabs: ITab[] = null) {
     if (this.isPinned) return TAB_PINNED_WIDTH;
 
@@ -296,10 +319,10 @@ export class ITab {
     const slots = store.tabs.getSlots();
     const pinnedWidths =
       slots.filter((s) => s.kind === 'tab' && s.tab.isPinned).length *
-      (TAB_PINNED_WIDTH + TABS_PADDING);
+      (TAB_PINNED_WIDTH + store.tabs.slotPadding);
     const chipWidths = slots
       .filter((s) => s.kind === 'group')
-      .reduce((acc, s) => acc + s.group.width + TABS_PADDING, 0);
+      .reduce((acc, s) => acc + s.group.width + store.tabs.slotPadding, 0);
     const shareTabs =
       slots.filter((s) => s.kind === 'tab' && !s.tab.isPinned).length +
       store.tabs.removedTabs;
@@ -315,10 +338,16 @@ export class ITab {
       store.tabs.leftMargins;
 
     const width =
-      shareTabs > 0 ? (containerWidth - reserved) / shareTabs - TABS_PADDING : TAB_MAX_WIDTH;
+      shareTabs > 0
+        ? (containerWidth - reserved) / shareTabs - store.tabs.slotPadding
+        : TAB_MAX_WIDTH;
 
     if (width > TAB_MAX_WIDTH) return TAB_MAX_WIDTH;
-    if (width < TAB_MIN_WIDTH) return TAB_MIN_WIDTH;
+    const minWidth =
+      store.settings.object.tabOverflowBehavior === 'shrink'
+        ? 0
+        : TAB_MIN_WIDTH;
+    if (width < minWidth) return minWidth;
     return width;
   }
 
@@ -331,7 +360,7 @@ export class ITab {
 
     for (let i = 0; i < slots.length; i++) {
       const slot = slots[i];
-      left += i === 0 ? 0 : CHIP_SLOT_MARGIN;
+      left += i === 0 ? 0 : store.tabs.slotMargin;
 
       const isSelf =
         slot.kind === 'tab'
@@ -342,7 +371,7 @@ export class ITab {
 
       left +=
         (slot.kind === 'group' ? slot.group.width : slot.tab.width) +
-        TABS_PADDING;
+        store.tabs.slotPadding;
     }
 
     return left;
@@ -412,7 +441,7 @@ export class ITab {
     store.tabs.canShowPreview = false;
     ipcRenderer.send(`hide-tab-preview-${store.windowId}`);
 
-    const selected = store.tabs.selectedTabId === this.id;
+    const selected = this.isSelected;
 
     store.startupTabs.removeStartupTabItem(this.id);
 
@@ -422,11 +451,13 @@ export class ITab {
     }
 
     const notClosingTabs = store.tabs.list.filter((x) => !x.isClosing);
-    let index = notClosingTabs.indexOf(this);
+    const index = notClosingTabs.indexOf(this);
 
-    if (store.tabs.list.length === 1) {
+    if (notClosingTabs.length === 1) {
       //closeWindow();
-      store.tabs.addTab();
+      // 关闭最后一个可用标签时补出空白页。批量关闭期间 list 仍保留正在播放
+      // 退出动画的标签，因此必须按 notClosingTabs 判断，不能使用物理数组长度。
+      void store.tabs.addTab(undefined, -1);
     }
 
     this.isClosing = true;
@@ -448,19 +479,11 @@ export class ITab {
     store.tabs.setTabsLefts(true);
 
     if (selected) {
-      index = store.tabs.list.indexOf(this);
-
-      if (index - 1 >= 0 && !store.tabs.list[index - 1].isClosing) {
-        const prevTab = store.tabs.list[index - 1];
-        prevTab.select();
-      } else if (
-        index + 1 < store.tabs.list.length &&
-        !store.tabs.list[index + 1].isClosing &&
-        !store.tabs.scrollable
-      ) {
-        const nextTab = store.tabs.list[index + 1];
-        nextTab.select();
-      }
+      const nextTab = store.tabs.getTabToSelectAfterRemoval(
+        this,
+        notClosingTabs,
+      );
+      nextTab?.select();
     }
 
     this.removeTimeout = setTimeout(() => {

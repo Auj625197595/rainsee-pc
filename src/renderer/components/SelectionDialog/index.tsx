@@ -12,6 +12,8 @@ export const SelectionDialog = observer(
     onDeleteClick,
     onCancelClick,
     onSelectAllClick,
+    onMoveClick,
+    onPinClick,
     selectAllLabel = '全选',
   }: {
     amount: number;
@@ -19,6 +21,8 @@ export const SelectionDialog = observer(
     onDeleteClick: ClickEvent;
     onCancelClick: ClickEvent;
     onSelectAllClick?: ClickEvent;
+    onMoveClick?: ClickEvent;
+    onPinClick?: ClickEvent;
     selectAllLabel?: string;
     theme?: any;
   }) => {
@@ -30,6 +34,16 @@ export const SelectionDialog = observer(
         {onSelectAllClick && (
           <ActionButton variant="ghost" onClick={onSelectAllClick}>
             {selectAllLabel}
+          </ActionButton>
+        )}
+        {onMoveClick && (
+          <ActionButton variant="primary" onClick={onMoveClick}>
+            移动
+          </ActionButton>
+        )}
+        {onPinClick && (
+          <ActionButton variant="ghost" onClick={onPinClick}>
+            置顶
           </ActionButton>
         )}
         <ActionButton variant="danger" onClick={onDeleteClick}>

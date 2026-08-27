@@ -1,7 +1,17 @@
 import * as React from 'react';
 import { observer } from 'mobx-react-lite';
+import { Globe, Warning } from '@phosphor-icons/react';
 
-import { Header, Row, Title, Control, SecondaryText } from '../App/style';
+import {
+  Row,
+  Title,
+  Control,
+  SecondaryText,
+  SettingCopy,
+  SettingGroup,
+  SettingGroupBlock,
+  SettingIcon,
+} from '../App/style';
 import { NormalButton } from '../App';
 
 // view-preload 暴露的纯函数桥(与 downloads store 同一套)。
@@ -54,36 +64,53 @@ export const DefaultBrowser = observer(() => {
   const supported = status ? status.supported : true;
 
   return (
-    <>
-      <Header>默认浏览器</Header>
-      <Row style={{ cursor: 'default' }}>
-        <div>
-          <Title>
-            {isDefault ? '雨见浏览器已是您的默认浏览器' : '雨见浏览器当前不是默认浏览器'}
-          </Title>
-          <SecondaryText>
-            {isDefault
-              ? '点击链接时将使用本浏览器打开。'
-              : 'Windows 10/11 不允许程序自动抢占默认浏览器,点击下方按钮后请在弹出的系统设置中,将“网页浏览器”选择为“雨见浏览器”。'}
-          </SecondaryText>
-        </div>
-        <Control>
-          {isDefault ? (
-            <NormalButton variant="soft" onClick={refresh}>已是默认</NormalButton>
-          ) : (
-            <NormalButton onClick={onSetDefault} disabled={busy}>
-              {busy ? '设置中…' : '设为默认'}
-            </NormalButton>
-          )}
-        </Control>
-      </Row>
-      {!supported && (
+    <SettingGroupBlock>
+      <SettingGroup>
         <Row style={{ cursor: 'default' }}>
-          <SecondaryText>
-            当前为开发模式,无法写入系统注册表,设为默认仅在打包安装后生效。
-          </SecondaryText>
+          <SettingIcon tone="cyan">
+            <Globe size={19} weight="fill" />
+          </SettingIcon>
+          <SettingCopy>
+            <Title>
+              {isDefault
+                ? '雨见浏览器已是您的默认浏览器'
+                : '雨见浏览器当前不是默认浏览器'}
+            </Title>
+            <SecondaryText>
+              {isDefault
+                ? '点击链接时将使用本浏览器打开。'
+                : 'Windows 10/11 不允许程序自动抢占默认浏览器,点击下方按钮后请在弹出的系统设置中,将“网页浏览器”选择为“雨见浏览器”。'}
+            </SecondaryText>
+          </SettingCopy>
+          <Control>
+            {isDefault ? (
+              <NormalButton variant="soft" onClick={refresh}>
+                已是默认
+              </NormalButton>
+            ) : (
+              <NormalButton
+                variant="soft"
+                onClick={onSetDefault}
+                disabled={busy}
+              >
+                {busy ? '设置中…' : '设为默认'}
+              </NormalButton>
+            )}
+          </Control>
         </Row>
-      )}
-    </>
+        {!supported && (
+          <Row style={{ cursor: 'default' }}>
+            <SettingIcon tone="orange">
+              <Warning size={19} weight="fill" />
+            </SettingIcon>
+            <SettingCopy>
+              <SecondaryText>
+                当前为开发模式,无法写入系统注册表,设为默认仅在打包安装后生效。
+              </SecondaryText>
+            </SettingCopy>
+          </Row>
+        )}
+      </SettingGroup>
+    </SettingGroupBlock>
   );
 });

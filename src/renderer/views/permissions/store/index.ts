@@ -4,6 +4,7 @@ import { ipcRenderer } from 'electron';
 import { getDomain } from '~/utils';
 import { DialogStore } from '~/models/dialog-store';
 import { getWebUIURL } from '~/common/webui';
+import { EXTERNAL_NAVIGATION_PERMISSION } from '~/utils/permissions';
 
 export class Store extends DialogStore {
   public permissions: string[] = [];
@@ -12,6 +13,12 @@ export class Store extends DialogStore {
 
   public remember = false;
 
+  public requestName = '';
+
+  public targetUrl = '';
+
+  public targetDomain = '';
+
   public constructor() {
     super({ hideOnBlur: false });
 
@@ -19,12 +26,18 @@ export class Store extends DialogStore {
       permissions: observable,
       domain: observable,
       remember: observable,
+      requestName: observable,
+      targetUrl: observable,
+      targetDomain: observable,
     });
 
     ipcRenderer.on('update-tab-info', (e, tabId, { url, name, details }) => {
       this.domain = getDomain(url);
       this.permissions = [];
       this.remember = false;
+      this.requestName = name || '';
+      this.targetUrl = details?.targetUrl || '';
+      this.targetDomain = getDomain(this.targetUrl);
 
       console.log('[permissions][dialog] update-tab-info received', {
         tabId,
@@ -86,8 +99,9 @@ export const toggleRemember = () => {
 };
 
 export const openSettings = () => {
+  const site = store.domain ? `&site=${encodeURIComponent(store.domain)}` : '';
   ipcRenderer.send(`add-tab-${store.windowId}`, {
-    url: `${getWebUIURL('settings')}?section=permissions`,
+    url: `${getWebUIURL('settings')}?section=permissions${site}`,
     active: true,
   });
   store.send('result', {
@@ -95,3 +109,6 @@ export const openSettings = () => {
     remember: false,
   });
 };
+
+export const isExternalNavigationRequest = () =>
+  store.requestName === EXTERNAL_NAVIGATION_PERMISSION;

@@ -1,44 +1,39 @@
-import { ipcRenderer } from 'electron';
 import * as React from 'react';
 import { observer } from 'mobx-react-lite';
+import { UserCircle } from '@phosphor-icons/react';
 
 import store from '../../store';
 import { IFormFillMenuItem } from '~/interfaces';
-import { StyledList, StyledItem, Text, SubText } from './styles';
+import {
+  StyledList,
+  StyledItem,
+  ItemIcon,
+  ItemBody,
+  Text,
+  Details,
+  PasswordMask,
+  Host,
+} from './styles';
 
-const onClick = (data: IFormFillMenuItem) => () => {
-  ipcRenderer.send(`form-fill-update-${store.windowId}`, data._id, true);
-  ipcRenderer.send(`form-fill-hide-${store.windowId}`);
-};
+const Item = observer(({ data }: { data: IFormFillMenuItem }) => (
+  <StyledItem onClick={() => void store.fill(data)} title={data.host || ''}>
+    <ItemIcon>
+      <UserCircle size={18} weight="regular" />
+    </ItemIcon>
+    <ItemBody>
+      <Text>{data.text || '无用户名'}</Text>
+      <Details>
+        <PasswordMask>{data.passwordMask || ''}</PasswordMask>
+        {data.host && <Host>{data.host}</Host>}
+      </Details>
+    </ItemBody>
+  </StyledItem>
+));
 
-const onMouseEnter = (data: IFormFillMenuItem) => () => {
-  ipcRenderer.send(`form-fill-update-${store.windowId}`, data._id);
-};
-
-const onMouseLeave = () => {
-  ipcRenderer.send(`form-fill-update-${store.windowId}`);
-};
-
-const Item = observer(({ data }: { data: IFormFillMenuItem }) => {
-  return (
-    <StyledItem
-      subtext={!!data.subtext}
-      onClick={onClick(data)}
-      onMouseEnter={onMouseEnter(data)}
-      onMouseLeave={onMouseLeave}
-    >
-      <Text>{data.text}</Text>
-      <SubText>{data.subtext}</SubText>
-    </StyledItem>
-  );
-});
-
-export default observer(() => {
-  return (
-    <StyledList>
-      {store.items.map((item) => (
-        <Item key={item._id} data={item} />
-      ))}
-    </StyledList>
-  );
-});
+export default observer(() => (
+  <StyledList>
+    {store.items.map((item) => (
+      <Item key={item._id} data={item} />
+    ))}
+  </StyledList>
+));

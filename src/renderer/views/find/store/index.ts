@@ -61,6 +61,15 @@ export class Store extends DialogStore {
         this.sendInfo();
       },
     );
+
+    // Ctrl+F 再次按下(搜索框已开启)时主进程发来此消息:重新聚焦输入框并选中文本。
+    ipcRenderer.on('refocus-find-input', () => {
+      const input = this.findInputRef.current;
+      if (input) {
+        input.focus();
+        input.select();
+      }
+    });
   }
 
   public sendInfo() {

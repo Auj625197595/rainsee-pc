@@ -4,6 +4,11 @@ type DragLike = {
   dataTransfer?: DataTransfer | null;
 };
 
+export type DraggedLinkData = {
+  url: string;
+  title: string;
+};
+
 const escapeHTML = (value: string) =>
   value
     .replace(/&/g, '&amp;')
@@ -13,18 +18,34 @@ const escapeHTML = (value: string) =>
 
 export const isLinkDragEvent = (e: DragLike): boolean => {
   const types = e.dataTransfer ? Array.from(e.dataTransfer.types || []) : [];
-  return types.includes('text/uri-list') || types.includes('text/plain');
+  return (
+    types.includes('text/uri-list') ||
+    types.includes('text/x-moz-url') ||
+    types.includes('text/html') ||
+    types.includes('text/plain')
+  );
 };
 
-export const getDraggedLinkURL = (
+export const getDraggedLinkData = (
   dataTransfer: DataTransfer | null | undefined,
-): string => {
-  if (!dataTransfer) return '';
+): DraggedLinkData | null => {
+  if (!dataTransfer) return null;
 
   let url = '';
+  let title = '';
+  const mozURL = dataTransfer.getData('text/x-moz-url');
+
+  if (mozURL) {
+    const [mozLink, mozTitle] = mozURL.split(/\r?\n/);
+    if (mozLink && isURL(mozLink.trim())) {
+      url = mozLink.trim();
+      title = (mozTitle || '').trim();
+    }
+  }
+
   const uri = dataTransfer.getData('text/uri-list');
 
-  if (uri) {
+  if (!url && uri) {
     url =
       uri
         .split(/\r?\n/)
@@ -36,8 +57,27 @@ export const getDraggedLinkURL = (
     url = (dataTransfer.getData('text/plain') || '').trim();
   }
 
-  return url && isURL(url) ? url : '';
+  const html = dataTransfer.getData('text/html');
+  if (html) {
+    try {
+      const anchor = new DOMParser()
+        .parseFromString(html, 'text/html')
+        .querySelector('a');
+      if (!url) url = (anchor?.getAttribute('href') || '').trim();
+      if (!title) title = (anchor?.textContent || '').trim();
+    } catch {
+      // 拖拽来源提供了无效 HTML 时使用 URL 作为标题。
+    }
+  }
+
+  if (!url || !isURL(url)) return null;
+
+  return { url, title: title || url };
 };
+
+export const getDraggedLinkURL = (
+  dataTransfer: DataTransfer | null | undefined,
+): string => getDraggedLinkData(dataTransfer)?.url || '';
 
 export const setDraggedLinkData = (
   dataTransfer: DataTransfer | null | undefined,

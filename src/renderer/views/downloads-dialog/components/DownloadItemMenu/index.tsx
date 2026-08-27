@@ -68,7 +68,7 @@ export const DownloadItemMenu = observer(
 
         {!item.completed &&
           !item.canceled &&
-          (item.paused ? (
+          (item.paused && !item.retrying ? (
             <ContextMenuItem onClick={wrap(item, resumeDownload)} icon={ICON_RESUME}>
               恢复下载
             </ContextMenuItem>

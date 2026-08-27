@@ -2,10 +2,11 @@ import { app, ipcMain, Session } from 'electron'
 import debug from 'debug'
 
 import { resolvePartition } from './partition'
+import { sendToLiveMainFrame } from './safe-send'
+import { matchesPattern } from './api/common'
 
 // Shorten base64 encoded icons
-const shortenValues = (k: string, v: any) =>
-  typeof v === 'string' && v.length > 128 ? v.substr(0, 128) + '...' : v
+const shortenValues = (k: string, v: any) => (typeof v === 'string' && v.length > 128 ? v.substr(0, 128) + '...' : v)
 
 debug.formatters.r = (value: any) => {
   return value ? JSON.stringify(value, shortenValues, '  ') : value
@@ -32,6 +33,25 @@ const getHostFromEvent = (event: IpcAnyEvent) => {
 }
 
 const d = debug('electron-chrome-extensions:router')
+const routerVerbose =
+  process.env.CRX_WEBREQUEST_DEBUG === '1' || process.env.CRX_VERBOSE === '1'
+const isWebRequestEvent = (eventName: string) => eventName.startsWith('webRequest.')
+const isMediaWebRequest = (eventName: string, args: any[]) =>
+  isWebRequestEvent(eventName) &&
+  (args[0]?.type === 'media' ||
+    args[0]?.type === 'object' ||
+    /\.(?:m3u8|mpd|mp4|webm|ts)(?:$|[?#])/i.test(args[0]?.url || ''))
+const shortRouterUrl = (url: unknown) => {
+  const value = typeof url === 'string' ? url : ''
+  return value.length > 180 ? `${value.slice(0, 177)}...` : value
+}
+let mediaRouterLogCount = 0
+const logMediaRouter = (message: string) => {
+  if (!routerVerbose) return
+  if (mediaRouterLogCount >= 200) return
+  mediaRouterLogCount++
+  console.log(`[crx-router] ${message}`)
+}
 
 const DEFAULT_SESSION = '_self'
 
@@ -66,6 +86,7 @@ class RoutingDelegate {
     ipcMain.handle('crx-msg-remote', this.onRemoteMessage)
     ipcMain.on('crx-add-listener', this.onAddListener)
     ipcMain.on('crx-remove-listener', this.onRemoveListener)
+    ipcMain.on('crx-perf-renderer', this.onRendererPerf)
   }
 
   addObserver(observer: RoutingDelegateObserver) {
@@ -77,19 +98,15 @@ class RoutingDelegate {
     }: Electron.Event<Electron.ServiceWorkersRunningStatusChangedEventParams>) => {
       if (runningStatus !== 'starting') return
 
-      const serviceWorker = (observer.session as any).serviceWorkers.getWorkerFromVersionID(
-        versionId,
-      )
-      if (
-        serviceWorker?.scope?.startsWith('chrome-extension://') &&
-        !this.workers.has(serviceWorker)
-      ) {
+      const serviceWorker = (observer.session as any).serviceWorkers.getWorkerFromVersionID(versionId)
+      if (serviceWorker?.scope?.startsWith('chrome-extension://') && !this.workers.has(serviceWorker)) {
         d(`listening to service worker [versionId:${versionId}, scope:${serviceWorker.scope}]`)
         this.workers.add(serviceWorker)
         serviceWorker.ipc.handle('crx-msg', this.onRouterMessage)
         serviceWorker.ipc.handle('crx-msg-remote', this.onRemoteMessage)
         serviceWorker.ipc.on('crx-add-listener', this.onAddListener)
         serviceWorker.ipc.on('crx-remove-listener', this.onRemoveListener)
+        serviceWorker.ipc.on('crx-perf-renderer', this.onRendererPerf)
       }
     }
     observer.session.serviceWorkers.on('running-status-changed', maybeListenForWorkerEvents)
@@ -116,17 +133,19 @@ class RoutingDelegate {
   ) => {
     d(`received remote '${handlerName}' for '${sessionPartition}'`, args)
 
-    const ses =
-      sessionPartition === DEFAULT_SESSION
-        ? getSessionFromEvent(event)
-        : resolvePartition(sessionPartition)
+    const ses = sessionPartition === DEFAULT_SESSION ? getSessionFromEvent(event) : resolvePartition(sessionPartition)
 
     const observer = this.sessionMap.get(ses)
 
     return observer?.onExtensionMessage(event, undefined, handlerName, ...args)
   }
 
-  private onAddListener = (event: IpcAnyEvent, extensionId: string, eventName: string) => {
+  private onAddListener = (
+    event: IpcAnyEvent,
+    extensionId: string,
+    eventName: string,
+    registrations?: WebRequestRegistration[],
+  ) => {
     const observer = this.sessionMap.get(getSessionFromEvent(event))
     const listener: EventListener =
       event.type === 'frame'
@@ -134,19 +153,17 @@ class RoutingDelegate {
             type: event.type,
             extensionId,
             host: event.sender,
+            registrations,
           }
         : {
             type: event.type,
             extensionId,
+            registrations,
           }
     return observer?.addListener(listener, extensionId, eventName)
   }
 
-  private onRemoveListener = (
-    event: Electron.IpcMainInvokeEvent,
-    extensionId: string,
-    eventName: string,
-  ) => {
+  private onRemoveListener = (event: Electron.IpcMainInvokeEvent, extensionId: string, eventName: string) => {
     const observer = this.sessionMap.get(getSessionFromEvent(event))
     const listener: EventListener =
       event.type === 'frame'
@@ -160,6 +177,25 @@ class RoutingDelegate {
             extensionId,
           }
     return observer?.removeListener(listener, extensionId, eventName)
+  }
+
+  private onRendererPerf = (_event: IpcAnyEvent, payload: any) => {
+    if (!payload || typeof payload !== 'object' || !Array.isArray(payload.events)) return
+    const extensionId = typeof payload.extensionId === 'string' ? payload.extensionId.slice(0, 64) : 'unknown'
+    const windowMs = Math.max(0, Number(payload.windowMs) || 0)
+    const summaries = payload.events.slice(0, 50).map((item: any) => {
+      const eventName = typeof item?.eventName === 'string' ? item.eventName.slice(0, 80) : 'unknown'
+      return (
+        `${eventName} dispatches=${Math.max(0, Number(item?.dispatches) || 0)} ` +
+        `callbacks=${Math.max(0, Number(item?.callbacks) || 0)} ` +
+        `totalMs=${Math.max(0, Number(item?.totalMs) || 0).toFixed(1)} ` +
+        `maxMs=${Math.max(0, Number(item?.maxMs) || 0).toFixed(1)} ` +
+        `maxCallbackMs=${Math.max(0, Number(item?.maxCallbackMs) || 0).toFixed(1)}`
+      )
+    })
+    if (summaries.length > 0) {
+      console.log(`[crx-perf][callbacks] ext=${extensionId} windowMs=${windowMs} ${summaries.join(' | ')}`)
+    }
   }
 }
 
@@ -175,8 +211,16 @@ type ExtendedExtension = Omit<Electron.Extension, 'manifest'> & {
 }
 
 export type ExtensionEvent =
-  | { type: 'frame'; sender: Electron.WebContents; extension: ExtendedExtension }
-  | { type: 'service-worker'; sender: Electron.ServiceWorkerMain; extension: ExtendedExtension }
+  | {
+      type: 'frame'
+      sender: Electron.WebContents
+      extension: ExtendedExtension
+    }
+  | {
+      type: 'service-worker'
+      sender: Electron.ServiceWorkerMain
+      extension: ExtendedExtension
+    }
 
 export type HandlerCallback = (event: ExtensionEvent, ...args: any[]) => any
 
@@ -196,16 +240,70 @@ interface Handler extends HandlerOptions {
 /** e.g. 'tabs.query' */
 type EventName = string
 
-const pendingTargetEvents = new Set<EventName>([
-  'runtime.onInstalled',
-  'runtime.onStartup',
-])
+const pendingTargetEvents = new Set<EventName>(['runtime.onInstalled', 'runtime.onStartup'])
+// Chrome starts an MV3 worker before dispatching its first event, but Electron
+// can expose the worker a few milliseconds before the script has registered
+// its listeners. Keep only media webRequest events for that narrow cold-start
+// window; this avoids dropping the first video request without retaining a
+// general network-event backlog or waking unrelated extensions indefinitely.
+const pendingColdWorkerWebRequestTtlMs = 30000
+
+interface PendingTargetEvent {
+  args: any[]
+  expiresAt: number
+  resolve: (delivered: boolean) => void
+  timer?: ReturnType<typeof setTimeout>
+}
 
 type HandlerMap = Map<EventName, Handler>
 
-type FrameEventListener = { type: 'frame'; host: Electron.WebContents; extensionId: string }
-type SWEventListener = { type: 'service-worker'; extensionId: string }
+interface WebRequestRegistration {
+  filter?: {
+    urls?: string[]
+    types?: string[]
+    tabId?: number
+    windowId?: number
+  }
+  extraInfoSpec?: string[]
+}
+
+type FrameEventListener = {
+  type: 'frame'
+  host: Electron.WebContents
+  extensionId: string
+  registrations?: WebRequestRegistration[]
+}
+type SWEventListener = {
+  type: 'service-worker'
+  extensionId: string
+  registrations?: WebRequestRegistration[]
+}
 type EventListener = FrameEventListener | SWEventListener
+
+const webRequestFilterMatches = (details: any, registration: WebRequestRegistration) => {
+  const filter = registration?.filter
+  if (!filter) return true
+  if (typeof filter.tabId === 'number' && filter.tabId !== details?.tabId) return false
+  if (
+    typeof filter.windowId === 'number' &&
+    typeof details?.windowId === 'number' &&
+    filter.windowId !== details.windowId
+  ) {
+    return false
+  }
+  if (Array.isArray(filter.types) && filter.types.length > 0) {
+    if (!filter.types.includes(details?.type)) return false
+  }
+  if (!Array.isArray(filter.urls) || filter.urls.length === 0) return true
+  if (typeof details?.url !== 'string') return false
+  return filter.urls.some((pattern) => {
+    try {
+      return matchesPattern(pattern, details.url)
+    } catch {
+      return false
+    }
+  })
+}
 
 const getHostId = (host: FrameEventListener['host']) => host.id
 const getHostUrl = (host: FrameEventListener['host']) => host.getURL?.()
@@ -223,10 +321,7 @@ const eventListenerEquals = (a: EventListener) => (b: EventListener) => {
 export class ExtensionRouter {
   private handlers: HandlerMap = new Map()
   private listeners: Map<EventName, EventListener[]> = new Map()
-  private pendingExtensionEvents: Map<
-    string,
-    Map<string, Array<{ args: any[]; expiresAt: number }>>
-  > = new Map()
+  private pendingExtensionEvents: Map<string, Map<string, PendingTargetEvent[]>> = new Map()
 
   /**
    * Optional resolver for runtime-granted permissions (declared as
@@ -254,10 +349,19 @@ export class ExtensionRouter {
 
   private extensionWorkers: Set<any> = new Set()
 
-  constructor(
-    public session: Electron.Session,
-    private delegate: RoutingDelegate = RoutingDelegate.get(),
-  ) {
+  private serviceWorkerResolver?: (extensionId: string) => Promise<any>
+
+  /** Optional host transport for worker-originated pull IPC. */
+  private serviceWorkerSender?: (
+    extensionId: string,
+    serviceWorker: any,
+    channel: string,
+    ...args: any[]
+  ) => void
+
+  private observedListenerHosts: WeakSet<Electron.WebContents> = new WeakSet()
+
+  constructor(public session: Electron.Session, private delegate: RoutingDelegate = RoutingDelegate.get()) {
     this.delegate.addObserver(this)
 
     const sessionExtensions = session.extensions || session
@@ -272,25 +376,38 @@ export class ExtensionRouter {
       }
     })
 
-    session.serviceWorkers.on(
-      'running-status-changed' as any,
-      ({ runningStatus, versionId }: any) => {
-        if (runningStatus !== 'starting') return
+    session.serviceWorkers.on('running-status-changed' as any, ({ runningStatus, versionId }: any) => {
+      if (runningStatus !== 'starting') return
 
-        const serviceWorker = (session as any).serviceWorkers.getWorkerFromVersionID(versionId)
-        if (!serviceWorker) return
+      const serviceWorker = (session as any).serviceWorkers.getWorkerFromVersionID(versionId)
+      if (!serviceWorker) return
 
-        const { scope } = serviceWorker
-        if (!scope.startsWith('chrome-extension:')) return
+      const { scope } = serviceWorker
+      if (!scope.startsWith('chrome-extension:')) return
 
-        if (this.extensionHosts.has(serviceWorker)) {
-          d('%s running status changed to %s', scope, runningStatus)
-        } else {
-          d(`storing reference to background service worker [url:'${scope}']`)
-          this.extensionWorkers.add(serviceWorker)
-        }
-      },
-    )
+      if (this.extensionHosts.has(serviceWorker)) {
+        d('%s running status changed to %s', scope, runningStatus)
+      } else {
+        d(`storing reference to background service worker [url:'${scope}']`)
+        this.extensionWorkers.add(serviceWorker)
+      }
+    })
+  }
+
+  /** Queue event delivery behind the hosted worker bridge readiness barrier. */
+  setServiceWorkerResolver(resolver: (extensionId: string) => Promise<any>) {
+    this.serviceWorkerResolver = resolver
+  }
+
+  setServiceWorkerSender(
+    sender: (
+      extensionId: string,
+      serviceWorker: any,
+      channel: string,
+      ...args: any[]
+    ) => void,
+  ) {
+    this.serviceWorkerSender = sender
   }
 
   private filterListeners(predicate: (listener: EventListener) => boolean) {
@@ -311,12 +428,30 @@ export class ExtensionRouter {
   }
 
   private observeListenerHost(host: FrameEventListener['host']) {
+    if (this.observedListenerHosts.has(host)) return
+    this.observedListenerHosts.add(host)
     const hostId = getHostId(host)
     d(`observing listener [id:${hostId}, url:'${getHostUrl(host)}']`)
     host.once('destroyed', () => {
       d(`extension host destroyed [id:${hostId}]`)
       this.filterListeners((listener) => listener.type !== 'frame' || listener.host !== host)
     })
+  }
+
+  private hasBackgroundServiceWorker(extensionId: string): boolean {
+    const sessionExtensions = this.session.extensions || this.session
+    const extension = sessionExtensions.getExtension(extensionId)
+    return typeof (extension?.manifest as any)?.background?.service_worker === 'string'
+  }
+
+  private shouldQueueColdWorkerWebRequest(
+    targetExtensionId: string | undefined,
+    eventName: string,
+    args: any[],
+  ) {
+    return !!targetExtensionId &&
+      isMediaWebRequest(eventName, args) &&
+      this.hasBackgroundServiceWorker(targetExtensionId)
   }
 
   addListener(listener: EventListener, extensionId: string, eventName: string) {
@@ -336,14 +471,27 @@ export class ExtensionRouter {
     const existingEventListener = eventListeners.find(eventListenerEquals(listener))
 
     if (existingEventListener) {
+      if (listener.registrations) {
+        existingEventListener.registrations = listener.registrations
+      }
       d(`ignoring existing '${eventName}' event listener for ${extensionId}`)
     } else {
       d(`adding '${eventName}' event listener for ${extensionId}`)
+      if (routerVerbose && isWebRequestEvent(eventName)) {
+        console.log(
+          `[crx-router] listener-add event=${eventName} ext=${extensionId} ` +
+            `host=${listener.type}`,
+        )
+      }
       eventListeners.push(listener)
       if (listener.type === 'frame' && listener.host) {
         this.observeListenerHost(listener.host)
       }
-      this.flushPendingEvent(extensionId, eventName)
+      const waitsForWorker =
+        pendingTargetEvents.has(eventName) &&
+        listener.type !== 'service-worker' &&
+        this.hasBackgroundServiceWorker(extensionId)
+      if (!waitsForWorker) this.flushPendingEvent(extensionId, eventName)
     }
   }
 
@@ -403,19 +551,20 @@ export class ExtensionRouter {
       // Permissions declared as `optional_permissions` and granted at runtime
       // via chrome.permissions.request are not in the static manifest list, so
       // consult the runtime resolver (PermissionsAPI) as a fallback.
-      const granted =
-        !!extensionId && (this.permissionResolver?.(extensionId, handler.permission) ?? false)
+      const granted = !!extensionId && (this.permissionResolver?.(extensionId, handler.permission) ?? false)
       if (!extension || (!declared && !granted)) {
-        throw new Error(
-          `${handlerName} requires an extension with ${handler.permission} permissions`,
-        )
+        throw new Error(`${handlerName} requires an extension with ${handler.permission} permissions`)
       }
     }
 
     const extEvent: ExtensionEvent =
       event.type === 'frame'
         ? { type: event.type, sender: event.sender, extension: extension! }
-        : { type: event.type, sender: event.serviceWorker, extension: extension! }
+        : {
+            type: event.type,
+            sender: event.serviceWorker,
+            extension: extension!,
+          }
 
     const result = await handler.callback(extEvent, ...args)
 
@@ -447,9 +596,18 @@ export class ExtensionRouter {
     return (this.listeners.get(eventName)?.length ?? 0) > 0
   }
 
-  listenerExtensionIds(eventName: EventName): string[] {
+  listenerExtensionIds(eventName: EventName, details?: any): string[] {
     return Array.from(
-      new Set((this.listeners.get(eventName) || []).map((listener) => listener.extensionId)),
+      new Set(
+        (this.listeners.get(eventName) || [])
+          .filter(
+            (listener) =>
+              !details ||
+              !listener.registrations ||
+              listener.registrations.some((registration) => webRequestFilterMatches(details, registration)),
+          )
+          .map((listener) => listener.extensionId),
+      ),
     )
   }
 
@@ -457,45 +615,97 @@ export class ExtensionRouter {
    * Sends extension event to the host for the given extension ID if it
    * registered a listener for it.
    */
-  sendEvent(targetExtensionId: string | undefined, eventName: string, ...args: any[]) {
+  sendEvent(
+    targetExtensionId: string | undefined,
+    eventName: string,
+    ...args: any[]
+  ): Promise<boolean> | undefined {
     const { listeners } = this
     let eventListeners = listeners.get(eventName)
     const ipcName = `crx-${eventName}`
+    const trackDelivery = !!targetExtensionId && pendingTargetEvents.has(eventName)
+    const waitsForWorker =
+      trackDelivery &&
+      !!targetExtensionId &&
+      this.hasBackgroundServiceWorker(targetExtensionId) &&
+      !eventListeners?.some(
+        (listener) =>
+          listener.extensionId === targetExtensionId &&
+          listener.type === 'service-worker',
+      )
 
     // 热路径(webRequest 每请求都会进):不再逐请求 console.log,只走 debug(d()),
     // 否则主进程同步镜像日志会把 IPC 处理拖慢、让阻塞响应错过窗口。
-    if (!eventListeners || eventListeners.length === 0) {
+    if (!eventListeners || eventListeners.length === 0 || waitsForWorker) {
       // Ignore events with no listeners
-      if (targetExtensionId && pendingTargetEvents.has(eventName)) {
-        this.queuePendingEvent(targetExtensionId, eventName, args)
+      if (
+        routerVerbose &&
+        (isMediaWebRequest(eventName, args) || isWebRequestEvent(eventName))
+      ) {
+        console.log(
+          `[crx-router] event-drop event=${eventName} ext=${targetExtensionId || '-'} ` +
+            `reason=${waitsForWorker ? 'worker-listener-pending' : 'no-listener'}`,
+        )
       }
-      return
+      if (isMediaWebRequest(eventName, args)) {
+        if (routerVerbose) {
+          logMediaRouter(
+            `event-drop event=${eventName} ext=${targetExtensionId || '-'} ` +
+            `reason=${waitsForWorker ? 'worker-listener-pending' : 'no-listener'} ` +
+            `url=${shortRouterUrl(args[0]?.url)}`,
+          )
+        }
+      }
+      if (trackDelivery || this.shouldQueueColdWorkerWebRequest(targetExtensionId, eventName, args)) {
+        return this.queuePendingEvent(targetExtensionId, eventName, args)
+      }
+      return undefined
     }
 
     let sentCount = 0
+    const serviceDeliveries: Array<Promise<boolean>> | undefined = trackDelivery ? [] : undefined
+    const frameDeliveries: Array<Promise<boolean>> | undefined = trackDelivery ? [] : undefined
     for (const listener of eventListeners) {
-      const { type, extensionId } = listener
+      const { extensionId } = listener
 
       if (targetExtensionId && targetExtensionId !== extensionId) {
         continue
       }
 
-      if (type === 'service-worker') {
+      if (listener.type === 'service-worker') {
         const scope = `chrome-extension://${extensionId}/`
-        this.session.serviceWorkers
-          .startWorkerForScope(scope)
+        const workerPromise = this.serviceWorkerResolver
+          ? this.serviceWorkerResolver(extensionId)
+          : this.session.serviceWorkers.startWorkerForScope(scope)
+        const delivery = workerPromise
           .then((serviceWorker) => {
-            serviceWorker.send(ipcName, ...args)
+            if (this.serviceWorkerSender) {
+              this.serviceWorkerSender(extensionId, serviceWorker, ipcName, ...args)
+            } else {
+              serviceWorker.send(ipcName, ...args)
+            }
+            return true
           })
-          .catch((error) => {
+          .catch(() => {
             d('failed to send %s to %s', eventName, extensionId)
+            if (routerVerbose) {
+              console.log(
+                `[crx-router] worker-delivery-failed event=${eventName} ext=${extensionId}`,
+              )
+            }
+            if (routerVerbose && isMediaWebRequest(eventName, args)) {
+              logMediaRouter(`worker-delivery-failed event=${eventName} ext=${extensionId}`)
+            }
+            return false
           })
+        if (serviceDeliveries) serviceDeliveries.push(delivery)
       } else {
-        if (listener.host.isDestroyed()) {
+        if (!sendToLiveMainFrame(listener.host, ipcName, ...args)) {
           d(`Unable to send '${eventName}' to extension host for ${extensionId}`)
-          return
+          if (frameDeliveries) frameDeliveries.push(Promise.resolve(false))
+          continue
         }
-        listener.host.send(ipcName, ...args)
+        if (frameDeliveries) frameDeliveries.push(Promise.resolve(true))
       }
 
       sentCount++
@@ -503,47 +713,84 @@ export class ExtensionRouter {
 
     if (
       sentCount === 0 &&
-      targetExtensionId &&
-      pendingTargetEvents.has(eventName)
+      (trackDelivery || this.shouldQueueColdWorkerWebRequest(targetExtensionId, eventName, args))
     ) {
-      this.queuePendingEvent(targetExtensionId, eventName, args)
+      return this.queuePendingEvent(targetExtensionId, eventName, args)
     }
 
     d(`sent '${eventName}' event to ${sentCount} listeners`)
+    if (
+      routerVerbose &&
+      (isMediaWebRequest(eventName, args) || isWebRequestEvent(eventName))
+    ) {
+      console.log(
+        `[crx-router] event-send event=${eventName} target=${targetExtensionId || '-'} ` +
+          `listeners=${sentCount}`,
+      )
+    }
+    if (routerVerbose && isMediaWebRequest(eventName, args)) {
+      logMediaRouter(
+        `event-send event=${eventName} target=${targetExtensionId || '-'} ` +
+        `listeners=${sentCount} url=${shortRouterUrl(args[0]?.url)}`,
+      )
+    }
+    const deliveries = serviceDeliveries?.length
+      ? serviceDeliveries
+      : frameDeliveries?.length
+        ? frameDeliveries
+        : undefined
+    return deliveries
+      ? Promise.all(deliveries).then((results) => results.some(Boolean))
+      : undefined
   }
 
-  private queuePendingEvent(targetExtensionId: string, eventName: string, args: any[]) {
-    const ttlMs = 15000
-    const expiresAt = Date.now() + ttlMs
-    let extEvents = this.pendingExtensionEvents.get(targetExtensionId)
-    if (!extEvents) {
-      extEvents = new Map()
-      this.pendingExtensionEvents.set(targetExtensionId, extEvents)
-    }
-    const bucket = extEvents.get(eventName) || []
-    bucket.push({ args, expiresAt })
-    extEvents.set(
-      eventName,
-      bucket.filter((item) => item.expiresAt > Date.now()).slice(-4),
-    )
-    // Self-cleanup: most extensions never register an onInstalled/onStartup
-    // listener, so flushPendingEvent (which only runs on addListener) never
-    // fires for them and the bucket would otherwise sit until process exit.
-    // Reap this ext+event once past TTL. Idempotent — if it was flushed or
-    // re-armed in the meantime, the filter/delete are harmless no-ops.
-    setTimeout(() => {
-      const ext = this.pendingExtensionEvents.get(targetExtensionId)
-      const b = ext?.get(eventName)
-      if (!b) return
-      const live = b.filter((it) => it.expiresAt > Date.now())
-      if (live.length === 0) {
-        ext?.delete(eventName)
-        if (ext && ext.size === 0) this.pendingExtensionEvents.delete(targetExtensionId)
-      } else {
-        ext!.set(eventName, live)
+  private queuePendingEvent(
+    targetExtensionId: string,
+    eventName: string,
+    args: any[],
+  ): Promise<boolean> {
+    // A cold MV3 worker can approach the host's 20 second startup budget.
+    // Install events have a bounded retry window. Startup events remain in
+    // memory until this session's worker registers; the per-event cap still
+    // bounds memory without a timer that can drop a slow cold-start event.
+    const hasDeadline =
+      eventName === 'runtime.onInstalled' ||
+      this.shouldQueueColdWorkerWebRequest(targetExtensionId, eventName, args)
+    return new Promise<boolean>((resolve) => {
+      const expiresAt = hasDeadline ? Date.now() + pendingColdWorkerWebRequestTtlMs : Infinity
+      let extEvents = this.pendingExtensionEvents.get(targetExtensionId)
+      if (!extEvents) {
+        extEvents = new Map()
+        this.pendingExtensionEvents.set(targetExtensionId, extEvents)
       }
-    }, ttlMs + 50)
-    d(`queued pending '${eventName}' event for ${targetExtensionId}`)
+      const bucket = extEvents.get(eventName) || []
+      const item = {} as PendingTargetEvent
+      item.args = args
+      item.expiresAt = expiresAt
+      item.resolve = resolve
+      if (hasDeadline) {
+        item.timer = setTimeout(() => {
+          const currentExtEvents = this.pendingExtensionEvents.get(targetExtensionId)
+          const currentBucket = currentExtEvents?.get(eventName)
+          if (!currentBucket) return
+          const index = currentBucket.indexOf(item)
+          if (index < 0) return
+          currentBucket.splice(index, 1)
+          if (currentBucket.length === 0) currentExtEvents?.delete(eventName)
+          if (currentExtEvents?.size === 0) this.pendingExtensionEvents.delete(targetExtensionId)
+          resolve(false)
+        }, pendingColdWorkerWebRequestTtlMs)
+        item.timer.unref?.()
+      }
+      bucket.push(item)
+      while (bucket.length > 4) {
+        const dropped = bucket.shift()!
+        if (dropped.timer) clearTimeout(dropped.timer)
+        dropped.resolve(false)
+      }
+      extEvents.set(eventName, bucket)
+      d(`queued pending '${eventName}' event for ${targetExtensionId}`)
+    })
   }
 
   private flushPendingEvent(extensionId: string, eventName: string) {
@@ -553,10 +800,18 @@ export class ExtensionRouter {
 
     const now = Date.now()
     const live = bucket.filter((item) => item.expiresAt > now)
+    const expired = bucket.filter((item) => item.expiresAt <= now)
     extEvents?.delete(eventName)
     if (extEvents && extEvents.size === 0) this.pendingExtensionEvents.delete(extensionId)
+    for (const item of expired) {
+      if (item.timer) clearTimeout(item.timer)
+      item.resolve(false)
+    }
     for (const item of live) {
-      this.sendEvent(extensionId, eventName, ...item.args)
+      if (item.timer) clearTimeout(item.timer)
+      const delivery = this.sendEvent(extensionId, eventName, ...item.args)
+      if (delivery) void delivery.then(item.resolve)
+      else item.resolve(false)
     }
   }
 

@@ -4,8 +4,6 @@ import { ipcRenderer } from 'electron';
 import { makeObservable, observable } from 'mobx';
 // 导入自定义的 DialogStore 类
 import { DialogStore } from '~/models/dialog-store';
-// 导入 electron 远程模块
-import * as remote from '@electron/remote';
 
 // 创建 Store 类，并继承自 DialogStore 类
 export class Store extends DialogStore {
@@ -16,7 +14,7 @@ export class Store extends DialogStore {
 
   // 构造函数
   public constructor() {
-    // 调用父类的构造函数（持久弹窗：启动预加载、常驻复用，自己处理 visible 事件）
+    // 持久弹窗自己处理 visible 事件；隐藏后由主进程统一回收。
     super({persistent: true, visibilityWrapper: false});
 
     // 使用 mobx 的 makeObservable 方法，将属性 alwaysOnTop 和 updateAvailable 设为可观察
@@ -29,9 +27,9 @@ export class Store extends DialogStore {
     this.init();
 
     // 持久弹窗每次显示时重新拉取需刷新的状态（alwaysOnTop 等）
-    ipcRenderer.on('visible', (e, flag) => {
+    ipcRenderer.on('visible', (e, flag, data) => {
       this.visible = flag;
-      if (flag) this.init();
+      if (flag) this.init(data);
     });
 
     // 监听名为 'update-available' 的事件，并在触发时将 updateAvailable 属性设为 true
@@ -41,14 +39,19 @@ export class Store extends DialogStore {
   }
 
   // 异步初始化方法
-  public async init() {
-    // 检查是否存在当前窗口，若存在则获取是否总在顶层的设置，并赋值给属性 alwaysOnTop
-    if (remote.getCurrentWindow()) {
-      this.alwaysOnTop = remote.getCurrentWindow().isAlwaysOnTop();
+  public async init(data?: {alwaysOnTop?: boolean}) {
+    if (typeof data?.alwaysOnTop === 'boolean') {
+      this.alwaysOnTop = data.alwaysOnTop;
     }
 
     // 使用 ipcRenderer 发送名为 'is-update-available' 的请求，并等待返回值，将返回值赋值给属性 updateAvailable
-    this.updateAvailable = await ipcRenderer.invoke('is-update-available');
+    try {
+      this.updateAvailable = await ipcRenderer.invoke('is-update-available');
+    } catch (error) {
+      // 菜单不应因非关键的更新状态查询失败而无法打开。
+      console.error('[menu] failed to query update availability', error);
+      this.updateAvailable = false;
+    }
   }
 
   // 异步保存方法

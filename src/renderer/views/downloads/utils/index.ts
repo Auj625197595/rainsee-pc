@@ -1,4 +1,5 @@
 import prettyBytes = require('pretty-bytes');
+import { normalizeDownloadSpeed } from '~/common/download-speed';
 
 export type FileCategory =
   | 'image'
@@ -10,6 +11,9 @@ export type FileCategory =
   | 'file';
 
 export const formatBytes = (n?: number): string => prettyBytes(n || 0);
+
+export const formatSpeed = (n?: number): string =>
+  `${prettyBytes(normalizeDownloadSpeed(n))}/s`;
 
 // 下载进度百分比(0 - 100)。
 export const getProgress = (received?: number, total?: number): number => {

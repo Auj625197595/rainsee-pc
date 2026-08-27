@@ -2,7 +2,7 @@ import styled, { css } from 'styled-components';
 
 import { ITheme } from '~/interfaces';
 
-export const StyledToolbar = styled.div`
+export const StyledToolbar = styled.div<{ $macRight?: boolean }>`
   position: relative;
   z-index: 100;
   display: flex;
@@ -10,7 +10,7 @@ export const StyledToolbar = styled.div`
   flex-flow: row;
   width: 100%;
   height: 54px;
-  padding: 0 12px;
+  padding: ${({ $macRight }) => ($macRight ? '0 12px 0 90px' : '0 12px')};
   -webkit-app-region: drag;
 
   ${({ theme }: { theme: ITheme }) => css`

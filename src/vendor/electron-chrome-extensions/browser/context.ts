@@ -23,27 +23,51 @@ export interface ExtensionContext {
   session: Electron.Session
   store: ExtensionStore
   /**
-   * Absolute path to the crx-preload bundle, set by `prependPreload`. APIs that
-   * spin up their own hidden extension-page renderer (e.g. OffscreenAPI) set
-   * it as `webPreferences.preload` as belt-and-suspenders alongside the
-   * session-registered preload (which co-sited/sandboxed renderers can skip).
+   * Absolute path to the crx-preload bundle, resolved before APIs are created.
+   * APIs that spin up their own hidden extension-page renderer (e.g.
+   * OffscreenAPI) set it as `webPreferences.preload` alongside the session
+   * preload, which co-sited/sandboxed renderers can skip.
    */
-  preloadPath?: string
+  preloadPath: string
   /** Runtime view of required and user-granted extension permissions. */
   permissions?: {
     hasPermission(extensionId: string, permission: string): boolean
     hasOrigin(extensionId: string, urlOrPattern: string): boolean
     onChanged(listener: (extensionId: string) => void): () => void
   }
+  tabs?: {
+    onUpdated(tabId: number): void
+  }
+  tabGroups?: {
+    getTabGroupId(tabId: number): number
+  }
   userScripts?: {
     getDocumentStartScripts(
       frame: Electron.WebFrameMain | null | undefined,
+      currentUrl?: string,
     ): PreloadIsolatedScript[]
-    getDocumentStartMainScripts?(frame: Electron.WebFrameMain | null | undefined): string[]
+    getDocumentStartMainScripts?(
+      frame: Electron.WebFrameMain | null | undefined,
+      currentUrl?: string,
+    ): string[]
   }
   webRequest?: {
     dispatchChromeEvent(eventName: string, details: any): void
   }
+  /** Coordinates MV3 worker cold starts and capability readiness. */
+  messaging?: {
+    acquireServiceWorker(extensionId: string, timeoutMs?: number): Promise<(() => void) | undefined>
+    markServiceWorkerReady(
+      serviceWorker: any,
+      details?: any,
+    ): void
+  }
+  /** Optional host-level last-resort recovery after a proven readiness timeout. */
+  recoverServiceWorker?: (
+    extensionId: string,
+    timeoutMs?: number,
+    provenFailure?: boolean,
+  ) => Promise<(() => void) | undefined>
   /** Lazy compatibility fallback for extensions whose native offscreen binding has no loader. */
   offscreen?: {
     ensureDocument(extensionId: string): Promise<boolean>
@@ -67,12 +91,15 @@ export interface ExtensionContext {
    * import cycle (declarative-net-request.ts imports this context).
    */
   declarativeNetRequest?: {
+    hasHeaderRules(kind: 'request' | 'response'): boolean
     matchBeforeRequest(details: {
       url: string
       resourceType?: string
       method?: string
       referrer?: string
       initiator?: string
+      webContentsId?: number
+      tabId?: number
     }): { cancel?: boolean; redirectUrl?: string } | undefined
     /** Like matchBeforeRequest but distinguishes an explicit `allow`. */
     decideBeforeRequest(details: {
@@ -92,6 +119,8 @@ export interface ExtensionContext {
         method?: string
         referrer?: string
         initiator?: string
+        webContentsId?: number
+        tabId?: number
       },
       kind: 'request' | 'response',
       headers: Array<{ name: string; value?: string }>,

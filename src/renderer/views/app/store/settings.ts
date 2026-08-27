@@ -5,7 +5,8 @@ import {ISettings} from '~/interfaces';
 import {DEFAULT_SETTINGS} from '~/constants';
 import {resolveToolbarLayout, ToolbarLayout} from '~/renderer/constants/toolbar-buttons';
 import {Store} from '.';
-import {updateStoreNewTab, updateStoreNewTabTemp, updateStoreDeviceParams} from "~/common/webui";
+import {updateStoreNewTab, updateStoreNewTabTemp} from "~/common/webui";
+import {rendererStartupMark, rendererStartupTimer} from './startup-timing';
 
 export type SettingsSection =
   | 'appearance'
@@ -23,11 +24,15 @@ export type SettingsSection =
 export class SettingsStore {
   public selectedSection: SettingsSection = 'appearance';
 
-  public object: ISettings = DEFAULT_SETTINGS;
+  public object: ISettings = {
+    ...DEFAULT_SETTINGS,
+    ...(ipcRenderer.sendSync('get-settings-sync') || {}),
+  };
 
   public store: Store;
 
   public constructor(store: Store) {
+    rendererStartupMark('renderer.settings.constructor.begin');
     makeObservable(this, {
       selectedSection: observable,
       object: observable,
@@ -37,27 +42,43 @@ export class SettingsStore {
       setTabsLayout: action,
       setSidebarPinned: action,
       setSearchEngine: action,
-      setSidebarWidthLive: action,
     });
 
     this.store = store;
 
     let firstTime = false;
 
-    // 同步设备参数(devid/prod/lang/ck),供新标签页 URL 拼接使用
-    updateStoreDeviceParams(ipcRenderer.sendSync('get-device-params'));
-
     ipcRenderer.send('get-settings');
+    rendererStartupMark('renderer.settings.requested');
 
     ipcRenderer.on('update-settings', (e, settings: ISettings) => {
       this.updateSettings(settings);
       if (!firstTime) {
         firstTime = true;
+        rendererStartupMark('renderer.settings.received', {
+          startupBehavior: settings.startupBehavior?.type,
+        });
         // 组记录必须先于标签水合:标签恢复时带 tabGroupId,需有对应 ITabGroup
         // 才能渲染成芯片;否则组内标签会先以独立 slot 闪现再折叠。
-        store.tabGroups.load().catch(() => {}).finally(() => {
-          store.startupTabs.load();
-        });
+        const groupsTimer = rendererStartupTimer();
+        rendererStartupMark('renderer.tab_groups.load.begin');
+        store.tabGroups
+          .load()
+          .catch(() => {})
+          .then(() => {
+            rendererStartupMark('renderer.tab_groups.load.end', {
+              count: store.tabGroups.list.length,
+              durationMs: groupsTimer(),
+            });
+            return store.startupTabs.load();
+          })
+          .finally(() => {
+            rendererStartupMark('renderer.startup_restore.pipeline.end', {
+              tabCount: store.tabs.list.length,
+            });
+            ipcRenderer.send('startup-critical-ready');
+            store.activateWorkspaceSync();
+          });
       }
     });
 
@@ -67,12 +88,19 @@ export class SettingsStore {
       this.object = {...this.object, newtab: newtab};
     });
 
-    // 标签页侧边栏拖拽条实时回传的新宽度(主进程 sidebar-resizer)。拖拽中只改
-    // 内存值即时回流(改 theme.sidebarWidth → Sidebar 宽度变 → #view-anchor
-    // ResizeObserver → 主进程 fixBounds 收缩网页内容),不落盘;松手时由主进程
-    // 走 updateSettings 持久化一次。
+    // 开源版：无账号体系，登录态联动已移除。
+
+    // 拖拽热路径只写 CSS 变量，避免高频修改 MobX settings 触发整棵主题树重渲染。
+    // 原生 BrowserView 由主进程同步调宽，松手后再走 updateSettings 持久化一次。
     ipcRenderer.on('sidebar-width-live', (e, width: number) => {
-      this.setSidebarWidthLive(width);
+      document.documentElement.style.setProperty(
+        '--sidebar-width',
+        `${Math.round(width)}px`,
+      );
+    });
+
+    ipcRenderer.on('sidebar-resize-state', (e, resizing: boolean) => {
+      document.documentElement.classList.toggle('sidebar-resizing', resizing);
     });
   }
 
@@ -90,6 +118,12 @@ export class SettingsStore {
     //console.log("updateSettings", newSettings.newtab);
     const prevState = {...this.object};
     this.object = {...this.object, ...newSettings};
+    if (typeof newSettings.sidebarWidth === 'number') {
+      document.documentElement.style.setProperty(
+        '--sidebar-width',
+        `${Math.round(newSettings.sidebarWidth)}px`,
+      );
+    }
     if (newSettings.newtab) {
       if (newSettings.newtab !== prevState.newtab) {
         updateStoreNewTabTemp('');
@@ -101,11 +135,20 @@ export class SettingsStore {
       prevState.immersiveBrowsing !== newSettings.immersiveBrowsing ||
       prevState.topBarVariant !== newSettings.topBarVariant ||
       prevState.tabsLayout !== newSettings.tabsLayout ||
+      prevState.tabOverflowBehavior !== newSettings.tabOverflowBehavior ||
       prevState.sidebarWidth !== newSettings.sidebarWidth
     ) {
       requestAnimationFrame(() => {
         this.store.tabs.updateTabsBounds(true);
       });
+    }
+    if (
+      prevState.tabHoverActivationBehavior !==
+        newSettings.tabHoverActivationBehavior ||
+      prevState.tabHoverActivationDelay !== newSettings.tabHoverActivationDelay
+    ) {
+      this.store.tabs.refreshGroupPreview();
+      this.store.tabs.refreshSidebarPanel();
     }
   }
 
@@ -131,13 +174,6 @@ export class SettingsStore {
     requestAnimationFrame(() => {
       this.store.tabs.updateTabsBounds(true);
     });
-  }
-
-  // 拖拽侧边栏时高频调用:只更新内存中的 sidebarWidth 以即时回流,不落盘
-  // (持久化由主进程在松手时统一处理)。内容区的收缩由 #view-anchor 的
-  // ResizeObserver 自动触发,无需在此调用 updateTabsBounds。
-  public setSidebarWidthLive(width: number) {
-    this.object = { ...this.object, sidebarWidth: width };
   }
 
   // 切换默认搜索引擎并持久化(地址栏左侧图标的快速切换)

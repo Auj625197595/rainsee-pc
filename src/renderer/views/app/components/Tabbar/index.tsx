@@ -10,11 +10,40 @@ import { ICON_ADD } from '~/renderer/constants/icons';
 import { ToolbarButton } from '../ToolbarButton';
 import { AddressBarContainer } from '../AddressBarContainer';
 import { LayoutSwitcher } from '../LayoutSwitcher';
-import { RecentlyClosedTabs } from '../RecentlyClosedTabs';
 import { isURL, realurl } from '~/utils';
 import { getExternalProtocol } from '~/utils/url';
 import { useActionBubble } from '../../utils/action-bubble';
 import { getDraggedLinkURL, isLinkDragEvent } from '../../utils/link-drop';
+import {
+  createTabWheelHandler,
+  getTabScrollStep,
+} from '../../utils/tab-wheel-switch';
+
+const getSelectedTopTabElement = (): HTMLElement | null => {
+  const tab = store.tabs.selectedTab;
+  return tab?.ref?.current || tab?.tabGroup?.ref?.current || null;
+};
+
+const wheelHandler = createTabWheelHandler({
+  axis: 'horizontal',
+  getBehavior: () => store.settings.object.tabWheelBehavior || 'auto',
+  getContainer: () => store.tabs.containerRef.current,
+  onSwitch: (direction) => store.tabs.switchAdjacentTab(direction),
+  onSwitched: (direction, behavior) => {
+    window.requestAnimationFrame(() => {
+      const container = store.tabs.containerRef.current;
+      const selected = getSelectedTopTabElement();
+      if (!container) return;
+
+      store.tabs.scrollingToEnd = false;
+      if (behavior === 'always-switch') {
+        container.scrollLeft +=
+          direction * getTabScrollStep(selected, 'horizontal', 72);
+      }
+      selected?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+  },
+});
 
 let timeout: any;
 
@@ -35,20 +64,6 @@ const onTabsMouseLeave = () => {
 
 const onAddTabClick = () => {
   store.tabs.addTab();
-};
-
-const onWheel = (e: any) => {
-  if (!store.tabs.containerRef) return;
-
-  const { deltaX, deltaY } = e;
-  const { scrollLeft } = store.tabs.containerRef.current;
-
-  const delta = Math.abs(deltaX) >= Math.abs(deltaY) ? deltaX : -deltaY;
-  const target = delta / 2;
-
-  store.tabs.scrollingToEnd = false;
-
-  store.tabs.containerRef.current.scrollLeft = scrollLeft + target;
 };
 
 const onTabsDragOver = (e: React.DragEvent<HTMLDivElement>) => {
@@ -79,7 +94,17 @@ const onTabsDrop = (e: React.DragEvent<HTMLDivElement>) => {
 
   const res = store.tabs.computeLinkDrop(e.clientX);
   if (!res) return;
-  store.tabs.openLinkAt(url, res.listIndex);
+  // Left-button gesture drags carry a private MIME marker. Their foreground /
+  // background preference is read from the gesture settings; ordinary
+  // browser/bookmark drags remain foreground opens.
+  let active = true;
+  try {
+    const action = e.dataTransfer?.getData('application/x-rainsee-left-gesture');
+    if (action === '1') {
+      active = store.settings.object.mouseLeftGestureOpenInBackground !== true;
+    }
+  } catch (_) {}
+  store.tabs.openLinkAt(url, res.listIndex, -1, active);
 };
 
 export const TabGroups = observer(() => {
@@ -98,6 +123,17 @@ export const TabGroups = observer(() => {
 
 export const Tabbar = observer(() => {
   const { show: showBubble, portal: bubblePortal } = useActionBubble();
+
+  React.useEffect(() => {
+    const container = store.tabs.containerRef.current;
+    if (!container) return undefined;
+    const onWheel = (event: WheelEvent) => {
+      const result = wheelHandler(event);
+      if (result.handled) event.preventDefault();
+    };
+    container.addEventListener('wheel', onWheel, { passive: false });
+    return () => container.removeEventListener('wheel', onWheel);
+  }, []);
 
   // 右键「+ 新建标签」按钮 → 读剪贴板:网址则新建标签打开、文本则搜索、空则提示。
   const onAddTabContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -122,11 +158,12 @@ export const Tabbar = observer(() => {
   };
 
   return (
-    <StyledTabbar>
+    <StyledTabbar data-rainsee-part="tab-bar">
       <TabsContainer
+        $allowScroll={store.settings.object.tabOverflowBehavior !== 'shrink'}
+        data-rainsee-part="tabs"
         onMouseEnter={onMouseEnter}
         onMouseLeave={onTabsMouseLeave}
-        onWheel={onWheel}
         onDragOver={onTabsDragOver}
         onDragLeave={onTabsDragLeave}
         onDrop={onTabsDrop}
@@ -144,6 +181,7 @@ export const Tabbar = observer(() => {
       {store.isCompact && <AddressBarContainer />}
       {!store.tabs.scrollable && (
         <AddTab
+          rainseeAction="new-tab"
           icon={ICON_ADD}
           onClick={onAddTabClick}
           onContextMenu={onAddTabContextMenu}
@@ -153,13 +191,13 @@ export const Tabbar = observer(() => {
       <TabbarEnd>
         {store.tabs.scrollable && (
           <ToolbarButton
+            rainseeAction="new-tab"
             icon={ICON_ADD}
             onClick={onAddTabClick}
             onContextMenu={onAddTabContextMenu}
           />
         )}
         <LayoutSwitcher variant="tab" />
-        <RecentlyClosedTabs variant="tab" />
       </TabbarEnd>
       {bubblePortal}
     </StyledTabbar>

@@ -2,10 +2,15 @@ import * as React from 'react';
 import styled, { css } from 'styled-components';
 
 import { EASING_FUNCTION } from '~/renderer/constants';
+import { ITheme } from '~/interfaces';
 import { robotoRegular, robotoMedium } from '~/renderer/mixins';
 import { NormalButton } from '../App';
 import store from '../../store';
-import {DIALOG_BORDER_RADIUS, DIALOG_BOX_SHADOW} from "~/renderer/mixins/dialogs";
+import { getPalette } from '../../utils/palette';
+import {
+  DIALOG_BORDER_RADIUS,
+  DIALOG_BOX_SHADOW,
+} from '~/renderer/mixins/dialogs';
 
 const onHideClick = () => {
   store.dialogContent = null;
@@ -24,18 +29,27 @@ export const Dialog = styled.div`
   max-width: 512px;
   height: fit-content;
   position: fixed;
-  background-color: #fff;
-  box-shadow: ${DIALOG_BOX_SHADOW};
+  top: 50%;
+  left: 50%;
+  z-index: 999;
+  /* 显式居中:fixed 元素若不设 top/left,浏览器用"静态位置",在设置页内容流里
+     不可靠,会导致整个对话框定位到视口外而不可见。 */
+  transform: translate(-50%, -50%);
   border-radius: ${DIALOG_BORDER_RADIUS}px;
   padding-bottom: 8px;
-  transition: 0.15s transform ${EASING_FUNCTION};
+  transition: 0.15s opacity ${EASING_FUNCTION};
   ${robotoRegular()};
 
-  ${({ visible }: { visible: boolean }) => css`
-    pointer-events: ${visible ? 'inherit' : 'none'};
-    opacity: ${visible ? 1 : 0};
-    transform: ${visible ? 'translate3d(0, 0, 0)' : 'translate3d(0, -24px, 0)'};
-  `}
+  ${({ visible, theme }: { visible: boolean; theme?: ITheme }) => {
+    const palette = getPalette(theme);
+    return css`
+      pointer-events: ${visible ? 'inherit' : 'none'};
+      opacity: ${visible ? 1 : 0};
+      background-color: ${palette.surface};
+      color: ${palette.textMain};
+      box-shadow: inset 0 0 0 1px ${palette.line}, ${DIALOG_BOX_SHADOW};
+    `;
+  }}
 `;
 
 export const Title = styled.div`

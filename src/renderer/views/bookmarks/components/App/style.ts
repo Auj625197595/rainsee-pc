@@ -208,12 +208,25 @@ export const Crumb = styled.span`
   display: flex;
   align-items: center;
   gap: 6px;
+  padding: 3px 8px;
+  border-radius: 8px;
   cursor: pointer;
+  transition: background-color 0.15s ease;
 
-  ${({ active, theme }: { active?: boolean; theme?: ITheme }) => {
+  ${({
+    active,
+    dropHover,
+    theme,
+  }: {
+    active?: boolean;
+    dropHover?: boolean;
+    theme?: ITheme;
+  }) => {
     const p = getPalette(theme);
     return css`
       color: ${active ? p.textMain : p.textSub};
+      background-color: ${dropHover ? p.primarySoft : 'transparent'};
+      box-shadow: ${dropHover ? `inset 0 0 0 1px ${p.primary}` : 'none'};
       &:hover {
         color: ${p.textMain};
       }
@@ -255,8 +268,7 @@ export const BackBtn = styled.button`
   border: none;
   border-radius: 50%;
   cursor: pointer;
-  transition: background-color 0.16s ease, color 0.16s ease,
-    filter 0.16s ease;
+  transition: background-color 0.16s ease, color 0.16s ease, filter 0.16s ease;
 
   ${({ theme }: { theme?: ITheme }) => {
     const p = getPalette(theme);
@@ -419,6 +431,8 @@ export const CardList = styled.div`
 export const Dialog = styled.div`
   position: fixed;
   width: 460px;
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
   padding: 24px;
   left: 50%;
   top: 50%;
@@ -427,7 +441,21 @@ export const Dialog = styled.div`
   transition: 0.2s opacity;
   transform: translate(-50%, -50%);
 
-  ${({ visible, theme }: { visible: boolean; theme?: ITheme }) => {
+  ${({ wide }: { wide?: boolean }) =>
+    wide
+      ? css`
+          width: 540px;
+        `
+      : ''}
+
+  ${({
+    visible,
+    theme,
+  }: {
+    visible: boolean;
+    theme?: ITheme;
+    wide?: boolean;
+  }) => {
     const p = getPalette(theme);
     return css`
       opacity: ${visible ? 1 : 0};
@@ -444,6 +472,120 @@ export const DialogTitle = styled.div`
   font-size: 17px;
   font-weight: 700;
   margin-bottom: 18px;
+`;
+
+export const DialogField = styled.label<{ hidden?: boolean }>`
+  display: ${({ hidden }) => (hidden ? 'none' : 'block')};
+  margin-top: 14px;
+`;
+
+export const DialogFieldLabel = styled.div`
+  margin-bottom: 7px;
+  font-size: 12px;
+  font-weight: 700;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textSub};
+  `}
+`;
+
+export const DialogInput = styled.input`
+  width: 100%;
+  height: 40px;
+  box-sizing: border-box;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  outline: none;
+  font: inherit;
+  font-size: 13px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+
+  ${({ theme }: { theme?: ITheme }) => {
+    const p = getPalette(theme);
+    return css`
+      color: ${p.textMain};
+      background: ${p.bg};
+      border-color: ${p.line};
+
+      &:focus {
+        border-color: ${p.primary};
+        box-shadow: 0 0 0 3px ${p.primarySoft};
+      }
+    `;
+  }}
+`;
+
+// ===== 编辑弹窗:所属文件夹选择 =====
+
+export const FolderField = styled.div`
+  margin-top: 16px;
+`;
+
+export const FolderLabel = styled.div`
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 8px;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textSub};
+  `}
+`;
+
+export const FolderTrigger = styled.button`
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  transition: background-color 0.15s ease;
+
+  ${({ theme }: { theme?: ITheme }) => {
+    const p = getPalette(theme);
+    return css`
+      background-color: ${p.bg};
+      border: 1px solid ${p.line};
+      &:hover {
+        background-color: ${p.surface};
+      }
+    `;
+  }}
+`;
+
+export const FolderTriggerText = styled.div`
+  min-width: 0;
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textMain};
+  `}
+`;
+
+export const FolderTriggerArrow = styled.span`
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  transition: transform 0.15s ease;
+  transform: ${({ expanded }: { expanded: boolean }) =>
+    expanded ? 'rotate(90deg)' : 'rotate(0deg)'};
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textMute};
+  `}
+`;
+
+export const FolderPanel = styled.div`
+  margin-top: 10px;
 `;
 
 // ===== 从本机浏览器导入：选择行 =====
@@ -495,6 +637,48 @@ export const ImportNote = styled.div`
   ${({ error, theme }: { error?: boolean; theme?: ITheme }) => css`
     color: ${error ? '#e53935' : getPalette(theme).textSub};
   `}
+`;
+
+export const ToolboxSummary = styled.div`
+  margin-top: 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textSub};
+  `}
+`;
+
+export const ToolboxList = styled.div`
+  max-height: 280px;
+  margin-top: 16px;
+  overflow-y: auto;
+  border-top: 1px solid
+    ${({ theme }: { theme?: ITheme }) => getPalette(theme).line};
+`;
+
+export const ToolboxRow = styled.div`
+  padding: 10px 0;
+  border-bottom: 1px solid
+    ${({ theme }: { theme?: ITheme }) => getPalette(theme).line};
+`;
+
+export const ToolboxUrl = styled.div`
+  overflow: hidden;
+  color: ${({ theme }: { theme?: ITheme }) => getPalette(theme).textMain};
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+`;
+
+export const ToolboxTitles = styled.div`
+  margin-top: 4px;
+  overflow: hidden;
+  color: ${({ theme }: { theme?: ITheme }) => getPalette(theme).textMute};
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 `;
 
 export const DialogButtons = styled.div`

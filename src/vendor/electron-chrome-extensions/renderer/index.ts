@@ -70,6 +70,8 @@ function removeNativeBrowserAlias() {
   }
 }
 
+const WORKER_INBOUND_PROTOCOL = 3
+
 const deferTask = (fn: () => void, delay = 0) => {
   try {
     if (typeof globalThis.setTimeout === 'function') {
@@ -172,6 +174,35 @@ const crxStripUncloneable = (val: any, seen?: WeakSet<any>): any => {
   return out
 }
 
+// Chrome uses JSON serialization for extension messaging. Electron's IPC uses
+// V8 structured clone instead, so passing the original value changes observable
+// behavior and rejects host objects such as DOM nodes. Keep this separate from
+// crxStripUncloneable: other extension APIs are not JSON-message channels.
+const crxSerializeMessage = (value: any): any => {
+  const serialized = JSON.stringify(value)
+  return serialized === undefined ? undefined : JSON.parse(serialized)
+}
+
+const crxAutofillVerbose =
+  typeof process !== 'undefined' && process?.env?.CRX_VERBOSE === '1'
+
+const crxIsAutofillMessage = (message: any): boolean =>
+  !!(
+    crxAutofillVerbose &&
+    message &&
+    typeof message === 'object' &&
+    typeof message.command === 'string' &&
+    /^(fillForm|triggerAutoSubmitLogin|collectPageDetails|collectPageDetailsResponse|bgCollectPageDetails|triggerAutofillScriptInjection|ignoreFieldFocus)$/.test(
+      message.command,
+    )
+  )
+
+const crxAutofillLog = (...args: any[]) => {
+  try {
+    console.warn('[crx-autofill]', ...args)
+  } catch {}
+}
+
 const crxBlobToDataUrl = (blob: Blob): Promise<string | undefined> =>
   new Promise((resolve) => {
     try {
@@ -247,6 +278,21 @@ const crxStripPortMessage = async (val: any, seen?: WeakSet<any>): Promise<any> 
 }
 
 const crxSendPortMessage = (portId: string, message: any) => {
+  const transfer = message && typeof message === 'object' ? message.transfer : undefined
+  if (!transfer || !transfer.transferResponse) {
+    let wire: any
+    try {
+      wire = crxSerializeMessage(message)
+    } catch {
+      wire = crxStripUncloneable(message)
+    }
+    try {
+      ipcRenderer.send('crx-port-post', portId, wire)
+    } catch {
+      // best-effort
+    }
+    return
+  }
   crxStripPortMessage(message)
     .then((stripped) => ipcRenderer.send('crx-port-post', portId, stripped))
     .catch((err) => {
@@ -389,7 +435,10 @@ export const injectExtensionAPIs = () => {
       disconnect()
     })
     const send = (message: any) => {
-      ipcRenderer.send(`crx-native-msg-${connectionId}`, message)
+      // Native Messaging uses JSON serialization, not Electron's structured
+      // clone. This also protects direct preload callers from enumerable
+      // methods commonly attached to native-host task objects.
+      ipcRenderer.send(`crx-native-msg-${connectionId}`, crxSerializeMessage(message))
     }
     callback(connectionId, send)
   }
@@ -500,6 +549,11 @@ export const injectExtensionAPIs = () => {
     )
   }
 
+  /** Reject an inbound Port when the target context has no onConnect listener. */
+  const portReject = (portId: string) => {
+    ipcRenderer.send('crx-port-reject', portId, 'no-listener')
+  }
+
   const tabsPortConnect = (
     extensionId: string,
     tabId: number | undefined,
@@ -527,32 +581,15 @@ export const injectExtensionAPIs = () => {
   }
 
   const sendRuntimeMessage = (extensionId: string, message: any) => {
-    // Strip non-cloneable values (Blob/File/Proxy/Function/...) from the
-    // outgoing message, mirroring sendMessageResponse below. Without this, an
-    // extension runtime.sendMessage with a non-cloneable body (uBlock and
-    // others) makes the invoke reject — and this returns a bare promise most
-    // callers don't .catch(), surfacing as an unhandled "An object could not be
-    // cloned" rejection. Stripping lets the rest of the message cross IPC.
-    let stripped: any
+    let serialized: any
     try {
-      stripped = crxStripUncloneable(message)
+      serialized = crxSerializeMessage(message)
     } catch {
-      stripped = undefined
+      serialized = undefined
     }
-    const p = ipcRenderer.invoke('crx-runtime-message', extensionId, stripped).catch((err: any) => {
-      // crxStripUncloneable can still leave exotic objects (Proxy / class
-      // instances with non-enumerable fields / WeakMap keys) that V8's
-      // structured clone rejects. The invoke rejects, and since callers treat
-      // sendMessage as fire-and-forget (bare promise), this surfaces as an
-      // unhandled "An object could not be cloned" rejection. Fall back to a
-      // JSON round-trip — guaranteed cloneable plain object — then retry once.
-      try {
-        const safe = JSON.parse(JSON.stringify(message))
-        return ipcRenderer.invoke('crx-runtime-message', extensionId, safe)
-      } catch {
-        return undefined
-      }
-    })
+    const p = ipcRenderer
+      .invoke('crx-runtime-message', extensionId, serialized)
+      .catch(() => undefined)
     // Never surface as unhandledRejection — Chrome's sendMessage resolves
     // undefined when delivery fails, it doesn't reject.
     p.then(undefined, () => {})
@@ -560,7 +597,37 @@ export const injectExtensionAPIs = () => {
   }
 
   const sendMessageResponse = (messageId: string, response: any) => {
-    crxSendCloneSafe('crx-cs-message-response', messageId, response)
+    let serialized = response
+    try {
+      // `undefined` is the bridge's no-response sentinel. Chrome JSON-coerces
+      // actual response values, but the sentinel must remain distinguishable
+      // so another listener/frame can still provide the first real response.
+      if (response !== undefined) serialized = crxSerializeMessage(response)
+    } catch {
+      serialized = undefined
+    }
+    // This function is commonly called from a listener Promise continuation.
+    // Electron throws synchronously when any argument is not structured-cloneable;
+    // allowing that throw to escape would reject the continuation and surface as
+    // the recurring renderer-level "An object could not be cloned" error. The
+    // response channel is best-effort, just like Chrome when its sender closed.
+    try {
+      ipcRenderer.send('crx-cs-message-response', messageId, serialized)
+    } catch (error) {
+      try {
+        console.warn('[crx-runtime] response IPC dropped', error)
+      } catch {
+        /* diagnostics must never affect extension execution */
+      }
+      // Complete the request with Chrome's no-response value when the payload
+      // itself cannot cross the bridge. This is preferable to leaving the
+      // content caller pending until its transport timeout.
+      try {
+        ipcRenderer.send('crx-cs-message-response', String(messageId), undefined)
+      } catch {
+        /* sender/receiver may already be gone */
+      }
+    }
   }
 
   // Synchronously fetch this extension's i18n catalog (messages + UI locale).
@@ -643,6 +710,67 @@ export const injectExtensionAPIs = () => {
     }
   }
 
+  let workerInboundPump = false
+  let workerInboundWakePending = false
+  const ensureWorkerInboundPump = () => {
+    if ((process as any).type !== 'service-worker') return false
+    if (workerInboundPump) {
+      workerInboundWakePending = true
+      return true
+    }
+    workerInboundPump = true
+    workerInboundWakePending = false
+    void (async () => {
+      try {
+        while (workerInboundPump) {
+          const packet = await ipcRenderer.invoke('crx-worker-next-event')
+          // A null packet means the host pull timed out while the worker had
+          // no active Port. It is an idle boundary, not a transport failure.
+          // Stop here so the worker can follow MV3's normal idle lifecycle;
+          // the host sends crx-worker-wake when a new packet is queued.
+          if (!packet || typeof packet.channel !== 'string' || !Array.isArray(packet.args)) break
+          ipcRenderer.emit(packet.channel, {} as Electron.IpcRendererEvent, ...packet.args)
+        }
+      } catch {
+        /* the worker is stopping or the generation has been evicted */
+      } finally {
+        workerInboundPump = false
+        // A wake can race the idle invoke response: in that window the old
+        // pump is still marked active even though the host has already queued
+        // the next event. Resume only after the old loop has fully unwound.
+        if (workerInboundWakePending) {
+          workerInboundWakePending = false
+          ensureWorkerInboundPump()
+        }
+      }
+    })()
+    return true
+  }
+
+  const notifyWorkerReady = (details?: any) => {
+    if ((process as any).type !== 'service-worker') return
+    try {
+      const readyDetails = details || { protocol: WORKER_INBOUND_PROTOCOL }
+      ipcRenderer.send('crx-worker-ready', readyDetails)
+      ensureWorkerInboundPump()
+    } catch {
+      /* the worker may already be stopping */
+    }
+  }
+
+  if ((process as any).type === 'service-worker') {
+    // The pull pump intentionally stops at an idle boundary. This private
+    // preload-only signal restarts it only when the host has queued work.
+    ipcRenderer.on('crx-worker-wake', () => {
+      // The host can bind its worker IPC listeners after the first bootstrap
+      // ready signal (notably across a starting -> running transition). A
+      // wake is also a safe readiness probe, so replay the handshake for the
+      // currently live worker generation. notifyWorkerReady also starts or
+      // resumes the pull pump, including the wake-during-pull race.
+      notifyWorkerReady({ protocol: WORKER_INBOUND_PROTOCOL })
+    })
+  }
+
   const electronContext = {
     invokeExtension,
     invokeExtensionRaw,
@@ -652,10 +780,12 @@ export const injectExtensionAPIs = () => {
     disconnectNative,
     portConnect,
     portAccept,
+    portReject,
     tabsPortConnect,
     sendRuntimeMessage,
     sendMessageResponse,
     notifyStorageChanged,
+    notifyWorkerReady,
     getI18n,
     getI18nAsync,
     platformInfo,
@@ -666,8 +796,23 @@ export const injectExtensionAPIs = () => {
   function mainWorldScript(runtimeContextType: RuntimeContextTypeMap) {
     // Use context bridge API or closure variable when context isolation is disabled.
     const electron = ((globalThis as any).electron as typeof electronContext) || electronContext
+    const deferTask = (fn: () => void, delay = 0) => {
+      if (delay > 0) {
+        setTimeout(fn, delay)
+      } else {
+        Promise.resolve().then(fn)
+      }
+    }
 
     const chrome = globalThis.chrome || {}
+    // Keep this helper inside mainWorldScript: executeInMainWorld serializes the
+    // function without closure variables. Chrome JSON-serializes Native
+    // Messaging payloads, which omits enumerable functions before they cross
+    // the context bridge (FDM task objects contain such methods).
+    const serializeNativeMessage = (value: any): any => {
+      const serialized = JSON.stringify(value)
+      return serialized === undefined ? undefined : JSON.parse(serialized)
+    }
     const isWorkerContext =
       typeof (globalThis as any).serviceWorker !== 'undefined' ||
       (typeof window === 'undefined' &&
@@ -905,12 +1050,14 @@ export const injectExtensionAPIs = () => {
       // 并返回 {cancel:true} → 全站被拦。这里把 filter 透传给 addExtensionListener,
       // 由 event.ts 按 filter 决定该 listener 是否被调用(贴近 Chrome 原生语义)。
       addListener = (callback: T, filter?: any, _extraInfoSpec?: any) => {
-        if (this.listeners.indexOf(callback) === -1) this.listeners.push(callback)
+        if (this.listeners.indexOf(callback) !== -1) return
+        this.listeners.push(callback)
         electron.addExtensionListener(extId(), this.name, callback, filter, _extraInfoSpec)
       }
       removeListener = (callback: T) => {
         const index = this.listeners.indexOf(callback)
-        if (index > -1) this.listeners.splice(index, 1)
+        if (index === -1) return
+        this.listeners.splice(index, 1)
         electron.removeExtensionListener(extId(), this.name, callback)
       }
 
@@ -937,16 +1084,6 @@ export const injectExtensionAPIs = () => {
       }
       hasListeners(): boolean {
         return this.listeners.length > 0
-      }
-    }
-
-    // chrome.types.ChromeSetting<any>
-    class ChromeSetting {
-      set() {}
-      get() {}
-      clear() {}
-      onChange = {
-        addListener: () => {},
       }
     }
 
@@ -1017,7 +1154,7 @@ export const injectExtensionAPIs = () => {
       }
 
       postMessage(message: any) {
-        this._send(message)
+        this._send(serializeNativeMessage(message))
       }
       disconnect() {
         if (this.connected) {
@@ -1529,12 +1666,41 @@ export const injectExtensionAPIs = () => {
 
       permissions: {
         factory: (base) => {
+          const requestPermission = invokeExtension('permissions.request')
+          const request = (...args: any[]) => {
+            const invoke = () => requestPermission(...args)
+            const hasCallback = typeof args[args.length - 1] === 'function'
+
+            // A native Electron permission prompt can suspend the extension
+            // renderer. Give the initiating UI two frames to commit its state
+            // transition first, matching Chrome's asynchronous prompt behavior.
+            if (typeof requestAnimationFrame !== 'function') return invoke()
+
+            const afterPaint = new Promise<void>((resolve) => {
+              let settled = false
+              const finish = () => {
+                if (settled) return
+                settled = true
+                clearTimeout(fallback)
+                resolve()
+              }
+              const fallback = setTimeout(finish, 100)
+              requestAnimationFrame(() => requestAnimationFrame(finish))
+            })
+
+            if (hasCallback) {
+              void afterPaint.then(invoke)
+              return undefined
+            }
+            return afterPaint.then(invoke)
+          }
+
           return {
             ...base,
             contains: invokeExtension('permissions.contains'),
             getAll: invokeExtension('permissions.getAll'),
             remove: invokeExtension('permissions.remove'),
-            request: invokeExtension('permissions.request'),
+            request,
             onAdded: new ExtensionEvent('permissions.onAdded'),
             onRemoved: new ExtensionEvent('permissions.onRemoved'),
           }
@@ -1542,20 +1708,61 @@ export const injectExtensionAPIs = () => {
       },
 
       privacy: {
-        factory: (base) => {
+        // chrome.privacy.{network,services,websites} — each leaf is a
+        // chrome.types.ChromeSetting. Electron ships no native chrome.privacy,
+        // and the old stub returned a no-op ChromeSetting (set/get/clear did
+        // nothing, no onChange, only 6 of ~17 settings). That both (a) silently
+        // dropped every set(), and (b) left chrome.privacy.network undefined in
+        // contexts this factory does not reach (SW / sandboxed popup / content
+        // script — covered by the SHIM block in extension-storage-patch.ts),
+        // which crashed uBlock Origin's webext.js:144 reading
+        // `chrome.privacy[category][setting]`.
+        //
+        // Now each setting routes get/set/clear to the main-process PrivacyAPI
+        // (browser/api/privacy.ts) — persisted to userData/privacy-settings.json
+        // and broadcasting privacy.<cat>.<name>.onChange. No `shouldInject`: the
+        // namespace is always installed (Chrome exposes chrome.privacy to every
+        // extension; the "privacy" permission is enforced at the method level by
+        // the router, so a call from an extension that didn't declare it throws
+        // "requires privacy permissions" instead of leaving the namespace
+        // undefined and crashing). invokeExtension handles callback-or-promise.
+        // Return typed `any` (like omnibox): @types/chrome has no chrome.privacy,
+        // so the nested-function literal can't satisfy DeepPartial<any>'s index
+        // signature — runtime shape is what matters here.
+        factory: (base): any => {
+          const mk = (cat: string, name: string) => ({
+            get: invokeExtension(`privacy.${cat}.${name}.get`),
+            set: invokeExtension(`privacy.${cat}.${name}.set`),
+            clear: invokeExtension(`privacy.${cat}.${name}.clear`),
+            onChange: new ExtensionEvent(`privacy.${cat}.${name}.onChange`),
+          })
           return {
             ...base,
             network: {
-              networkPredictionEnabled: new ChromeSetting(),
-              webRTCIPHandlingPolicy: new ChromeSetting(),
+              networkPredictionEnabled: mk('network', 'networkPredictionEnabled'),
+              webRTCIPHandlingPolicy: mk('network', 'webRTCIPHandlingPolicy'),
+              globalPrivacyControl: mk('network', 'globalPrivacyControl'),
             },
             services: {
-              autofillAddressEnabled: new ChromeSetting(),
-              autofillCreditCardEnabled: new ChromeSetting(),
-              passwordSavingEnabled: new ChromeSetting(),
+              alternateErrorPagesEnabled: mk('services', 'alternateErrorPagesEnabled'),
+              autofillAddressEnabled: mk('services', 'autofillAddressEnabled'),
+              autofillCreditCardEnabled: mk('services', 'autofillCreditCardEnabled'),
+              passwordSavingEnabled: mk('services', 'passwordSavingEnabled'),
+              safeBrowsingEnabled: mk('services', 'safeBrowsingEnabled'),
+              safeBrowsingExtendedReportingEnabled: mk(
+                'services',
+                'safeBrowsingExtendedReportingEnabled',
+              ),
+              searchSuggestEnabled: mk('services', 'searchSuggestEnabled'),
+              spellingServiceEnabled: mk('services', 'spellingServiceEnabled'),
+              translationServiceEnabled: mk('services', 'translationServiceEnabled'),
             },
             websites: {
-              hyperlinkAuditingEnabled: new ChromeSetting(),
+              hyperlinkAuditingEnabled: mk('websites', 'hyperlinkAuditingEnabled'),
+              referrersEnabled: mk('websites', 'referrersEnabled'),
+              thirdPartyCookiesAllowed: mk('websites', 'thirdPartyCookiesAllowed'),
+              cookieControlsEnabled: mk('websites', 'cookieControlsEnabled'),
+              protectedContentEnabled: mk('websites', 'protectedContentEnabled'),
             },
           }
         },
@@ -1657,7 +1864,11 @@ export const injectExtensionAPIs = () => {
               return port
             },
             openOptionsPage: invokeExtension('runtime.openOptionsPage'),
-            sendNativeMessage: invokeExtension('runtime.sendNativeMessage'),
+            sendNativeMessage: (application: string, message: any, callback?: (response: any) => void) => {
+              const args: any[] = [application, serializeNativeMessage(message)]
+              if (typeof callback === 'function') args.push(callback)
+              return invokeExtension('runtime.sendNativeMessage')(...args)
+            },
             // Electron's native runtime has no getPlatformInfo; provide one
             // backed by the preload-computed platformInfo. Supports both the
             // promise (MV3) and callback forms. Defers to a native impl if a
@@ -1686,6 +1897,131 @@ export const injectExtensionAPIs = () => {
             // undefined and getContexts() queries silently match nothing.
             ContextType: runtimeContextType as any,
           }
+
+          // ---- Externally-connectable events (runtime.onMessageExternal /
+          // onConnectExternal). Chrome: a web page on an origin listed in the
+          // extension's manifest `externally_connectable.matches` can call
+          // chrome.runtime.sendMessage(id, msg) / connect(id) (injected into the
+          // page main world by view-preload). Main validates the origin
+          // (messaging.ts isExternallyConnectable) and delivers here with a
+          // web-page sender (id undefined). Registered for BOTH MV2 background
+          // pages AND MV3 SWs — externally_connectable applies to both versions,
+          // and these events are absent from Electron's native runtime, so they
+          // never clash with the MV2 "leave native onConnect/onMessage alone"
+          // rule below.
+          const bridgedOnMessageExternal = new Event<
+            (message: any, sender: any, sendResponse: (response?: any) => void) => boolean | void
+          >()
+          const onMessageExternal = {
+            addListener: (cb: any) => bridgedOnMessageExternal.addListener(cb),
+            removeListener: (cb: any) => bridgedOnMessageExternal.removeListener(cb),
+            hasListener: (cb: any) => bridgedOnMessageExternal.hasListener(cb),
+          }
+          electron.addExtensionListener(
+            extId(),
+            'runtime.onMessageExternal',
+            (payload: { messageId: string; message: any; sender: any }) => {
+              try {
+                console.warn(
+                  `[crx-external] dispatch ext=${extId()} listeners=${
+                    bridgedOnMessageExternal.hasListeners() ? 1 : 0
+                  }`,
+                )
+              } catch {
+                /* best-effort diagnostics */
+              }
+              let responded = false
+              let asyncPending = false
+              const sendResponse = (response?: any) => {
+                if (responded) return
+                responded = true
+                electron.sendMessageResponse(payload.messageId, response)
+              }
+              const results = (bridgedOnMessageExternal as any)._emit(
+                payload.message,
+                payload.sender,
+                sendResponse,
+              ) as any[]
+              // Honor Promise returns + `return true` async, mirroring onMessage.
+              const promises = (Array.isArray(results) ? results : []).filter(
+                (r) => r && typeof r.then === 'function',
+              )
+              const hasAsyncFlag = (Array.isArray(results) ? results : []).some(
+                (r) => r === true,
+              )
+              if (promises.length > 0) {
+                asyncPending = true
+                let rejectedPromises = 0
+                promises.forEach((p) =>
+                  p.then(
+                    (v: any) => {
+                      if (!responded) sendResponse(v)
+                    },
+                    () => {
+                      rejectedPromises++
+                      if (
+                        rejectedPromises === promises.length &&
+                        !hasAsyncFlag &&
+                        !responded
+                      ) {
+                        sendResponse(undefined)
+                      }
+                    },
+                  ),
+                )
+              }
+              if (hasAsyncFlag) {
+                asyncPending = true
+              }
+              if (!asyncPending && !responded) sendResponse(undefined)
+            },
+          )
+
+          const inboundPortDecisions = new Set<string>()
+          const rejectInboundPort = (portId: string) => {
+            if (inboundPortDecisions.has(portId)) return
+            inboundPortDecisions.add(portId)
+            electron.portReject(portId)
+          }
+          const bridgedOnConnectExternal = new Event<(port: chrome.runtime.Port) => void>()
+          const onConnectExternal = {
+            addListener: (cb: any) => bridgedOnConnectExternal.addListener(cb),
+            removeListener: (cb: any) => bridgedOnConnectExternal.removeListener(cb),
+            hasListener: (cb: any) => bridgedOnConnectExternal.hasListener(cb),
+          }
+          electron.addExtensionListener(
+            extId(),
+            'runtime.onConnectExternal',
+            (payload: { portId: string; name: string; sender: any }) => {
+              if (!(bridgedOnConnectExternal as any).hasListeners()) {
+                deferTask(() => {
+                  if (!(bridgedOnConnectExternal as any).hasListeners()) {
+                    rejectInboundPort(payload.portId)
+                  } else {
+                    dispatchExternalConnect(payload)
+                  }
+                }, 5000)
+                return
+              }
+              dispatchExternalConnect(payload)
+            },
+          )
+          function dispatchExternalConnect(payload: { portId: string; name: string; sender: any }) {
+              if (inboundPortDecisions.has(payload.portId)) return
+              inboundPortDecisions.add(payload.portId)
+              const port = new GenericPort()
+              port.name = payload.name || ''
+              port.sender = payload.sender
+              electron.portAccept(
+                payload.portId,
+                (message: any) => port._receive(message),
+                () => port._remoteDisconnect(),
+                (send: any, close: any) => port._bind(send, close),
+              )
+              ;(bridgedOnConnectExternal as any)._emit(port)
+          }
+          ;(runtimeApi as any).onMessageExternal = onMessageExternal
+          ;(runtimeApi as any).onConnectExternal = onConnectExternal
 
           // MV2 (e.g. uBlock Origin): native messaging only. Returning base
           // unwrapped preserves the native onConnect/onMessage objects Electron
@@ -1894,6 +2230,12 @@ export const injectExtensionAPIs = () => {
           // awaited by the native onMessage and serialized back, throwing
           // "An object could not be cloned".
           const nativeMsgWrappers = new WeakMap<object, any>()
+          // Listeners added through the additive API are present twice: the
+          // original callback in bridgedOnMessage and its clone-safe wrapper in
+          // the native portbroker. Track those wrappers so mixed cold-start
+          // registrations can be merged without invoking the same listener
+          // twice.
+          const bridgedNativeMsgWrappers = new WeakSet<object>()
           const wrapNativeMsgListener = (cb: any) => {
             let wrapper = nativeMsgWrappers.get(cb)
             if (wrapper) return wrapper
@@ -2018,12 +2360,14 @@ export const injectExtensionAPIs = () => {
             }
             try {
               nativeMsgWrappers.set(cb, wrapper)
+              bridgedNativeMsgWrappers.add(wrapper)
             } catch {
               // best-effort
             }
             return wrapper
           }
-          const onMessage = {
+          const onMessage: any = {
+            __crxHosted: true,
             addListener: (cb: any) => {
               bridgedOnMessage.addListener(cb)
               ;(base.onMessage as any)?.addListener?.(wrapNativeMsgListener(cb))
@@ -2034,8 +2378,10 @@ export const injectExtensionAPIs = () => {
               if (wrapper) (base.onMessage as any)?.removeListener?.(wrapper)
             },
             hasListener: (cb: any) => bridgedOnMessage.hasListener(cb),
+            hasListeners: () => bridgedOnMessage.hasListeners(),
           }
-          const onConnect = {
+          const onConnect: any = {
+            __crxHosted: true,
             addListener: (cb: any) => {
               bridgedOnConnect.addListener(cb)
               base.onConnect?.addListener?.(cb)
@@ -2045,6 +2391,7 @@ export const injectExtensionAPIs = () => {
               base.onConnect?.removeListener?.(cb)
             },
             hasListener: (cb: any) => bridgedOnConnect.hasListener(cb),
+            hasListeners: () => bridgedOnConnect.hasListeners(),
           }
 
           // Inbound one-shot messages bridged from a content script. Main process
@@ -2063,19 +2410,14 @@ export const injectExtensionAPIs = () => {
               // Content-script chrome.storage tunnel: handle before extension
               // listeners so the internal envelope never reaches them.
               if (handleStorageOp(payload.message, sendResponse)) return
-              // Dispatch the inbound message to onMessage listeners. Prefer the
-              // bridged onMessage (this factory's own listener store). But the
-              // webextension-polyfill — and any code that captured chrome.runtime
-              // before mainWorldScript replaced it with the bridged object —
-              // registers listeners on the NATIVE onMessage, captured by the SHIM
-              // portbroker into globalThis.__crxPortBrokerOnMsg. Those never reach
-              // bridgedOnMessage._emit, so without this fallback a content->SW
-              // sendMessage resolves undefined (BewlyBewly routes every API call
-              // through runtime.sendMessage + a polyfill onMessage listener that
-              // returns a Promise). When bridged has no listeners, dispatch to the
-              // portbroker's captured list instead. (bridged is empty in that case,
-              // so there is no double-fire; if both held listeners we'd prefer
-              // bridged to avoid firing a listener twice.)
+              // A cold MV3 startup can register listeners on both sides of the
+              // chrome.runtime replacement boundary. Early listeners land in the
+              // SHIM portbroker; later listeners land in bridgedOnMessage and also
+              // get a clone-safe native wrapper. Chrome broadcasts to every
+              // registered listener, so merge both stores and skip only wrappers
+              // already represented by their bridged callback. Choosing one store
+              // dropped Tampermonkey's early `prepare` handler whenever any later
+              // bridged listener existed, leaving the current tab marked forbidden.
               const bridgedListeners: any[] =
                 ((bridgedOnMessage as any).listeners as any[]) || []
               let results: any[]
@@ -2089,18 +2431,27 @@ export const injectExtensionAPIs = () => {
                 } catch {
                   results = [undefined]
                 }
-              } else if (bridgedListeners.length > 0) {
-                results = (bridgedOnMessage as any)._emit(
-                  payload.message,
-                  payload.sender,
-                  sendResponse,
-                ) as any[]
               } else {
-                const sbls: any[] = (globalThis as any).__crxPortBrokerOnMsg
                 results = []
+                if (bridgedListeners.length > 0) {
+                  results.push(
+                    ...((bridgedOnMessage as any)._emit(
+                      payload.message,
+                      payload.sender,
+                      sendResponse,
+                    ) as any[]),
+                  )
+                }
+                const sbls: any[] = (globalThis as any).__crxPortBrokerOnMsg
                 if (Array.isArray(sbls) && sbls.length > 0) {
                   for (const fn of sbls) {
                     if (typeof fn !== 'function') continue
+                    if (bridgedListeners.includes(fn)) continue
+                    try {
+                      if (bridgedNativeMsgWrappers.has(fn)) continue
+                    } catch {
+                      // best-effort identity check
+                    }
                     try {
                       results.push(fn(payload.message, payload.sender, sendResponse))
                     } catch {
@@ -2168,6 +2519,37 @@ export const injectExtensionAPIs = () => {
             extId(),
             'runtime.onConnect',
             (payload: { portId: string; name: string; sender: any }) => {
+              const connListeners: any[] =
+                ((bridgedOnConnect as any).listeners as any[]) || []
+              const nativeListeners: any[] = (globalThis as any).__crxPortBrokerOnConnect
+              const hasNativeListeners =
+                Array.isArray(nativeListeners) &&
+                nativeListeners.some((listener) => typeof listener === 'function')
+              if (connListeners.length === 0 && !hasNativeListeners) {
+                deferTask(() => {
+                  const lateListeners: any[] =
+                    ((bridgedOnConnect as any).listeners as any[]) || []
+                  const lateNative: any[] = (globalThis as any).__crxPortBrokerOnConnect
+                  if (
+                    lateListeners.length === 0 &&
+                    !(Array.isArray(lateNative) &&
+                      lateNative.some((listener) => typeof listener === 'function'))
+                  ) {
+                    rejectInboundPort(payload.portId)
+                    return
+                  }
+                  dispatchConnect(payload, lateListeners, lateNative)
+                }, 5000)
+                return
+              }
+              dispatchConnect(payload, connListeners, nativeListeners)
+              function dispatchConnect(
+                payload: { portId: string; name: string; sender: any },
+                connListeners: any[],
+                nativeListeners: any[],
+              ) {
+              if (inboundPortDecisions.has(payload.portId)) return
+              inboundPortDecisions.add(payload.portId)
               const port = new GenericPort()
               port.name = payload.name || ''
               port.sender = payload.sender
@@ -2177,23 +2559,18 @@ export const injectExtensionAPIs = () => {
                 () => port._remoteDisconnect(),
                 (send: any, close: any) => port._bind(send, close),
               )
-              ;(() => {
-                // Mirror the onMessage SBLS fallback: if the polyfill registered
-                // its onConnect listener on the native onConnect (bridged-vs-
-                // native race), bridgedOnConnect is empty — dispatch to the
-                // portbroker's captured native onConnect listeners instead, so
-                // content->SW connect reaches handleConnect (BewlyBewly registers
-                // its onMessage API dispatcher there).
-                const connListeners: any[] =
-                  ((bridgedOnConnect as any).listeners as any[]) || []
+                // Mirror onMessage's mixed-startup handling. An extension can
+                // register early listeners in the native portbroker and later
+                // listeners in the bridged store; Chrome delivers the connection
+                // to all of them. Listeners added through our additive wrapper are
+                // the same function in both stores and are skipped by identity.
                 if (connListeners.length > 0) {
                   ;(bridgedOnConnect as any)._emit(port)
-                  return
                 }
-                const socls: any[] = (globalThis as any).__crxPortBrokerOnConnect
-                if (Array.isArray(socls)) {
-                  for (const fn of socls) {
+                if (Array.isArray(nativeListeners)) {
+                  for (const fn of nativeListeners) {
                     if (typeof fn !== 'function') continue
+                    if (connListeners.includes(fn)) continue
                     try {
                       fn(port)
                     } catch {
@@ -2201,7 +2578,7 @@ export const injectExtensionAPIs = () => {
                     }
                   }
                 }
-              })()
+                }
             },
           )
 
@@ -2438,14 +2815,19 @@ export const injectExtensionAPIs = () => {
                 if (isSet(info.status) && info.status !== tab.status) return false
                 if (isSet(info.windowId) && info.windowId >= 0 && info.windowId !== tab.windowId)
                   return false
+                const groupId = typeof tab.groupId === 'number' ? tab.groupId : -1
+                if (isSet(info.groupId) && info.groupId !== groupId) return false
                 if (isSet(info.url) && !matchAny(info.url, tab.url)) return false
                 if (isSet(info.title) && !matchAny(info.title, tab.title)) return false
                 return true
               })
-              .map((tab: any, index: number) => ({ ...tab, index }))
+              .map((tab: any) => ({
+                ...tab,
+                groupId: typeof tab.groupId === 'number' ? tab.groupId : -1,
+              }))
           }
 
-          const popupCurrentTab = () => {
+          const popupCurrentTabId = () => {
             try {
               const tabs = readInjectedTabs()
               const active = tabs.find(
@@ -2454,15 +2836,7 @@ export const injectExtensionAPIs = () => {
                   (tab.active || tab.selected || tab.highlighted) &&
                   typeof tab.id === 'number',
               )
-              return active || tabs.find((tab: any) => tab && typeof tab.id === 'number')
-            } catch {
-              return undefined
-            }
-          }
-
-          const popupCurrentTabId = () => {
-            try {
-              return popupCurrentTab()?.id
+              return (active || tabs.find((tab: any) => tab && typeof tab.id === 'number'))?.id
             } catch {
               return undefined
             }
@@ -2471,10 +2845,7 @@ export const injectExtensionAPIs = () => {
           const withInjectedTabsFallback = (name: string, fn: (...args: any[]) => any) => {
             return (...args: any[]) => {
               const cb = typeof args[args.length - 1] === 'function' ? args.pop() : undefined
-              const fallback =
-                name === 'tabs.getCurrent'
-                  ? () => popupCurrentTab()
-                  : () => filterInjectedTabs(args[0] || {})
+              const fallback = () => filterInjectedTabs(args[0] || {})
               const p = Promise.resolve()
                 .then(() => fn(...args))
                 .then((result: any) => {
@@ -2498,9 +2869,6 @@ export const injectExtensionAPIs = () => {
                       if (tabs.length) return tabs
                     }
                     return result
-                  }
-                  if (name === 'tabs.getCurrent' && typeof result === 'undefined') {
-                    return fallback()
                   }
                   return result
                 })
@@ -2596,7 +2964,7 @@ export const injectExtensionAPIs = () => {
             group: invokeExtension('tabs.group'),
             ungroup: invokeExtension('tabs.ungroup'),
             get: invokeExtension('tabs.get'),
-            getCurrent: withInjectedTabsFallback('tabs.getCurrent', invokeExtension('tabs.getCurrent')),
+            getCurrent: invokeExtension('tabs.getCurrent'),
             // chrome.tabs.connect(tabId, {name}) -> opens a long-lived Port to
             // the content script in that tab. Main returns the portId; we bind
             // the caller (this extension context) as the receiving end via the
@@ -2606,6 +2974,7 @@ export const injectExtensionAPIs = () => {
             insertCSS: invokeExtension('tabs.insertCSS'),
             query: withInjectedTabsFallback('tabs.query', invokeExtension('tabs.query')),
             reload: invokeExtension('tabs.reload'),
+            highlight: invokeExtension('tabs.highlight'),
             sendMessage: (...args: any[]): any => {
               // (tabId, message, cb) | (tabId, message, options, cb)
               // plus this app's popup convenience form: (message, options?, cb).
@@ -2622,9 +2991,32 @@ export const injectExtensionAPIs = () => {
                   ? args[1]
                   : undefined
 
+              let serialized = message
+              try {
+                serialized = crxSerializeMessage(message)
+              } catch {
+                serialized = undefined
+              }
+              if (crxIsAutofillMessage(message)) {
+                crxAutofillLog(
+                  `tabs.api.send ext=${extId()} tabId=${tabId ?? ''} ` +
+                    `frameId=${options?.frameId ?? ''} command=${message.command}`,
+                )
+              }
               const routed = electron
-                .invokeExtension(extId(), 'tabs.sendMessage', {}, tabId, message, options)
+                .invokeExtension(extId(), 'tabs.sendMessage', {}, tabId, serialized, options)
                 .catch((): undefined => undefined)
+
+              if (crxIsAutofillMessage(message)) {
+                routed.then(
+                  (response: any) =>
+                    crxAutofillLog(
+                      `tabs.api.response command=${message.command} ` +
+                        `response=${response === undefined ? 'undefined' : response === null ? 'null' : typeof response}`,
+                    ),
+                  () => crxAutofillLog(`tabs.api.response command=${message.command} response=reject`),
+                )
+              }
 
               if (cb) {
                 routed.then((r: any) => cb(r)).catch(() => cb(undefined))
@@ -2795,11 +3187,14 @@ export const injectExtensionAPIs = () => {
       tabGroups: {
         factory: (base) => ({
           ...base,
+          // Chrome uses -1 for tabs that do not belong to a tab group.
+          TAB_GROUP_ID_NONE: -1,
           get: invokeExtension('tabGroups.get'),
           query: invokeExtension('tabGroups.query'),
           update: invokeExtension('tabGroups.update'),
           move: invokeExtension('tabGroups.move'),
           onCreated: new ExtensionEvent('tabGroups.onCreated'),
+          onMoved: new ExtensionEvent('tabGroups.onMoved'),
           onUpdated: new ExtensionEvent('tabGroups.onUpdated'),
           onRemoved: new ExtensionEvent('tabGroups.onRemoved'),
         }),
@@ -3036,6 +3431,7 @@ export const injectExtensionAPIs = () => {
         shouldInject: () => !!(manifest.permissions as string[] | undefined)?.includes('userScripts'),
         factory: (base: any) => {
           return {
+            __crxHosted: true,
             // Spec enum (chrome.userScripts.ExecutionWorld). Pure data constant
             // as a fallback; if native `base` already carries it (identical
             // values) that wins via the spread below. `execute()` (Chrome 135+)
@@ -3088,16 +3484,93 @@ export const injectExtensionAPIs = () => {
           })
           const nativeExecuteScript =
             typeof base?.executeScript === 'function' ? base.executeScript.bind(base) : null
+          const executeWithStorageCompatibility = (
+            injection: any,
+            callback?: (...args: any[]) => void,
+          ) => {
+            if (
+              !nativeExecuteScript ||
+              String(injection?.world || 'ISOLATED').toUpperCase() === 'MAIN'
+            ) {
+              return nativeExecuteScript
+                ? nativeExecuteScript(injection, callback)
+                : ipcExecuteScript(injection, callback)
+            }
+
+            // Native executeScript creates/uses an extension-specific isolated
+            // world after the preload API overrides have run. Patch that same
+            // world before loading the requested file or function.
+            const compatibilityInjection = {
+              target: injection?.target,
+              world: 'ISOLATED',
+              injectImmediately: injection?.injectImmediately,
+              func: () => {
+                try {
+                  const chromeApi: any = (globalThis as any).chrome
+                  const storage: any = chromeApi && chromeApi.storage
+                  if (!storage) return
+                  let local: any
+                  try {
+                    local = storage.local
+                  } catch {
+                    return
+                  }
+                  if (!local) return
+                  let replaceStorage = false
+                  for (const name of ['sync', 'managed']) {
+                    let current: any
+                    try {
+                      current = storage[name]
+                    } catch {}
+                    if (current === local) continue
+                    try {
+                      Object.defineProperty(storage, name, {
+                        value: local,
+                        configurable: true,
+                        enumerable: true,
+                        writable: true,
+                      })
+                      if (storage[name] !== local) replaceStorage = true
+                    } catch {
+                      replaceStorage = true
+                    }
+                  }
+                  if (!replaceStorage) return
+                  let session: any
+                  let onChanged: any
+                  try {
+                    session = storage.session
+                  } catch {}
+                  try {
+                    onChanged = storage.onChanged
+                  } catch {}
+                  const replacement: any = { local, sync: local, managed: local }
+                  if (session) replacement.session = session
+                  if (onChanged) replacement.onChanged = onChanged
+                  try {
+                    Object.defineProperty(chromeApi, 'storage', {
+                      value: replacement,
+                      configurable: true,
+                      enumerable: true,
+                      writable: true,
+                    })
+                  } catch {}
+                } catch {}
+              },
+            }
+
+            const result = Promise.resolve(nativeExecuteScript(compatibilityInjection))
+              .catch(() => undefined)
+              .then(() => nativeExecuteScript(injection, callback))
+            return callback ? undefined : result
+          }
           return {
             ...base,
             registerContentScripts: invokeExtension('scripting.registerContentScripts'),
             unregisterContentScripts: invokeExtension('scripting.unregisterContentScripts'),
             updateContentScripts: invokeExtension('scripting.updateContentScripts'),
             getRegisteredContentScripts: invokeExtension('scripting.getRegisteredContentScripts'),
-            executeScript: (injection: any, callback?: (...args: any[]) => void) =>
-              nativeExecuteScript
-                ? nativeExecuteScript(injection, callback)
-                : ipcExecuteScript(injection, callback),
+            executeScript: executeWithStorageCompatibility,
             insertCSS: invokeExtension('scripting.insertCSS'),
             removeCSS: invokeExtension('scripting.removeCSS'),
           }
@@ -3225,7 +3698,13 @@ export const injectExtensionAPIs = () => {
           return
         }
 
-        const value = api.factory(baseApi)
+        // Extension pages created during the MV3 bootstrap can run before
+        // Chromium has attached every native namespace (notably
+        // chrome.runtime in an offscreen document). Factories are expected to
+        // layer their implementation over a namespace object, so give them an
+        // empty base until Chromium finishes that attachment instead of
+        // aborting the namespace patch with e.g. `undefined.getPlatformInfo`.
+        const value = api.factory(baseApi || {})
 
         // 1) Try to replace the whole namespace object.
         let landed = false
@@ -3248,7 +3727,7 @@ export const injectExtensionAPIs = () => {
         // ONTO the native object so our framework methods win.
         //
         // SCOPED to namespaces CONFIRMED shadowed by a non-configurable native
-        // (currently declarativeNetRequest / identity). A broad fallback across ALL
+        // (currently tabs / declarativeNetRequest / identity). A broad fallback across ALL
         // factories regressed offscreen/runtime messaging for some extensions
         // (their createDocument/sendMessage paths), and every other namespace
         // already worked via the defineProperty path above — so extend this set
@@ -3265,9 +3744,43 @@ export const injectExtensionAPIs = () => {
         // why the SW path works but the popup doesn't.) Patch our IPC-backed
         // methods ONTO the native object so they win. See
         // [[sandboxed-popup-native-tabs-nonconfigurable]].
+        // MV3 service workers expose chrome.runtime itself as non-configurable,
+        // while its event properties remain configurable. Keep Chromium's
+        // outbound sendMessage/id/getManifest surface, but install the hosted
+        // inbound event bridge in place. The factory has already captured the
+        // original event objects, so listeners registered before this patch
+        // remain reachable through the native portbroker merge.
+        if (!landed && apiName === 'runtime' && isWorkerContext) {
+          const target = (chrome as any).runtime
+          for (const prop of [
+            'onMessage',
+            'onConnect',
+            'onMessageExternal',
+            'onConnectExternal',
+          ]) {
+            const replacement = (value as any)?.[prop]
+            if (!target || replacement == null) continue
+            try {
+              Object.defineProperty(target, prop, {
+                value: replacement,
+                configurable: true,
+                enumerable: true,
+                writable: true,
+              })
+            } catch {
+              try {
+                target[prop] = replacement
+              } catch {
+                /* locked native event — readiness remains false */
+              }
+            }
+          }
+        }
+
         if (
           !landed &&
-          (apiName === 'declarativeNetRequest' ||
+          (apiName === 'tabs' ||
+            apiName === 'declarativeNetRequest' ||
             apiName === 'identity' ||
             apiName === 'userScripts')
         ) {
@@ -3324,6 +3837,21 @@ export const injectExtensionAPIs = () => {
       ;(chrome as any).__crxPatched = true
     } catch {
       /* chrome may be frozen/non-extensible — sentinel is best-effort */
+    }
+
+    // Signal from the same main-world turn that installed the inbound runtime
+    // bridge. The host records this against the exact worker version and still
+    // waits for Electron's `running` state before delivering any event.
+    if (
+      isWorkerContext &&
+      (chrome as any).runtime?.onMessage?.__crxHosted === true &&
+      (chrome as any).runtime?.onConnect?.__crxHosted === true
+    ) {
+      try {
+        ;(electron as any).notifyWorkerReady?.({ protocol: WORKER_INBOUND_PROTOCOL })
+      } catch {
+        /* worker stopped during bootstrap */
+      }
     }
 
     // SW main world: native `chrome` finishes bootstrapping asynchronously
@@ -3459,6 +3987,227 @@ export const injectExtensionAPIs = () => {
             return
           }
           if (!local) return
+          // A newly created Electron MV3 worker can briefly see an empty local
+          // area while the persistent store is still hydrating. Share one small
+          // hydration probe across startup reads so an actually empty or very
+          // large store never causes repeated full-area reads.
+          const wrapHydratingGet = (area: any) => {
+            if (
+              !area ||
+              typeof area.get !== 'function' ||
+              area.get.__crxHydrationGuard
+            ) {
+              return
+            }
+            const origGet = area.get.bind(area)
+            const startedAt = Date.now()
+            const startupWindowMs = 500
+            const fullReadBudgetBytes = 8 * 1024 * 1024
+            const overlayTtlMs = 2000
+            let hydrationProbe: Promise<any> | undefined
+            let hydrationFinished = false
+            let overlayCleanupTimer: any
+            const overlay: Record<string, {value: any; expiresAt: number}> = Object.create(null)
+            const read = (keys: any): Promise<any> => {
+              try {
+                const result = origGet(keys)
+                return result && typeof result.then === 'function'
+                  ? Promise.resolve(result)
+                  : Promise.resolve(result || {})
+              } catch (error) {
+                return Promise.reject(error)
+              }
+            }
+            const canReadFullArea = (): Promise<boolean> =>
+              new Promise((resolve) => {
+                const getBytesInUse = area.getBytesInUse
+                if (typeof getBytesInUse !== 'function') {
+                  resolve(false)
+                  return
+                }
+                let settled = false
+                let timer: any
+                const finish = (bytes: any) => {
+                  if (settled) return
+                  settled = true
+                  clearTimeout(timer)
+                  resolve(
+                    typeof bytes === 'number' &&
+                      Number.isFinite(bytes) &&
+                      bytes <= fullReadBudgetBytes,
+                  )
+                }
+                timer = setTimeout(() => finish(undefined), 100)
+                try {
+                  const result = getBytesInUse.call(area, null, finish)
+                  if (result && typeof result.then === 'function') {
+                    result.then(finish, () => finish(undefined))
+                  } else if (typeof result === 'number') {
+                    finish(result)
+                  }
+                } catch {
+                  finish(undefined)
+                }
+              })
+            const isEmpty = (value: any) =>
+              !!value && typeof value === 'object' && Object.keys(value).length === 0
+            const mergeKeys = (keys: string | string[], result: any, source: any) => {
+              const requested = typeof keys === 'string' ? [keys] : keys
+              let merged = result
+              let added = false
+              for (const key of requested) {
+                if (
+                  !Object.prototype.hasOwnProperty.call(result, key) &&
+                  Object.prototype.hasOwnProperty.call(source, key)
+                ) {
+                  if (!added) merged = {...result}
+                  merged[key] = source[key]
+                  added = true
+                }
+              }
+              return merged
+            }
+            const readOverlay = () => {
+              const now = Date.now()
+              const values: Record<string, any> = Object.create(null)
+              for (const key of Object.keys(overlay)) {
+                if (overlay[key].expiresAt <= now) {
+                  delete overlay[key]
+                } else {
+                  values[key] = overlay[key].value
+                }
+              }
+              return values
+            }
+            const cleanupOverlay = () => {
+              overlayCleanupTimer = undefined
+              const now = Date.now()
+              let nextExpiry = Number.POSITIVE_INFINITY
+              for (const key of Object.keys(overlay)) {
+                if (overlay[key].expiresAt <= now) {
+                  delete overlay[key]
+                } else {
+                  nextExpiry = Math.min(nextExpiry, overlay[key].expiresAt)
+                }
+              }
+              if (nextExpiry !== Number.POSITIVE_INFINITY) {
+                overlayCleanupTimer = setTimeout(
+                  cleanupOverlay,
+                  Math.max(0, nextExpiry - now),
+                )
+              }
+            }
+            const probeHydration = () => {
+              if (hydrationProbe) return hydrationProbe
+              if (hydrationFinished) return Promise.resolve({})
+              let attempts = 0
+              const probe = (): Promise<any> =>
+                canReadFullArea().then((allowed) => {
+                  if (!allowed) return {}
+                  return read(null).then((all) => {
+                    if (!isEmpty(all) || ++attempts >= 3) return all
+                    return new Promise<void>((resolve) => setTimeout(resolve, 50)).then(probe)
+                  })
+                })
+              hydrationProbe = probe().then(
+                (all) => {
+                  hydrationFinished = true
+                  hydrationProbe = undefined
+                  return all
+                },
+                (error) => {
+                  hydrationProbe = undefined
+                  throw error
+                },
+              )
+              return hydrationProbe
+            }
+            const load = (keys: any): Promise<any> =>
+              read(keys).then((result) => {
+                const specific =
+                  typeof keys === 'string' || (Array.isArray(keys) && keys.length > 0)
+                if (!specific) return result
+                const requested = typeof keys === 'string' ? [keys] : keys
+                if (
+                  requested.every((key: string) =>
+                    Object.prototype.hasOwnProperty.call(result, key),
+                  )
+                ) {
+                  return result
+                }
+                const withOverlay = mergeKeys(keys, result, readOverlay())
+                if (withOverlay !== result || Date.now() - startedAt > startupWindowMs) {
+                  return withOverlay
+                }
+                return probeHydration().then((all) => mergeKeys(keys, result, all))
+              })
+            const wrapped = (keys: any, cb?: any) => {
+              const result = load(keys)
+              if (typeof cb === 'function') {
+                result.then(
+                  (value) => {
+                    try {
+                      cb(value)
+                    } catch {
+                      // best-effort
+                    }
+                  },
+                  () => {
+                    try {
+                      cb({})
+                    } catch {
+                      // best-effort
+                    }
+                  },
+                )
+                return undefined
+              }
+              return result
+            }
+            try {
+              Object.defineProperty(wrapped, '__crxHydrationGuard', {
+                value: true,
+                configurable: true,
+              })
+              Object.defineProperty(wrapped, '__crxRawGet', {
+                value: read,
+                configurable: true,
+              })
+              Object.defineProperty(wrapped, '__crxApplyChanges', {
+                value: (changes: any) => {
+                  const expiresAt = Date.now() + overlayTtlMs
+                  for (const key of Object.keys(changes || {})) {
+                    const change = changes[key]
+                    if (change && Object.prototype.hasOwnProperty.call(change, 'newValue')) {
+                      overlay[key] = {value: change.newValue, expiresAt}
+                    } else {
+                      delete overlay[key]
+                    }
+                  }
+                  if (!overlayCleanupTimer && Object.keys(overlay).length > 0) {
+                    overlayCleanupTimer = setTimeout(cleanupOverlay, overlayTtlMs)
+                  }
+                },
+                configurable: true,
+              })
+            } catch {
+              // best-effort
+            }
+            try {
+              area.get = wrapped
+            } catch {
+              try {
+                Object.defineProperty(area, 'get', {
+                  value: wrapped,
+                  configurable: true,
+                  writable: true,
+                })
+              } catch {
+                return
+              }
+            }
+          }
+          wrapHydratingGet(local)
           // Self-contained Blob/File strip for storage.set. The SW's native
           // chrome.storage.local is backed by Electron IPC (V8 serialization),
           // which — unlike structured clone — can't clone Blob/File. A
@@ -3518,6 +4267,9 @@ export const injectExtensionAPIs = () => {
               }
             }
           }
+          // Native storage owns change diffing and onChanged delivery. Do not
+          // synthesize events here: listeners would receive duplicate or
+          // incomplete StorageChange records without reliable old values.
           const wrapSet = (area: any) => {
             if (!area || typeof area.set !== 'function' || area.__crxStripSet) return
             const origSet = area.set.bind(area)
@@ -3829,7 +4581,7 @@ export const injectExtensionAPIs = () => {
           // (scripting.ts has a full handler with frame targeting + file
           // injection); there is NO tabs.executeScript handler, so listing it
           // here as a plain invoke would throw "not a registered handler".
-          // move/highlight/discard/removeCSS have no host API either — left in
+          // move/discard/removeCSS have no host API either — left in
           // the list so the method exists (returns undefined via the swallowed
           // router error) rather than being an undefined property.
           const tabsMethods = [
@@ -4089,14 +4841,36 @@ export const injectExtensionAPIs = () => {
                 func: () => {
                   const c = (globalThis as any).chrome
                   const e = (globalThis as any).electron
+                  let manifest: any = {}
+                  try {
+                    manifest = c?.runtime?.getManifest?.() || {}
+                  } catch {}
+                  const permissions = manifest.permissions || []
+                  const allPermissions = [
+                    ...permissions,
+                    ...(manifest.optional_permissions || []),
+                  ]
+                  const needsUserScripts = allPermissions.includes('userScripts')
+                  const needsDnr =
+                    allPermissions.includes('declarativeNetRequest') ||
+                    allPermissions.includes('declarativeNetRequestWithHostAccess')
+                  const needsOffscreen = allPermissions.includes('offscreen')
                   return !!(
                     e &&
                     c &&
                     c.runtime &&
                     typeof c.runtime.id === 'string' &&
                     !!c.runtime.id &&
+                    c.runtime.onMessage?.__crxHosted === true &&
+                    c.runtime.onConnect?.__crxHosted === true &&
                     c.tabs &&
-                    typeof c.tabs.create === 'function'
+                    typeof c.tabs.create === 'function' &&
+                    (!needsUserScripts ||
+                      (c.userScripts?.__crxHosted === true &&
+                        typeof c.userScripts.register === 'function' &&
+                        typeof c.userScripts.getScripts === 'function')) &&
+                    (!needsDnr || c.declarativeNetRequest?.__crxHosted === true) &&
+                    (!needsOffscreen || c.offscreen?.__crxHosted === true)
                   )
                 },
               })
@@ -4104,13 +4878,19 @@ export const injectExtensionAPIs = () => {
             if (ready) {
               try {
                 ipcRenderer.send('crx-beacon', 'sw-api-ready')
+                ipcRenderer.send('crx-worker-ready', { protocol: WORKER_INBOUND_PROTOCOL })
+                ensureWorkerInboundPump()
               } catch {}
               return
             }
             // Chromium may still be replacing the native namespace after
             // runtime.id appears. Keep re-applying for the rest of the normal
             // bootstrap window instead of declaring success too early.
-            if (tries <= 160 /* ~4s @25ms */) {
+            if (tries <= 600 /* ~15s total readiness window */) {
+              // Keep the short cadence while Chromium replaces the native
+              // namespace. This readiness signal gates the first message
+              // delivery, so a slow cadence can make a healthy worker look
+              // unavailable to popup prewarm/recovery.
               poll()
               return
             }
@@ -4119,7 +4899,7 @@ export const injectExtensionAPIs = () => {
             } catch {}
             return
           }
-          if (tries <= 160 /* ~4s @25ms */) {
+          if (tries <= 600 /* ~15s */) {
             poll()
           }
         }, 25)
@@ -4320,6 +5100,150 @@ export const injectExtensionAPIs = () => {
     } catch (e: any) {
       console.error(`[crx-preload] SW DNR patch error: ${e && e.message}`)
     }
+    // Chromium can install its gated native userScripts binding after the
+    // extension preload. Electron has no UI for enabling that backend, so a
+    // late replacement leaves methods present but rejects every call. Keep the
+    // hosted implementation authoritative throughout native bootstrap.
+    try {
+      const installUserScripts = (): boolean => {
+        try {
+          return !!cb.executeInMainWorld({
+            func: () => {
+              const c: any = (globalThis as any).chrome
+              const elx: any = (globalThis as any).electron
+              if (!c?.runtime || !elx) return false
+              const manifest = c.runtime.getManifest?.() || {}
+              const permissions = [
+                ...(manifest.permissions || []),
+                ...(manifest.optional_permissions || []),
+              ]
+              if (!permissions.includes('userScripts')) return true
+              const id = c.runtime.id
+              const call = (name: string) => (...args: any[]) => {
+                const callback =
+                  typeof args[args.length - 1] === 'function' ? args.pop() : undefined
+                const raw =
+                  typeof elx.invokeExtensionRaw === 'function'
+                    ? elx.invokeExtensionRaw(id, `userScripts.${name}`, {}, ...args)
+                    : elx.invokeExtension(id, `userScripts.${name}`, {}, ...args)
+                const promise = Promise.resolve(raw)
+                if (!callback) return promise
+                promise.then(
+                  (value: any) => callback(value),
+                  (error: any) => {
+                    const runtime = c.runtime
+                    let previous: PropertyDescriptor | undefined
+                    try {
+                      previous = Object.getOwnPropertyDescriptor(runtime, 'lastError')
+                      Object.defineProperty(runtime, 'lastError', {
+                        value: { message: String(error?.message || error || 'Unknown error') },
+                        configurable: true,
+                      })
+                    } catch {}
+                    try {
+                      callback(undefined)
+                    } finally {
+                      try {
+                        if (previous) Object.defineProperty(runtime, 'lastError', previous)
+                        else delete runtime.lastError
+                      } catch {}
+                    }
+                  },
+                )
+                return undefined
+              }
+              const hosted: any = {
+                __crxHosted: true,
+                ExecutionWorld: { MAIN: 'MAIN', USER_SCRIPT: 'USER_SCRIPT' },
+                register: call('register'),
+                update: call('update'),
+                unregister: call('unregister'),
+                getScripts: call('getScripts'),
+                configureWorld: call('configureWorld'),
+                getWorldConfigurations: call('getWorldConfigurations'),
+                resetWorldConfiguration: call('resetWorldConfiguration'),
+              }
+              try {
+                Object.defineProperty(c, 'userScripts', {
+                  value: hosted,
+                  configurable: true,
+                  enumerable: true,
+                  writable: true,
+                })
+              } catch {}
+              const target = c.userScripts
+              if (target && target !== hosted && typeof target === 'object') {
+                for (const key of Object.keys(hosted)) {
+                  try {
+                    Object.defineProperty(target, key, {
+                      value: hosted[key],
+                      configurable: true,
+                      enumerable: true,
+                      writable: true,
+                    })
+                  } catch {
+                    try {
+                      target[key] = hosted[key]
+                    } catch {}
+                  }
+                }
+              }
+              return !!(
+                c.userScripts?.__crxHosted &&
+                typeof c.userScripts.register === 'function' &&
+                typeof c.userScripts.getScripts === 'function'
+              )
+            },
+          })
+        } catch {
+          return false
+        }
+      }
+      const userScriptsPermissionState = (): boolean | null => {
+        try {
+          return cb.executeInMainWorld({
+            func: () => {
+              const runtime = (globalThis as any).chrome?.runtime
+              if (!runtime?.id || typeof runtime.getManifest !== 'function') return null
+              const manifest = runtime.getManifest() || {}
+              const permissions = [
+                ...(Array.isArray(manifest.permissions) ? manifest.permissions : []),
+                ...(Array.isArray(manifest.optional_permissions)
+                  ? manifest.optional_permissions
+                  : []),
+              ]
+              return permissions.includes('userScripts')
+            },
+          }) as boolean | null
+        } catch {
+          return null
+        }
+      }
+      let userScriptsPermissionTries = 0
+      const startUserScriptsPatch = () => {
+        const permissionState = userScriptsPermissionState()
+        if (permissionState === null) {
+          if (++userScriptsPermissionTries < 50) {
+            deferTask(startUserScriptsPatch, 250)
+          }
+          return
+        }
+        if (!permissionState) return
+        installUserScripts()
+        let userScriptsTries = 0
+        const userScriptsPoll = () => {
+          deferTask(() => {
+            userScriptsTries++
+            installUserScripts()
+            if (userScriptsTries < 50 /* ~12s @250ms */) userScriptsPoll()
+          }, 250)
+        }
+        userScriptsPoll()
+      }
+      startUserScriptsPatch()
+    } catch (e: any) {
+      console.error(`[crx-preload] SW userScripts patch error: ${e && e.message}`)
+    }
     // chrome.offscreen + chrome.runtime.getContexts: Chromium bootstraps the
     // native chrome.offscreen binding (which Electron 42 exposes — see
     // offscreen.createDocument/closeDocument/hasDocument in electron.exe — but
@@ -4334,7 +5258,7 @@ export const injectExtensionAPIs = () => {
       const installOffscreen = (): boolean => {
         try {
           return !!cb.executeInMainWorld({
-            func: () => {
+            func: (runtimeContextType: RuntimeContextTypeMap) => {
               const c: any = (globalThis as any).chrome
               const elx: any = (globalThis as any).electron
               if (!c || !c.runtime || !elx) return false

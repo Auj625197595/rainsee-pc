@@ -4,12 +4,33 @@ import { ISettings, ITheme, ISearchEngine } from '~/interfaces';
 import { AutoFillStore } from './autofill';
 import { StartupTabsStore } from './startup-tabs';
 import { getTheme } from '~/utils/themes';
+import { DEFAULT_SETTINGS } from '~/constants';
+import { normalizeBookmarkBarDisplay } from '~/common/bookmark-bar';
+
+const normalizeSettings = (settings?: Partial<ISettings>): ISettings => {
+  const bookmarksBarDisplay = normalizeBookmarkBarDisplay(
+    settings?.bookmarksBarDisplay,
+    settings?.bookmarksBar,
+  );
+
+  return {
+    ...DEFAULT_SETTINGS,
+    ...settings,
+    bookmarksBarDisplay,
+    bookmarksBar: bookmarksBarDisplay !== 'never',
+    startupBehavior: {
+      ...DEFAULT_SETTINGS.startupBehavior,
+      ...(settings && settings.startupBehavior),
+    },
+  };
+};
 
 export type SettingsSection =
   | 'appearance'
   | 'autofill'
   | 'address-bar'
   | 'privacy'
+  | 'web-browsing'
   | 'permissions'
   | 'startup'
   | 'language'
@@ -67,14 +88,15 @@ export class Store {
     | 'add-search-engine'
     | 'edit-address'
     | 'edit-password'
-    | 'privacy'
+    | 'browsing-data'
+    | 'clear-on-exit'
     | 'adblock-rule' = null;
 
   @observable
   public selectedSection: SettingsSection = 'appearance';
 
   @observable
-  public settings: ISettings = { ...(window as any).settings };
+  public settings: ISettings = normalizeSettings((window as any).settings);
 
   @observable
   public appVersion: string = (window as any)['supervideo-app-version'];
@@ -112,7 +134,7 @@ export class Store {
     makeObservable(this);
 
     (window as any).updateSettings = (settings: ISettings) => {
-      this.settings = { ...this.settings, ...settings };
+      this.settings = normalizeSettings({ ...this.settings, ...settings });
     };
 
     window.onmousedown = () => {

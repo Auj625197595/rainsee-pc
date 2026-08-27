@@ -8,6 +8,8 @@ import { animateTab } from '../utils/tabs';
 import { ITab } from './tab';
 
 export class ITabGroup {
+  // 工作区文档中的稳定键。运行时 group id 仍由本窗口独立分配。
+  public workspaceKey?: string;
   public width = 0;
   public left = 8;
 
@@ -45,6 +47,7 @@ export class ITabGroup {
   public constructor(store: Store, tabGroupsStore: TabGroupsStore, id: number) {
     makeObservable(this, {
       id: observable,
+      width: observable,
       name: observable,
       color: observable,
       editMode: observable,

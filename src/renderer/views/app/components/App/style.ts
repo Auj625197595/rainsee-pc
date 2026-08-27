@@ -79,7 +79,7 @@ export const SidebarShell = styled.div`
 // 顶部全宽拖拽条:把侧边栏头部与内容区工具栏一起下移 SIDEBAR_TOP_DRAG_HEIGHT,
 // 与窗口上边缘留出呼吸间距。这里必须使用 Electron 原生 drag region:贴着无边框
 // 窗口顶边的 DOM mousedown 会被 Windows 缩放命中区截获,无法可靠启动手动拖动。
-export const SidebarTopDrag = styled.div`
+export const SidebarTopDrag = styled.div<{ $macLeft?: boolean }>`
   width: 100%;
   height: ${SIDEBAR_TOP_DRAG_HEIGHT}px;
   flex-shrink: 0;
@@ -87,7 +87,7 @@ export const SidebarTopDrag = styled.div`
   user-select: none;
 
   ${({ theme }: { theme?: ITheme }) => css`
-    background-color: ${theme['titlebar.backgroundColor']};
+    background-color: transparent;
   `};
 `;
 
@@ -115,4 +115,58 @@ export const ViewAnchor = styled.div`
   min-height: 0;
   width: 100%;
   -webkit-app-region: no-drag;
+`;
+
+export const AppToastStack = styled.div`
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  z-index: 1000;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+`;
+
+export const ProfileOnboardingToast = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 100%;
+  padding: 7px 8px 7px 14px;
+  border-radius: 8px;
+  color: #fff;
+  background: rgba(35, 38, 45, 0.94);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.24);
+  font-size: 13px;
+  line-height: 20px;
+  pointer-events: auto;
+`;
+
+export const ProfileOnboardingAction = styled.button`
+  flex-shrink: 0;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 5px;
+  color: #20232a;
+  background: rgba(255, 255, 255, 0.94);
+  font: inherit;
+  font-weight: 600;
+  line-height: 28px;
+  cursor: pointer;
+
+  &:hover {
+    background: #fff;
+  }
+
+  &:focus-visible {
+    outline: 2px solid #8aa4ff;
+    outline-offset: 2px;
+  }
 `;

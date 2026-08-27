@@ -131,10 +131,14 @@ export const BrowserAction = observer(({ data }: Props) => {
     badgeBackgroundColor,
     badgeTextColor,
     extensionId,
+    title,
   } = data;
 
   return (
     <ToolbarButton
+      rainseeAction="extension-action"
+      rainseeExtensionId={extensionId}
+      title={title}
       className="right-action right-action--extension"
       onClick={onClick(data)}
       onMouseDown={onMouseDown(data)}

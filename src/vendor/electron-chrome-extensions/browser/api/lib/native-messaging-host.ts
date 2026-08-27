@@ -8,6 +8,7 @@ import { ExtensionSender, IpcEvent } from '../../router'
 import { readRegistryKey } from './winreg'
 
 const d = debug('electron-chrome-extensions:nativeMessaging')
+const MAX_NATIVE_MESSAGE_BYTES = 64 * 1024 * 1024
 
 interface NativeConfig {
   name: string
@@ -27,6 +28,53 @@ function isValidConfig(config: any): config is NativeConfig {
     config.type === 'stdio' &&
     Array.isArray(config.allowed_origins)
   )
+}
+
+// Chromium accepts JavaScript-style comments in native-messaging manifests.
+// Several enterprise installers (including CFCA BCM) ship the Chromium
+// copyright header as leading `//` lines, so plain JSON.parse rejects a
+// manifest Chrome/Edge accepts. Strip comments without touching comment-like
+// text inside JSON strings (paths, URLs, descriptions, etc.).
+function stripJsonComments(source: string): string {
+  let out = ''
+  let inString = false
+  let escaped = false
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i]
+    const next = source[i + 1]
+    if (inString) {
+      out += ch
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') {
+      inString = true
+      out += ch
+      continue
+    }
+    if (ch === '/' && next === '/') {
+      i += 2
+      while (i < source.length && source[i] !== '\n' && source[i] !== '\r') i++
+      if (i < source.length) out += source[i]
+      continue
+    }
+    if (ch === '/' && next === '*') {
+      i += 2
+      while (i < source.length) {
+        if (source[i] === '\n' || source[i] === '\r') out += source[i]
+        if (source[i] === '*' && source[i + 1] === '/') {
+          i++
+          break
+        }
+        i++
+      }
+      continue
+    }
+    out += ch
+  }
+  return out.replace(/^\uFEFF/, '')
 }
 
 async function getConfigSearchPaths(application: string) {
@@ -56,14 +104,45 @@ async function getConfigSearchPaths(application: string) {
       ]
       break
     case 'win32': {
+      const registryPaths = [
+        `Software\\Google\\Chrome\\NativeMessagingHosts\\${application}`,
+        `Software\\Microsoft\\Edge\\NativeMessagingHosts\\${application}`,
+        // Explicit WOW6432Node paths are needed on a few Windows/Electron
+        // combinations where `reg query ... /reg:32` succeeds in a terminal
+        // but the spawned application process still sees an empty redirected
+        // view. Chromium probes the physical 32-bit registration as well.
+        `Software\\WOW6432Node\\Google\\Chrome\\NativeMessagingHosts\\${application}`,
+        `Software\\WOW6432Node\\Microsoft\\Edge\\NativeMessagingHosts\\${application}`,
+      ]
+      const lookups: Array<Promise<string | null>> = []
+      for (const registryPath of registryPaths) {
+        for (const hive of ['HKLM', 'HKCU']) {
+          // A 64-bit Electron process queries the 64-bit registry view by
+          // default, while many native hosts are installed by 32-bit setup
+          // programs under WOW6432Node. Probe both views like Chromium does.
+          lookups.push(readRegistryKey(hive, registryPath, undefined, '64'))
+          lookups.push(readRegistryKey(hive, registryPath, undefined, '32'))
+        }
+      }
       searchPaths = (
-        await Promise.allSettled([
-          readRegistryKey('HKLM', `Software\\Google\\Chrome\\NativeMessagingHosts\\${application}`),
-          readRegistryKey('HKCU', `Software\\Google\\Chrome\\NativeMessagingHosts\\${application}`),
-        ])
+        await Promise.allSettled(lookups)
       )
         .map((result) => (result.status === 'fulfilled' ? result.value : undefined))
-        .filter(Boolean) as string[]
+        .filter((value, index, all) => !!value && all.indexOf(value) === index) as string[]
+      // CFCA's 32-bit BCM installer uses this stable installation layout.
+      // Keep it as a final product-specific fallback because some deployed
+      // machines expose the registry entry only to Edge/Chrome's broker view,
+      // not to Electron's spawned `reg.exe` process.
+      if (application === 'com.cfca.seceditctl.bcm') {
+        const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
+        const cfcaManifest = path.join(
+          programFilesX86,
+          'CFCA',
+          'SecEditCtlHost.BCM.Setup',
+          'com.cfca.SecEditCtl.BCM-win.json',
+        )
+        if (!searchPaths.includes(cfcaManifest)) searchPaths.push(cfcaManifest)
+      }
       break
     }
     default:
@@ -77,10 +156,15 @@ async function readNativeMessagingHostConfig(
 ): Promise<NativeConfig | undefined> {
   const searchPaths = await getConfigSearchPaths(application)
   d('searching', searchPaths)
+  try {
+    console.log(
+      `[crx-nmh-diag] search app=${application} paths=${JSON.stringify(searchPaths)}`,
+    )
+  } catch {}
   for (const filePath of searchPaths) {
     try {
       const data = await fs.readFile(filePath)
-      const config = JSON.parse(data.toString())
+      const config = JSON.parse(stripJsonComments(data.toString()))
       if (isValidConfig(config)) {
         // Chrome 规范(Windows):manifest 的 path 可以是相对路径,相对于 manifest 文件
         // 所在目录解析。IDM 的 IDMMsgHost.json 里 path 就是 "IDMMsgHost.exe"(相对),
@@ -94,6 +178,7 @@ async function readNativeMessagingHostConfig(
         return config
       } else {
         d('%s contained invalid config', filePath, config)
+        console.log(`[crx-nmh-diag] invalid-config app=${application} path=${filePath}`)
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
@@ -101,18 +186,32 @@ async function readNativeMessagingHostConfig(
       } else {
         d('unknown error', error)
       }
+      try {
+        console.log(
+          `[crx-nmh-diag] read-failed app=${application} path=${filePath} error=${
+            (error as any)?.message || error
+          }`,
+        )
+      } catch {}
       continue
     }
   }
+  return undefined
 }
 export class NativeMessagingHost {
   private process?: ReturnType<typeof spawn>
   private sender?: ExtensionSender
   private connectionId: string
   private connected: boolean = false
+  private destroyed: boolean = false
   private pending?: any[]
   private keepAlive: boolean
-  private resolveResponse?: (message: any) => void
+  private endServiceWorkerTask?: () => void
+  private pendingResponse?: {
+    resolve: (message: any) => void
+    reject: (error: Error) => void
+  }
+  private receiveBuffer = Buffer.alloc(0)
 
   ready?: Promise<void>
 
@@ -127,13 +226,33 @@ export class NativeMessagingHost {
     this.sender = sender
     if (keepAlive) {
       this.sender.ipc.on(`crx-native-msg-${connectionId}`, this.receiveExtensionMessage)
+
+      // A native Port is a long-lived extension connection. Chromium keeps an
+      // MV3 service worker alive while such a Port is open; otherwise FDM's
+      // background worker stops after initialization while wenativehost.exe is
+      // left running, and later download commands have no live receiver.
+      const serviceWorkerSender = sender as Electron.ServiceWorkerMain
+      if (typeof serviceWorkerSender.startTask === 'function') {
+        try {
+          const task = serviceWorkerSender.startTask()
+          this.endServiceWorkerTask = () => task.end()
+        } catch (error) {
+          d('unable to keep service worker alive: %o', error)
+        }
+      }
     }
     this.connectionId = connectionId
     this.ready = this.launch(application, extensionId)
   }
 
-  destroy() {
+  destroy(reason: Error = new Error('Native messaging host disconnected')) {
+    if (this.destroyed) return
+    this.destroyed = true
     this.connected = false
+    this.receiveBuffer = Buffer.alloc(0)
+    const pendingResponse = this.pendingResponse
+    this.pendingResponse = undefined
+    pendingResponse?.reject(reason)
     if (this.process) {
       this.process.kill()
       this.process = undefined
@@ -143,12 +262,22 @@ export class NativeMessagingHost {
       this.sender.send(`crx-native-msg-${this.connectionId}-disconnect`)
     }
     this.sender = undefined
+    if (this.endServiceWorkerTask) {
+      try {
+        this.endServiceWorkerTask()
+      } catch (error) {
+        d('unable to end service worker native messaging task: %o', error)
+      }
+      this.endServiceWorkerTask = undefined
+    }
   }
 
   private async launch(application: string, extensionId: string) {
     const config = await readNativeMessagingHostConfig(application)
+    if (this.destroyed) return
     if (!config) {
       d('launch: unable to find %s for %s', application, extensionId)
+      console.log(`[crx-nmh-diag] config-not-found ext=${extensionId} app=${application}`)
       this.destroy()
       return
     }
@@ -156,6 +285,7 @@ export class NativeMessagingHost {
     const extensionUrl = `chrome-extension://${extensionId}/`
     if (!config.allowed_origins?.includes(extensionUrl)) {
       d('launch: %s not in allowed origins', extensionId)
+      console.log(`[crx-nmh-diag] origin-denied ext=${extensionId} app=${application}`)
       this.destroy()
       return
     }
@@ -167,8 +297,12 @@ export class NativeMessagingHost {
     } catch (error) {
       d('launch: unable to find %s', config.path, error)
     }
+    if (this.destroyed) return
 
     if (!isFile) {
+      console.log(
+        `[crx-nmh-diag] executable-not-found ext=${extensionId} app=${application} path=${config.path}`,
+      )
       this.destroy()
       return
     }
@@ -181,16 +315,16 @@ export class NativeMessagingHost {
     })
 
     this.process.stdout!.on('data', this.receive)
-    this.process.stderr!.on('data', (data) => {
+    this.process.stderr!.on('data', (data: Buffer) => {
       d('stderr: %s', data.toString())
     })
-    this.process.on('error', (err) => {
+    this.process.on('error', (err: Error) => {
       d('error: %s', err)
-      this.destroy()
+      this.destroy(err)
     })
-    this.process.on('exit', (code) => {
+    this.process.on('exit', (code: number | null) => {
       d('exited %d', code)
-      this.destroy()
+      this.destroy(new Error(`Native messaging host exited with code ${code ?? 'unknown'}`))
     })
 
     this.connected = true
@@ -216,28 +350,70 @@ export class NativeMessagingHost {
       return
     }
 
-    const message = JSON.stringify(json)
-    const buffer = Buffer.alloc(4 + message.length)
-    buffer.writeUInt32LE(message.length, 0)
-    buffer.write(message, 4)
+    const payload = Buffer.from(JSON.stringify(json), 'utf8')
+    const buffer = Buffer.allocUnsafe(4 + payload.length)
+    buffer.writeUInt32LE(payload.length, 0)
+    payload.copy(buffer, 4)
     this.process!.stdin!.write(buffer)
   }
 
   private receive = (data: Buffer) => {
-    const length = data.readUInt32LE(0)
-    const message = JSON.parse(data.subarray(4, 4 + length).toString())
-    d('receive: %s', message)
-    if (this.keepAlive && this.sender) {
-      this.sender.send(`crx-native-msg-${this.connectionId}`, message)
-    } else {
-      this.resolveResponse?.(message)
+    this.receiveBuffer =
+      this.receiveBuffer.length === 0
+        ? Buffer.from(data)
+        : Buffer.concat([this.receiveBuffer, data])
+
+    while (this.receiveBuffer.length >= 4) {
+      const length = this.receiveBuffer.readUInt32LE(0)
+      if (length > MAX_NATIVE_MESSAGE_BYTES) {
+        d('receive: invalid oversized frame %d', length)
+        this.destroy(new Error(`Native messaging host sent an oversized frame (${length} bytes)`))
+        return
+      }
+      if (this.receiveBuffer.length < 4 + length) return
+
+      const payload = this.receiveBuffer.subarray(4, 4 + length)
+      this.receiveBuffer = this.receiveBuffer.subarray(4 + length)
+      let message: any
+      try {
+        message = JSON.parse(payload.toString('utf8'))
+      } catch (error) {
+        d('receive: invalid JSON frame %o', error)
+        this.destroy(new Error('Native messaging host sent invalid JSON'))
+        return
+      }
+      d('receive: %s', message)
+      if (this.keepAlive && this.sender) {
+        this.sender.send(`crx-native-msg-${this.connectionId}`, message)
+      } else {
+        const pendingResponse = this.pendingResponse
+        this.pendingResponse = undefined
+        pendingResponse?.resolve(message)
+        // runtime.sendNativeMessage is a one-shot connection. Close the
+        // process after its first complete response instead of leaving an
+        // idle native host behind for every call.
+        this.destroy()
+      }
     }
   }
 
   sendAndReceive(message: any) {
-    this.send(message)
-    return new Promise((resolve) => {
-      this.resolveResponse = resolve
+    if (this.destroyed) {
+      return Promise.reject(new Error('Native messaging host is unavailable'))
+    }
+    if (this.pendingResponse) {
+      return Promise.reject(new Error('Native messaging host already has a pending response'))
+    }
+    return new Promise((resolve, reject) => {
+      this.pendingResponse = { resolve, reject }
+      // Register the resolver before writing. A fast native host may return a
+      // complete frame in the same turn that stdin is flushed.
+      try {
+        this.send(message)
+      } catch (error) {
+        this.pendingResponse = undefined
+        reject(error instanceof Error ? error : new Error(String(error)))
+      }
     })
   }
 }

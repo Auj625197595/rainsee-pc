@@ -2,7 +2,7 @@ import * as React from 'react';
 import { observer } from 'mobx-react-lite';
 import styled, { css } from 'styled-components';
 
-import { Title, Row, Header, Control } from '../App/style';
+import { Title, Row, Control, SettingGroup } from '../App/style';
 import { RadioButton } from '~/renderer/components/RadioButton';
 import { NormalButton } from '../App';
 import { ITheme } from '~/interfaces';
@@ -56,6 +56,22 @@ const Status = styled.span<{ tone: 'ok' | 'err' }>`
   ${({ tone, theme }: { tone: 'ok' | 'err'; theme?: ITheme }) => css`
     color: ${tone === 'err' ? getPalette(theme!).danger : '#16a34a'};
   `}
+`;
+
+const StartupOptions = styled(SettingGroup)`
+  margin-top: 24px;
+`;
+
+const StartupOption = styled(Row)<{ $selected: boolean }>`
+  ${({ $selected, theme }: { $selected: boolean; theme?: ITheme }) => {
+    const p = getPalette(theme!);
+    return css`
+      background-color: ${$selected ? p.primarySoft : p.surface};
+      ${Title} {
+        color: ${$selected ? p.primary : p.textMain};
+      }
+    `;
+  }}
 `;
 
 interface Props {
@@ -143,30 +159,43 @@ class StartupControl extends React.PureComponent<Props, State> {
 
     return (
       <>
-        <Header>启动时</Header>
-        <Row style={rowStyle} onClick={this.select('empty')}>
-          <RadioButton selected={this.state.value === 'empty'} />
-          <Title style={titleStyle}>打开新标签页</Title>
-        </Row>
-        <Row style={rowStyle} onClick={this.select('continue')}>
-          <RadioButton selected={this.state.value === 'continue'} />
-          <Title style={titleStyle}>恢复标签页</Title>
-        </Row>
-        <Row style={rowStyle} onClick={this.select('urls')}>
-          <RadioButton selected={this.state.value === 'urls'} />
-          <Title style={titleStyle}>打开特定页面</Title>
-          {showURLInput && (
-            <Control onClick={this.stopPropagation}>
-              <URLInput
-                value={this.state.url}
-                onChange={this.onURLChange}
-                onClick={this.stopPropagation}
-                placeholder="https://example.com"
-                spellCheck={false}
-              />
-            </Control>
-          )}
-        </Row>
+        <StartupOptions>
+          <StartupOption
+            $selected={this.state.value === 'empty'}
+            style={rowStyle}
+            onClick={this.select('empty')}
+          >
+            <RadioButton selected={this.state.value === 'empty'} />
+            <Title style={titleStyle}>打开新标签页</Title>
+          </StartupOption>
+          <StartupOption
+            $selected={this.state.value === 'continue'}
+            style={rowStyle}
+            onClick={this.select('continue')}
+          >
+            <RadioButton selected={this.state.value === 'continue'} />
+            <Title style={titleStyle}>恢复标签页</Title>
+          </StartupOption>
+          <StartupOption
+            $selected={this.state.value === 'urls'}
+            style={rowStyle}
+            onClick={this.select('urls')}
+          >
+            <RadioButton selected={this.state.value === 'urls'} />
+            <Title style={titleStyle}>打开特定页面</Title>
+            {showURLInput && (
+              <Control onClick={this.stopPropagation}>
+                <URLInput
+                  value={this.state.url}
+                  onChange={this.onURLChange}
+                  onClick={this.stopPropagation}
+                  placeholder="https://example.com"
+                  spellCheck={false}
+                />
+              </Control>
+            )}
+          </StartupOption>
+        </StartupOptions>
         {showURLInput && (
           <div
             style={{

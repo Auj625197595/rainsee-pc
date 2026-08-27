@@ -18,9 +18,11 @@ import { ITab } from '../../models';
 import store from '../../store';
 import { ipcRenderer } from 'electron';
 import { COMPACT_TAB_MARGIN_TOP } from '~/constants/design';
-import { showTabContextMenu } from '../../utils/tab-context-menu';
+import { handleTabContextMenu } from '../../utils/tab-context-menu';
 import { getIconByUrlNet } from '~/utils/url';
 import { animateTab } from '../../utils/tabs';
+import { TAB_MIN_WIDTH, TAB_PINNED_WIDTH } from '../../constants';
+import { useTabHoverActivation } from '~/renderer/utils/tab-hover-activation';
 
 // 无法解析图标时的默认地球图标,与书签栏保持一致
 const GlobeIcon = () => (
@@ -52,7 +54,10 @@ const onVolumeMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
   e.stopPropagation();
 };
 
-const onMouseDown = (tab: ITab) => (e: React.MouseEvent<HTMLDivElement>) => {
+const onMouseDown = (tab: ITab, cancel: () => void) => (
+  e: React.MouseEvent<HTMLDivElement>,
+) => {
+  cancel();
   const { pageX, button } = e;
 
   console.log("onMouseDown", store.addressbarEditing);
@@ -78,9 +83,12 @@ const onMouseDown = (tab: ITab) => (e: React.MouseEvent<HTMLDivElement>) => {
   ipcRenderer.send(`hide-tab-preview-${store.windowId}`);
 };
 
-const onMouseEnter = (tab: ITab) => (e: React.MouseEvent<HTMLDivElement>) => {
+const onMouseEnter = (tab: ITab, schedule: () => void) => (
+  e: React.MouseEvent<HTMLDivElement>,
+) => {
   if (!store.tabs.isDragging) {
     store.tabs.hoveredTabId = tab.id;
+    schedule();
   }
 
   const { bottom, left } = tab.ref.current.getBoundingClientRect();
@@ -97,7 +105,8 @@ const onMouseEnter = (tab: ITab) => (e: React.MouseEvent<HTMLDivElement>) => {
   }
 };
 
-const onMouseLeave = () => {
+const onMouseLeave = (cancel: () => void) => () => {
+  cancel();
   store.tabs.hoveredTabId = -1;
   ipcRenderer.send(`hide-tab-preview-${store.windowId}`);
   store.tabs.canShowPreview = true;
@@ -127,27 +136,37 @@ const onDoubleClick = (tab: ITab) => (e: React.MouseEvent<HTMLDivElement>) => {
   }
 };
 
+const getTabDensity = (tab: ITab) => {
+  if (store.settings.object.tabOverflowBehavior !== 'shrink') return 1;
+  const preferredWidth = tab.isPinned ? TAB_PINNED_WIDTH : TAB_MIN_WIDTH;
+  return Math.max(0, Math.min(1, tab.width / preferredWidth));
+};
+
 const Content = observer(({ tab }: { tab: ITab }) => {
+  const density = getTabDensity(tab);
   // 图标源优先级:本地 favicon(data URL)→ getIconByUrlNet 网络兜底(与书签栏一致)
-  // → 地球图标。网络图标加载失败(onError)置 iconFailed 回退地球;tab.url 切换时
-  // 同步重置 iconFailed,避免新页沿用上一页的失败标记(render 内 setState 是 React
+  // → 地球图标。任一来源解码失败后尝试下一级;tab.url 切换时同步重置失败列表
+  // (render 内 setState 是 React
   // 官方推荐的"基于 props/前次渲染派生 state"模式,有条件触发不会循环)。
-  const [iconFailed, setIconFailed] = React.useState(false);
+  const [failedIconSources, setFailedIconSources] = React.useState<string[]>(
+    [],
+  );
   const prevUrlRef = React.useRef(tab.url);
   if (prevUrlRef.current !== tab.url) {
-    setIconFailed(false);
+    setFailedIconSources([]);
     prevUrlRef.current = tab.url;
   }
 
-  const iconSrc =
-    tab.favicon ||
-    (!iconFailed && tab.url ? getIconByUrlNet(tab.url) : undefined);
+  const fallbackIconSrc = tab.url ? getIconByUrlNet(tab.url) : undefined;
+  const iconSrc = [tab.favicon, fallbackIconSrc].find(
+    (src) => src && !failedIconSources.includes(src),
+  );
 
   return (
-    <StyledContent>
-      {tab.incognito && <StyledIncognitoIcon />}
+    <StyledContent $density={density} data-rainsee-part="tab-content">
+      {tab.incognito && <StyledIncognitoIcon $density={density} />}
       {!tab.loading && iconSrc && (
-        <StyledIcon isIconSet={!!iconSrc}>
+        <StyledIcon data-rainsee-part="tab-icon" isIconSet={!!iconSrc}>
           <img
             src={iconSrc}
             width={16}
@@ -155,8 +174,9 @@ const Content = observer(({ tab }: { tab: ITab }) => {
             draggable={false}
             style={{ display: 'block' }}
             onError={() => {
-              // 仅网络兜底图标失败时回退;本地 data URL 几乎不会失败。
-              if (!tab.favicon) setIconFailed(true);
+              setFailedIconSources((sources) =>
+                sources.includes(iconSrc) ? sources : [...sources, iconSrc],
+              );
             }}
           />
           <PinnedVolume tab={tab} />
@@ -164,7 +184,7 @@ const Content = observer(({ tab }: { tab: ITab }) => {
       )}
 
       {!tab.loading && !iconSrc && !tab.isPinned && (
-        <StyledIcon isIconSet>
+        <StyledIcon data-rainsee-part="tab-icon" isIconSet>
           <GlobeIcon />
         </StyledIcon>
       )}
@@ -180,33 +200,40 @@ const Content = observer(({ tab }: { tab: ITab }) => {
       )}
       {!tab.isPinned && (
         <StyledTitle
+          data-rainsee-part="tab-title"
           isIcon={tab.isIconSet}
           selected={tab.isSelected}
+          $density={density}
           incognito={tab.incognito}
         >
           {tab.isSelected && store.isCompact ? tab.url : tab.title}
         </StyledTitle>
       )}
-      <ExpandedVolume tab={tab} />
-      <Close tab={tab} />
+      <ExpandedVolume tab={tab} density={density} />
+      <Close tab={tab} density={density} />
     </StyledContent>
   );
 });
 
-const ExpandedVolume = observer(({ tab }: { tab: ITab }) => {
-  return (
-    <StyledAction
-      onMouseDown={onVolumeMouseDown}
-      onClick={toggleMuteTab(tab)}
-      visible={tab.isExpanded && !tab.isPinned && tab.isPlaying}
-      icon={tab.isMuted ? ICON_VOLUME_OFF : ICON_VOLUME_HIGH}
-    />
-  );
-});
+const ExpandedVolume = observer(
+  ({tab, density}: {tab: ITab; density: number}) => {
+    return (
+      <StyledAction
+        data-rainsee-part="tab-audio"
+        $density={density}
+        onMouseDown={onVolumeMouseDown}
+        onClick={toggleMuteTab(tab)}
+        visible={tab.isExpanded && !tab.isPinned && tab.isPlaying}
+        icon={tab.isMuted ? ICON_VOLUME_OFF : ICON_VOLUME_HIGH}
+      />
+    );
+  },
+);
 
 const PinnedVolume = observer(({ tab }: { tab: ITab }) => {
   return (
     <StyledPinAction
+      data-rainsee-part="tab-audio"
       onMouseDown={onVolumeMouseDown}
       onClick={toggleMuteTab(tab)}
       visible={tab.isPinned && tab.isPlaying}
@@ -215,12 +242,24 @@ const PinnedVolume = observer(({ tab }: { tab: ITab }) => {
   );
 });
 
-const Close = observer(({ tab }: { tab: ITab }) => {
+const Close = observer(({tab, density}: {tab: ITab; density: number}) => {
+  const display = store.settings.object.tabCloseButtonDisplay;
+
   return (
     <StyledClose
+      data-rainsee-part="tab-close"
+      data-rainsee-action="close-tab"
       onMouseDown={onCloseMouseDown}
       onClick={removeTab(tab)}
-      visible={tab.isExpanded && !tab.isPinned}
+      // hover 模式不能依赖 isExpanded：滚动/压缩标签栏中它可能为 false，
+      // 会让按钮被 display:none 移除，父标签的 :hover 规则无法再展开它。
+      visible={
+        !tab.isPinned &&
+        display !== 'never' &&
+        (display === 'hover' || tab.isExpanded)
+      }
+      hoverOnly={display === 'hover'}
+      $density={density}
     />
   );
 });
@@ -237,6 +276,21 @@ export default observer(({ tab }: { tab: ITab }) => {
     animateTab('width', tab.width, el, false);
     animateTab('translateX', tab.left, el, false);
   }, [tab]);
+  const hoverActivation = useTabHoverActivation({
+    enabled:
+      store.settings.object.tabHoverActivationBehavior !== 'off' &&
+      (tab.discarded ||
+        store.settings.object.tabHoverActivationBehavior ===
+          'activate-and-switch'),
+    delay: store.settings.object.tabHoverActivationDelay,
+    selected: tab.isSelected,
+    activate: () =>
+      tab.activateOnHover(
+        store.settings.object.tabHoverActivationBehavior ===
+          'activate-and-switch',
+      ),
+    blocked: () => store.tabs.isDragging,
+  });
 
   const lightFg = store.theme['toolbar.lightForeground'];
 
@@ -246,9 +300,13 @@ export default observer(({ tab }: { tab: ITab }) => {
     ? 'rgba(255, 255, 255, 0.08)'
     : 'rgba(20, 32, 72, 0.06)';
 
-  const defaultColor = tab.isHovered ? hoverColor : 'transparent';
+  const defaultColor = tab.isHovered
+    ? hoverColor
+    : store.theme['tab.backgroundColor'] || 'transparent';
 
-  const defaultSelectedColor = lightFg ? '#393939' : '#FFFFFF';
+  const defaultSelectedColor =
+    store.theme['tab.selected.backgroundColor'] ||
+    (lightFg ? '#393939' : '#FFFFFF');
 
   const incognitoSelectedColor = '#3c4043';
   const incognitoColor = tab.isHovered
@@ -261,25 +319,32 @@ export default observer(({ tab }: { tab: ITab }) => {
       : incognitoColor
     : tab.isSelected
     ? defaultSelectedColor
-    : defaultColor;
+      : defaultColor;
+
+  const density = getTabDensity(tab);
 
   return (
     <StyledTab
+      data-rainsee-part="tab"
+      data-rainsee-selected={tab.isSelected ? 'true' : 'false'}
+      data-rainsee-pinned={tab.isPinned ? 'true' : 'false'}
       selected={tab.isSelected}
-      onMouseDown={onMouseDown(tab)}
+      onMouseDown={onMouseDown(tab, hoverActivation.cancel)}
       onMouseUp={onMouseUp(tab)}
-      onMouseEnter={onMouseEnter(tab)}
-      onContextMenu={() => showTabContextMenu(tab)}
+      onMouseEnter={onMouseEnter(tab, hoverActivation.schedule)}
+      onContextMenu={(e: React.MouseEvent) => handleTabContextMenu(e, tab)}
       onClick={onClick(tab)}
       onDoubleClick={onDoubleClick(tab)}
-      onMouseLeave={onMouseLeave}
+      onMouseLeave={onMouseLeave(hoverActivation.cancel)}
       ref={tab.ref}
     >
       <TabContainer
+        data-rainsee-part="tab-surface"
         hasTabGroup={tab.tabGroupId !== -1}
         pinned={tab.isPinned}
         selected={tab.isSelected}
         incognito={tab.incognito}
+        $density={density}
         style={{ backgroundColor }}
       >
         <Content tab={tab} />

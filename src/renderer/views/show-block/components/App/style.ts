@@ -293,19 +293,3 @@ export const EmptyState = styled.div`
   color: #75809a;
   text-align: center;
 `;
-
-/* 误拦截申诉入口 */
-export const ComplaintBanner = styled.div`
-  margin-top: 16px;
-  cursor: pointer;
-  user-select: none;
-  color: #e53935;
-  font-size: 13px;
-  line-height: 20px;
-  white-space: nowrap;
-  text-align: center;
-
-  &:hover {
-    text-decoration: underline;
-  }
-`;

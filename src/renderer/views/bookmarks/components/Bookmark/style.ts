@@ -9,25 +9,29 @@ export const Card = styled.div`
   gap: 16px;
   padding: 14px 16px;
   border-radius: 18px;
-  cursor: default;
+  cursor: pointer;
   position: relative;
   transition: box-shadow 0.2s ease, background-color 0.2s ease,
     padding-left 0.18s ease;
 
-  ${({ theme, selected, flash, dragging, dropBefore, dropAfter, sortable }: {
+  ${({ theme, selected, flash, dragging, dropBefore, dropAfter, dropInto, sortable, editMode }: {
     theme?: ITheme;
     selected?: boolean;
     flash?: boolean;
     dragging?: boolean;
     dropBefore?: boolean;
     dropAfter?: boolean;
+    dropInto?: boolean;
     sortable?: boolean;
+    editMode?: boolean;
   }) => {
     const p = getPalette(theme);
     return css`
-      background-color: ${p.surface};
-      box-shadow: inset 0 0 0 1px
-        ${selected ? p.primary : p.line};
+      background-color: ${dropInto ? p.primarySoft : p.surface};
+      ${editMode ? 'padding-left: 56px;' : ''}
+      box-shadow: inset 0 0 0
+        ${dropInto ? '2px' : '1px'}
+        ${dropInto ? p.primary : selected ? p.primary : p.line};
       opacity: ${dragging ? 0.66 : 1};
 
       &:hover {
@@ -192,10 +196,13 @@ export const DragHandle = styled.button.attrs({
     cursor: grabbing;
   }
 
-  ${({ theme }: { theme?: ITheme }) => {
+  ${({ alwaysVisible, theme }: { alwaysVisible?: boolean; theme?: ITheme }) => {
     const p = getPalette(theme);
     return css`
       color: ${p.textMute};
+      opacity: ${alwaysVisible ? 1 : 0};
+      pointer-events: ${alwaysVisible ? 'auto' : 'none'};
+      transform: ${alwaysVisible ? 'translate(0, -50%)' : 'translate(-6px, -50%)'};
 
       &:hover {
         color: ${p.textMain};
@@ -246,10 +253,12 @@ export const TitleAction = styled(Title).attrs({
   border: 0;
   background: transparent;
   text-align: left;
-  cursor: pointer;
+  cursor: ${({ editing }: { editing?: boolean }) =>
+    editing ? 'default' : 'pointer'};
 
   &:hover {
-    text-decoration: underline;
+    text-decoration: ${({ editing }: { editing?: boolean }) =>
+      editing ? 'none' : 'underline'};
   }
 `;
 
@@ -296,4 +305,26 @@ export const IconButton = styled.div`
       }
     `;
   }}
+`;
+
+export const DeleteButton = styled.button.attrs({ type: 'button' })`
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
+  width: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 0.16s ease, color 0.16s ease;
+  color: ${({ theme }: { theme?: ITheme }) => getPalette(theme).danger};
+
+  &:hover {
+    color: ${({ theme }: { theme?: ITheme }) => getPalette(theme).danger};
+    background-color: ${({ theme }: { theme?: ITheme }) =>
+      `${getPalette(theme).danger}1a`};
+  }
 `;

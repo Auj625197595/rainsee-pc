@@ -72,9 +72,49 @@ export const Subtitle = styled.p`
   opacity: 0.56;
 `;
 
-export const CloseButton = styled.button`
+export const HeaderActions = styled.div`
   position: relative;
   z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+`;
+
+export const MoreButton = styled.button`
+  height: 32px;
+  padding: 0 11px;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  background-color: transparent;
+  color: #5a7ed6;
+  font-size: 12px;
+  font-weight: 800;
+  transition: 0.15s color, 0.15s background-color, 0.15s transform;
+
+  &:hover {
+    color: #3452ff;
+    background-color: rgba(90, 126, 214, 0.1);
+  }
+
+  &:active {
+    transform: scale(0.96);
+  }
+
+  ${({ theme }: { theme?: ITheme }) =>
+    theme.dark &&
+    css`
+      color: #9db8ee;
+
+      &:hover {
+        color: #c5d4ff;
+        background-color: rgba(157, 184, 238, 0.12);
+      }
+    `}
+`;
+
+export const CloseButton = styled.button`
   display: flex;
   align-items: center;
   justify-content: center;
@@ -151,40 +191,4 @@ export const Empty = styled.div`
   font-size: 13px;
   font-weight: 700;
   opacity: 0.5;
-`;
-
-export const Footer = styled.button`
-  margin-top: 12px;
-  display: inline-flex;
-  width: 100%;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  cursor: pointer;
-  border-radius: 14px;
-  background-color: #eef5ff;
-  padding: 11px 16px;
-  font-size: 13px;
-  font-weight: 800;
-  color: #5a7ed6;
-  transition: 0.15s background-color, 0.15s transform;
-
-  &:hover {
-    background-color: #e7f0ff;
-  }
-
-  &:active {
-    transform: scale(0.99);
-  }
-
-  ${({ theme }: { theme?: ITheme }) =>
-    theme.dark &&
-    css`
-      background-color: rgba(90, 126, 214, 0.16);
-      color: #9db8ee;
-
-      &:hover {
-        background-color: rgba(90, 126, 214, 0.24);
-      }
-    `}
 `;

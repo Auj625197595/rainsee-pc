@@ -1,9 +1,19 @@
 import * as React from 'react';
 import { ipcRenderer } from '~/common/renderer-ipc';
 import styled, { css } from 'styled-components';
+import { Browser, CaretRight } from '@phosphor-icons/react';
 
 import { ITheme } from '~/interfaces';
-import { Header } from '../App/style';
+import {
+  Row,
+  SecondaryText,
+  SettingCopy,
+  SettingGroup,
+  SettingGroupBlock,
+  SettingGroupLabel,
+  SettingIcon,
+  Title,
+} from '../App/style';
 import store from '~/renderer/views/settings/store';
 import { getPalette } from '../../utils/palette';
 
@@ -67,27 +77,22 @@ const IconApple = () => (
   </Svg>
 );
 
+// 开源版：外部链接仅保留 GitHub 仓库与 Issues。
 const APP_LINKS = [
-  {
-    title: '更新日志及留言反馈',
-    meta: '社区中心',
-    actionLabel: '立即查看',
-    icon: <IconChat />,
-    onClick: () => openUrl('https://www.zhso.org/t/t-493c6d6c6e?node=11'),
-  },
-  {
-    title: '联系作者',
-    meta: '作者主页',
-    actionLabel: '前往联系',
-    icon: <IconAuthor />,
-    onClick: () => openUrl('https://club.yujianpay.com/index.php/archives/90/'),
-  },
   {
     title: 'Auj625197595/rainsee-pc',
     meta: '开源地址',
     actionLabel: '查看仓库',
     icon: <IconGithub />,
     onClick: () => openUrl('https://github.com/Auj625197595/rainsee-pc'),
+  },
+  {
+    title: '问题反馈 (Issues)',
+    meta: 'GitHub Issues',
+    actionLabel: '提交反馈',
+    icon: <IconChat />,
+    onClick: () =>
+      openUrl('https://github.com/Auj625197595/rainsee-pc/issues'),
   },
 ];
 
@@ -96,9 +101,9 @@ const PRODUCT_LINKS = [
     title: '雨见浏览器安卓版',
     subtitle: 'Android',
     meta: '首发推荐',
-    actionLabel: '查看详情',
+    actionLabel: '获取方式',
     icon: <IconAndroid />,
-    onClick: () => openUrl('https://club.yujianpay.com/index.php/archives/13/'),
+    message: '开源版暂不提供安卓版下载渠道。',
   },
   {
     title: '雨见浏览器鸿蒙版',
@@ -147,80 +152,77 @@ export const About = () => {
 
   return (
     <Page>
-      <Header>关于</Header>
+      <SettingGroupBlock>
+        <SettingGroup>
+          <Row style={{ cursor: 'default' }}>
+            <SettingIcon tone="blue">
+              <Browser size={19} weight="fill" />
+            </SettingIcon>
+            <SettingCopy>
+              <Title>雨见浏览器</Title>
+              <SecondaryText>
+                RainPC · APP 版本 {store.appVersion} · Chromium {chromeVersion}
+              </SecondaryText>
+            </SettingCopy>
+          </Row>
+        </SettingGroup>
+      </SettingGroupBlock>
 
-      <HeroCard>
-        <HeroGlow />
-        <LogoWrap>
-          <LogoImage src={APP_ICON} alt="雨见浏览器" />
-        </LogoWrap>
-        <BrandName>雨见浏览器</BrandName>
-        <BrandMeta>RainPC</BrandMeta>
-        <VersionRow>
-          <VersionPill>APP 版本 {store.appVersion}</VersionPill>
-          <VersionPill>Chromium {chromeVersion}</VersionPill>
-        </VersionRow>
-        <HeroDescription>
-          为桌面端打造的现代浏览体验，轻盈、清爽，也保留了雨见生态的连续感。
-        </HeroDescription>
-      </HeroCard>
-
-      <Section>
-        <SectionTitle>支持与反馈</SectionTitle>
-        <SupportGrid>
+      <SettingGroupBlock>
+        <SettingGroupLabel>支持与反馈</SettingGroupLabel>
+        <SettingGroup>
           {APP_LINKS.map((item) => (
-            <SupportCard key={item.title} onClick={item.onClick}>
-              <SupportIcon>{item.icon}</SupportIcon>
-              <SupportBody>
-                <SupportMeta>{item.meta}</SupportMeta>
-                <SupportTitle>{item.title}</SupportTitle>
-              </SupportBody>
-              <SupportCta>
-                {item.actionLabel}
-                <ActionArrow>↗</ActionArrow>
-              </SupportCta>
-            </SupportCard>
+            <Row key={item.title} onClick={item.onClick}>
+              <AboutItemIcon tone="blue">{item.icon}</AboutItemIcon>
+              <SettingCopy>
+                <Title>{item.meta}</Title>
+                <SecondaryText>{item.title}</SecondaryText>
+              </SettingCopy>
+              <CaretRight size={17} color="#B0B0BA" />
+            </Row>
           ))}
-        </SupportGrid>
-      </Section>
+        </SettingGroup>
+      </SettingGroupBlock>
 
-      <Section>
-        <SectionTitle>其他作品</SectionTitle>
-        <WorksGrid>
+      <SettingGroupBlock>
+        <SettingGroupLabel>其他作品</SettingGroupLabel>
+        <SettingGroup>
           {PRODUCT_LINKS.map((item) => (
-            <WorkCard
+            <Row
               key={item.title}
               onClick={() => {
                 if (item.message) {
                   setNotice(item.message);
-                  return;
                 }
-
-                item.onClick?.();
               }}
             >
-              <WorkTop>
-                <WorkIcon>{item.icon}</WorkIcon>
-                <WorkMeta>{item.meta}</WorkMeta>
-              </WorkTop>
-              <WorkBody>
-                <WorkTitle>{item.title}</WorkTitle>
-                <WorkSubtitle>{item.subtitle}</WorkSubtitle>
-              </WorkBody>
-              <WorkAction>
-                {item.actionLabel}
-                <ActionArrow>→</ActionArrow>
-              </WorkAction>
-            </WorkCard>
+              <AboutItemIcon tone="blue">{item.icon}</AboutItemIcon>
+              <SettingCopy>
+                <Title>{item.title}</Title>
+                <SecondaryText>{item.subtitle}</SecondaryText>
+              </SettingCopy>
+              <CaretRight size={17} color="#B0B0BA" />
+            </Row>
           ))}
-        </WorksGrid>
-      </Section>
+        </SettingGroup>
+      </SettingGroupBlock>
 
-      <FooterNote>
-        <LogLink onClick={() => ipcRenderer.invoke('open-log-dir')}>
-          打开日志目录
-        </LogLink>
-      </FooterNote>
+      <SettingGroupBlock>
+        <SettingGroup>
+          <Row onClick={() => ipcRenderer.invoke('show-onboarding')}>
+            <SettingCopy>
+              <Title>查看引导页</Title>
+            </SettingCopy>
+            <CaretRight size={17} color="#B0B0BA" />
+          </Row>
+          <Row onClick={() => ipcRenderer.invoke('open-log-dir')}>
+            <SettingCopy>
+              <Title>打开日志目录</Title>
+            </SettingCopy>
+            <CaretRight size={17} color="#B0B0BA" />
+          </Row>
+        </SettingGroup>
+      </SettingGroupBlock>
 
       <Toast visible={Boolean(notice)}>{notice}</Toast>
     </Page>
@@ -232,13 +234,22 @@ const Page = styled.div`
   padding-bottom: 24px;
 `;
 
+const AboutItemIcon = styled(SettingIcon)`
+  svg {
+    width: 19px;
+    height: 19px;
+  }
+`;
+
 const FooterNote = styled.div`
   display: flex;
+  align-items: center;
   justify-content: center;
+  gap: 8px;
   margin-top: 28px;
 `;
 
-const LogLink = styled.button`
+const FooterLink = styled.button`
   border: none;
   background: transparent;
   padding: 6px 10px;
@@ -256,6 +267,15 @@ const LogLink = styled.button`
   `}
 `;
 
+const FooterDivider = styled.span`
+  width: 1px;
+  height: 12px;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    background: ${getPalette(theme).line};
+  `}
+`;
+
 const HeroCard = styled.section`
   position: relative;
   overflow: hidden;
@@ -270,8 +290,11 @@ const HeroCard = styled.section`
   ${({ theme }: { theme?: ITheme }) => {
     const p = getPalette(theme);
     return css`
-      background:
-        radial-gradient(circle at top, rgba(91, 167, 255, 0.2), transparent 42%),
+      background: radial-gradient(
+          circle at top,
+          rgba(91, 167, 255, 0.2),
+          transparent 42%
+        ),
         linear-gradient(145deg, ${p.surface} 0%, ${p.bg} 100%);
       box-shadow: inset 0 0 0 1px ${p.line};
     `;
@@ -285,7 +308,11 @@ const HeroGlow = styled.div`
   height: 240px;
   border-radius: 999px;
   pointer-events: none;
-  background: radial-gradient(circle, rgba(104, 214, 209, 0.2) 0%, rgba(104, 214, 209, 0) 72%);
+  background: radial-gradient(
+    circle,
+    rgba(104, 214, 209, 0.2) 0%,
+    rgba(104, 214, 209, 0) 72%
+  );
 `;
 
 const LogoWrap = styled.div`
@@ -641,7 +668,8 @@ const Toast = styled.div<{ visible: boolean }>`
   position: fixed;
   left: 50%;
   bottom: 28px;
-  transform: translateX(-50%) ${({ visible }) => (visible ? 'translateY(0)' : 'translateY(12px)')};
+  transform: translateX(-50%)
+    ${({ visible }) => (visible ? 'translateY(0)' : 'translateY(12px)')};
   min-width: 280px;
   max-width: min(520px, calc(100vw - 40px));
   padding: 12px 16px;
@@ -658,8 +686,7 @@ const Toast = styled.div<{ visible: boolean }>`
     return css`
       color: ${p.textMain};
       background: rgba(255, 255, 255, 0.88);
-      box-shadow:
-        inset 0 0 0 1px ${p.line},
+      box-shadow: inset 0 0 0 1px ${p.line},
         0 18px 38px -26px rgba(25, 49, 86, 0.45);
       backdrop-filter: blur(14px);
     `;

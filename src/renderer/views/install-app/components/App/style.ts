@@ -1,7 +1,7 @@
-import styled, {css} from 'styled-components';
+import styled, { css } from 'styled-components';
 
-import {ITheme} from '~/interfaces';
-import {DialogStyle} from '~/renderer/mixins/dialogs';
+import { ITheme } from '~/interfaces';
+import { DialogStyle } from '~/renderer/mixins/dialogs';
 
 // Edge 风格 PWA 安装弹窗:白底圆角,头部图标+名称+发布者+关闭,正文说明+安装选项,
 // 底部「安装/取消」按钮。DialogStyle 已提供外边距、圆角、阴影与背景色。
@@ -12,7 +12,7 @@ export const StyledApp = styled(DialogStyle)`
   flex-direction: column;
   font-family: -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
 
-  ${({theme}: {theme?: ITheme}) => css`
+  ${({ theme }: { theme?: ITheme }) => css`
     color: ${theme['dialog.lightForeground'] ? '#fff' : '#1a1a1a'};
   `}
 `;
@@ -24,9 +24,11 @@ export const Header = styled.div`
   padding: 16px 16px 12px;
 `;
 
-export const AppIconWrap = styled.div`
+export const AppIconWrap = styled.button`
   width: 44px;
   height: 44px;
+  padding: 0;
+  border: 0;
   border-radius: 11px;
   overflow: hidden;
   flex-shrink: 0;
@@ -35,6 +37,8 @@ export const AppIconWrap = styled.div`
   justify-content: center;
   background: linear-gradient(135deg, #5b8cff, #3b6fe8);
   box-shadow: 0 2px 6px rgba(59, 111, 232, 0.3);
+  position: relative;
+  cursor: pointer;
 `;
 
 export const AppIcon = styled.img`
@@ -44,11 +48,26 @@ export const AppIcon = styled.img`
   display: block;
 `;
 
-export const AppIconFallback = styled.div`
+export const AppIconFallback = styled.span`
   color: #fff;
   font-size: 22px;
   font-weight: 600;
   line-height: 1;
+`;
+
+export const IconEditBadge = styled.span`
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #202124;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
 `;
 
 export const TitleCol = styled.div`
@@ -101,6 +120,13 @@ export const BodyText = styled.div`
   opacity: 0.82;
 `;
 
+export const ErrorText = styled.div`
+  margin-top: 8px;
+  color: #d93025;
+  font-size: 12px;
+  line-height: 1.4;
+`;
+
 export const OptionsTitle = styled.div`
   font-size: 12px;
   font-weight: 600;
@@ -117,7 +143,7 @@ export const OptionRow = styled.div`
   padding: 2px 0;
 `;
 
-export const CheckBox = styled.div<{checked?: boolean}>`
+export const CheckBox = styled.div<{ checked?: boolean }>`
   width: 16px;
   height: 16px;
   border-radius: 4px;
@@ -128,7 +154,7 @@ export const CheckBox = styled.div<{checked?: boolean}>`
   justify-content: center;
   flex-shrink: 0;
 
-  ${({checked}) =>
+  ${({ checked }) =>
     checked &&
     css`
       opacity: 1;
@@ -181,7 +207,7 @@ export const CancelBtn = styled.button`
   cursor: default;
   font-size: 13px;
 
-  ${({theme}: {theme?: ITheme}) => css`
+  ${({ theme }: { theme?: ITheme }) => css`
     color: ${theme['dialog.lightForeground'] ? '#fff' : '#1a1a1a'};
     background: ${theme['dialog.lightForeground']
       ? 'rgba(255,255,255,0.1)'

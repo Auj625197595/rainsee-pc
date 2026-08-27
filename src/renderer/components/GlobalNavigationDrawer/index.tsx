@@ -6,6 +6,7 @@ import {
   DownloadSimple as DownloadSimpleIcon,
   PuzzlePiece as PuzzlePieceIcon,
   Gear as GearIcon,
+  ChartDonut as ChartDonutIcon,
 } from '@phosphor-icons/react';
 
 import { getWebUIURL } from '~/common/webui';
@@ -49,6 +50,9 @@ export const GlobalNavigationDrawer = () => {
         </RailButton>
         <RailButton name="extensions" title="扩展管理">
           <PuzzlePieceIcon size={20} weight="bold" />
+        </RailButton>
+        <RailButton name="memory" title="内存使用情况">
+          <ChartDonutIcon size={20} weight="bold" />
         </RailButton>
       </RailGroup>
       <RailButton name="settings" title="设置">

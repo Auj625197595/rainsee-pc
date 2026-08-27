@@ -48,6 +48,75 @@ export const Selection = styled.div`
   box-sizing: border-box;
 `;
 
+export const ResizeHandle = styled.div<{ $direction: string }>`
+  position: absolute;
+  z-index: 6;
+  touch-action: none;
+  pointer-events: auto;
+
+  ${({ $direction }) => {
+    if ($direction === 'n' || $direction === 's') {
+      return css`
+        left: 10px;
+        right: 10px;
+        ${$direction === 'n' ? 'top: -5px;' : 'bottom: -5px;'}
+        height: 10px;
+        cursor: ns-resize;
+      `;
+    }
+    if ($direction === 'e' || $direction === 'w') {
+      return css`
+        top: 10px;
+        bottom: 10px;
+        ${$direction === 'w' ? 'left: -5px;' : 'right: -5px;'}
+        width: 10px;
+        cursor: ew-resize;
+      `;
+    }
+    const vertical = $direction.includes('n') ? 'top: -5px;' : 'bottom: -5px;';
+    const horizontal = $direction.includes('w')
+      ? 'left: -5px;'
+      : 'right: -5px;';
+    return css`
+      ${vertical}
+      ${horizontal}
+      width: 12px;
+      height: 12px;
+      border: 2px solid #fff;
+      border-radius: 50%;
+      background: #2f6fed;
+      box-sizing: border-box;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+      cursor: ${$direction === 'nw' || $direction === 'se'
+        ? 'nwse-resize'
+        : 'nesw-resize'};
+    `;
+  }}
+`;
+
+export const AnnotationCanvas = styled.canvas`
+  position: absolute;
+  z-index: 4;
+  touch-action: none;
+  cursor: crosshair;
+`;
+
+export const TextAnnotationTarget = styled.div<{ $active: boolean }>`
+  position: absolute;
+  z-index: 5;
+  box-sizing: border-box;
+  border: 1px dashed ${({ $active }) => ($active ? '#3b82f6' : 'transparent')};
+  background: ${({ $active }) =>
+    $active ? 'rgba(59, 130, 246, 0.08)' : 'transparent'};
+  cursor: move;
+  touch-action: none;
+
+  &:hover {
+    border-color: #3b82f6;
+    background: rgba(59, 130, 246, 0.08);
+  }
+`;
+
 // 框选完成后的操作工具条(跟随选区右下角)
 export const Toolbar = styled.div`
   position: absolute;
@@ -55,11 +124,13 @@ export const Toolbar = styled.div`
   align-items: center;
   gap: 4px;
   padding: 6px;
-  border-radius: 12px;
+  border-radius: 8px;
   background: rgba(28, 32, 40, 0.96);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   z-index: 10;
   cursor: default;
+  max-width: calc(100vw - 16px);
+  overflow-x: auto;
 `;
 
 export const ToolButton = styled.button`
@@ -89,6 +160,73 @@ export const ToolButton = styled.button`
         background: #4380f5;
       }
     `};
+`;
+
+export const ToolIconButton = styled.button<{
+  $active?: boolean;
+  $danger?: boolean;
+}>`
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  color: ${({ $danger }) => ($danger ? '#ff7777' : '#e8eaed')};
+  background: ${({ $active }) => ($active ? '#2f6fed' : 'transparent')};
+  cursor: pointer;
+
+  &:hover {
+    background: ${({ $active }) =>
+      $active ? '#4380f5' : 'rgba(255,255,255,.14)'};
+  }
+
+  &:disabled {
+    opacity: 0.38;
+    cursor: default;
+  }
+`;
+
+export const ColorSwatch = styled.input`
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 2px solid rgba(255, 255, 255, 0.75);
+  border-radius: 50%;
+  overflow: hidden;
+  background: transparent;
+  cursor: pointer;
+
+  &::-webkit-color-swatch-wrapper {
+    padding: 0;
+  }
+  &::-webkit-color-swatch {
+    border: 0;
+    border-radius: 50%;
+  }
+`;
+
+export const SizeInput = styled.input`
+  width: 54px;
+  accent-color: #2f6fed;
+`;
+
+export const TextEditor = styled.input`
+  position: absolute;
+  z-index: 30;
+  width: 180px;
+  height: 32px;
+  box-sizing: border-box;
+  border: 1px solid #2f6fed;
+  border-radius: 4px;
+  outline: none;
+  padding: 4px 7px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #111827;
+  font-size: 16px;
 `;
 
 export const ToolDivider = styled.span`

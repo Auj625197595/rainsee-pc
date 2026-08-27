@@ -9,6 +9,7 @@ interface ToneProps {
 }
 
 export const Root = styled.div`
+  position: relative;
   display: flex;
   flex-flow: column;
   flex: 1;
@@ -73,13 +74,6 @@ export const Avatar = styled.div`
       ? '0 10px 24px rgba(0, 0, 0, 0.28)'
       : '0 6px 24px rgba(20, 32, 72, 0.12)'};
   `};
-`;
-
-export const AvatarImg = styled.img`
-  width: 100%;
-  height: 100%;
-  border-radius: 50%;
-  object-fit: cover;
 `;
 
 export const HeaderName = styled.div`
@@ -260,12 +254,17 @@ export const Row = styled.button`
   font: inherit;
   color: inherit;
 
-  &:hover {
+  &:not(:disabled):hover {
     ${({ theme }: { theme?: ITheme }) => css`
       background-color: ${theme.dark
         ? 'rgba(255,255,255,0.06)'
         : '#f5f8ff'};
     `};
+  }
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
 `;
 
@@ -458,4 +457,340 @@ export const ActionLabel = styled.span`
   ${({ theme }: { theme?: ITheme }) => css`
     color: ${theme.dark ? '#e8e8e8' : '#161b2d'};
   `};
+`;
+
+export const SectionTitle = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 10px 4px;
+  font-size: 11px;
+  font-weight: 800;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${theme.dark ? 'rgba(214,222,239,0.66)' : '#77839a'};
+  `};
+`;
+
+export const ProfileRowWrap = styled.div`
+  position: relative;
+`;
+
+export const ProfileRow = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  padding: 10px;
+  box-sizing: border-box;
+  border-radius: 14px;
+  cursor: pointer;
+  outline: none;
+
+  &:hover,
+  &:focus-visible {
+    ${({ theme }: { theme?: ITheme }) => css`
+      background-color: ${theme.dark ? 'rgba(255,255,255,0.06)' : '#f5f8ff'};
+    `};
+  }
+`;
+
+export const ProfileMeta = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  flex: 1;
+`;
+
+export const ProfileName = styled.span`
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 800;
+`;
+
+export const StatusBadge = styled.span`
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 800;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${theme.dark ? '#9fb3ff' : '#425fe8'};
+    background: ${theme.dark ? 'rgba(103,130,255,0.16)' : '#eaf0ff'};
+  `};
+`;
+
+export const MoreButton = styled.button`
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  color: inherit;
+  cursor: pointer;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    background: ${theme.dark ? 'rgba(255,255,255,0.06)' : '#eef2f8'};
+  `};
+`;
+
+export const MoreMenu = styled.div`
+  position: relative;
+  width: calc(100% - 16px);
+  margin: -2px 8px 7px;
+  padding: 5px;
+  box-sizing: border-box;
+  border-radius: 8px;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${theme.dark ? '#eef3ff' : '#20283a'};
+    background: ${theme.dark ? '#242938' : '#fff'};
+    border: 1px solid ${theme.dark ? 'rgba(255,255,255,0.1)' : '#e2e8f2'};
+    box-shadow: ${theme.dark
+      ? '0 12px 28px rgba(0,0,0,0.38)'
+      : '0 12px 28px rgba(30,42,72,0.16)'};
+  `};
+`;
+
+export const MoreMenuItem = styled.button`
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 6px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+
+  &:hover {
+    ${({ theme }: { theme?: ITheme }) => css`
+      background: ${theme.dark ? 'rgba(255,255,255,0.08)' : '#f2f5fa'};
+    `};
+  }
+
+  &[data-danger='true'] {
+    color: #df4b4b;
+  }
+`;
+
+export const InlineNotice = styled.div`
+  margin: 6px 10px 2px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${theme.dark ? '#dce4f7' : '#56647d'};
+    background: ${theme.dark ? 'rgba(255,255,255,0.06)' : '#f0f4fa'};
+  `};
+
+  &[data-error='true'] {
+    user-select: text;
+    color: ${({ theme }: { theme?: ITheme }) =>
+      theme.dark ? '#ffb4b4' : '#a52d2d'};
+    background: ${({ theme }: { theme?: ITheme }) =>
+      theme.dark ? 'rgba(196,55,55,0.16)' : '#fff0f0'};
+    border: 1px solid
+      ${({ theme }: { theme?: ITheme }) =>
+        theme.dark ? 'rgba(255,128,128,0.3)' : '#f2c5c5'};
+  }
+`;
+
+export const ModalOverlay = styled.div`
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(14, 19, 31, 0.44);
+  backdrop-filter: blur(3px);
+`;
+
+export const Modal = styled.div`
+  width: 100%;
+  padding: 18px;
+  box-sizing: border-box;
+  border-radius: 8px;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${theme.dark ? '#f3f6ff' : '#182033'};
+    background: ${theme.dark ? '#222735' : '#fff'};
+    border: 1px solid ${theme.dark ? 'rgba(255,255,255,0.1)' : '#e2e8f2'};
+    box-shadow: 0 20px 50px rgba(15, 23, 42, 0.24);
+  `};
+`;
+
+export const ModalHeader = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  font-size: 15px;
+  font-weight: 800;
+`;
+
+export const ModalClose = styled.button`
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+`;
+
+export const ProfileInput = styled.input`
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  border-radius: 7px;
+  outline: none;
+  font: inherit;
+  font-size: 13px;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${theme.dark ? '#f3f6ff' : '#182033'};
+    background: ${theme.dark ? 'rgba(255,255,255,0.06)' : '#f7f9fc'};
+    border: 1px solid ${theme.dark ? 'rgba(255,255,255,0.13)' : '#dce3ee'};
+  `};
+
+  &:focus {
+    border-color: #5874ed;
+  }
+`;
+
+export const ProfileHint = styled.p`
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${theme.dark ? '#aeb9ce' : '#66738c'};
+  `};
+`;
+
+export const CloneSection = styled.fieldset`
+  min-width: 0;
+  margin: 12px 0 0;
+  padding: 0;
+  border: 0;
+`;
+
+export const CloneSectionTitle = styled.legend`
+  margin-bottom: 8px;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+`;
+
+export const CloneOptionsGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 10px;
+`;
+
+export const CloneOption = styled.label`
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  cursor: pointer;
+  user-select: none;
+`;
+
+export const CloneCheckbox = styled.input`
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #4967e8;
+  cursor: pointer;
+
+  &:disabled {
+    cursor: wait;
+  }
+`;
+
+export const CloneOptionLabel = styled.span`
+  min-width: 0;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+`;
+
+export const ModalMessage = styled.div`
+  margin-top: 9px;
+  min-height: 17px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #dc4c4c;
+`;
+
+export const ConfirmText = styled.div`
+  font-size: 13px;
+  line-height: 1.65;
+  color: inherit;
+`;
+
+export const ModalActions = styled.div`
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+`;
+
+export const ModalButton = styled.button`
+  min-width: 72px;
+  height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${theme.dark ? '#e9eefb' : '#3d4a62'};
+    background: ${theme.dark ? 'rgba(255,255,255,0.08)' : '#eef2f7'};
+  `};
+
+  &[data-primary='true'] {
+    color: #fff;
+    background: #4967e8;
+  }
+
+  &[data-danger='true'] {
+    color: #fff;
+    background: #d94b4b;
+  }
+
+  &:disabled {
+    opacity: 0.55;
+    cursor: wait;
+  }
 `;

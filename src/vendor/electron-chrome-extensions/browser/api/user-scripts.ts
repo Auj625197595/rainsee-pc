@@ -8,6 +8,7 @@ import { ExtensionEvent } from '../router'
 import {
   getFrameMatchUrls,
   isBrowserInternalFrame,
+  isBrowserInternalUrl,
   isRelatedFrameUrl,
   matchesScriptFilter,
   executeExtensionScript,
@@ -414,10 +415,15 @@ export class UserScriptsAPI {
     })
   }
 
-  private scriptMatches(script: RegisteredUserScript, frame: Electron.WebFrameMain) {
+  private scriptMatches(
+    script: RegisteredUserScript,
+    frame: Electron.WebFrameMain,
+    currentUrl?: string,
+  ) {
     const urls = getFrameMatchUrls(frame, {
       matchAboutBlank: script.matchAboutBlank,
       matchOriginAsFallback: script.matchOriginAsFallback,
+      urlOverride: currentUrl,
     })
     return matchesScriptFilter({
       urls,
@@ -446,6 +452,15 @@ export class UserScriptsAPI {
     }
     if (isBrowserInternalFrame(frame)) {
       log('inject skip browser-internal', 'url=', (url || '').slice(0, 120))
+      return
+    }
+    // Native window.open() creates an about:blank renderer before Chromium starts
+    // the requested navigation. Executing an isolated-world userscript during
+    // that handoff crashes Electron 43's renderer on Windows (0xC0000005).
+    // The destination will receive its normal dom-ready injection after it
+    // commits, so skipping this transient document does not skip the script.
+    if (!isChildFrame && /^about:blank(?:[?#]|$)/i.test(url || '')) {
+      log('inject skip transient about:blank')
       return
     }
     if (!url || (!/^(https?|file|ftp):/i.test(url) && !isRelatedFrameUrl(url))) {
@@ -578,10 +593,15 @@ export class UserScriptsAPI {
     }
   }
 
-  private hasHostAccess(extension: Electron.Extension, frame: Electron.WebFrameMain) {
+  private hasHostAccess(
+    extension: Electron.Extension,
+    frame: Electron.WebFrameMain,
+    currentUrl?: string,
+  ) {
     return getFrameMatchUrls(frame, {
       matchAboutBlank: true,
       matchOriginAsFallback: true,
+      urlOverride: currentUrl,
     }).some((candidate) => this.ctx.permissions?.hasOrigin(extension.id, candidate))
   }
 
@@ -596,17 +616,19 @@ export class UserScriptsAPI {
 
   getDocumentStartScripts(
     frame: Electron.WebFrameMain | null | undefined,
+    currentUrl?: string,
   ): PreloadIsolatedScript[] {
     if (!frame) return []
+    if (currentUrl && isBrowserInternalUrl(currentUrl)) return []
     const sessionExtensions = this.ctx.session.extensions || this.ctx.session
     const payloads: PreloadIsolatedScript[] = []
     for (const [extensionId, scripts] of this.scriptsMap) {
       const extension = sessionExtensions.getExtension(extensionId)
-      if (!extension || !this.hasHostAccess(extension, frame)) continue
+      if (!extension || !this.hasHostAccess(extension, frame, currentUrl)) continue
       for (const script of scripts) {
         if ((script.runAt || 'document_idle') !== 'document_start') continue
         if (script.world === 'MAIN' || (frame.parent && !script.allFrames)) continue
-        if (!this.scriptMatches(script, frame) || !script._code) continue
+        if (!this.scriptMatches(script, frame, currentUrl) || !script._code) continue
         const worldName = `__crxus__${script.worldId || ''}`
         const messagingEnabled = this.worldMessagingEnabled(
           extensionId,
@@ -629,17 +651,21 @@ export class UserScriptsAPI {
     return payloads
   }
 
-  getDocumentStartMainScripts(frame: Electron.WebFrameMain | null | undefined): string[] {
+  getDocumentStartMainScripts(
+    frame: Electron.WebFrameMain | null | undefined,
+    currentUrl?: string,
+  ): string[] {
     if (!frame) return []
+    if (currentUrl && isBrowserInternalUrl(currentUrl)) return []
     const sessionExtensions = this.ctx.session.extensions || this.ctx.session
     const payloads: string[] = []
     for (const [extensionId, scripts] of this.scriptsMap) {
       const extension = sessionExtensions.getExtension(extensionId)
-      if (!extension || !this.hasHostAccess(extension, frame)) continue
+      if (!extension || !this.hasHostAccess(extension, frame, currentUrl)) continue
       for (const script of scripts) {
         if ((script.runAt || 'document_idle') !== 'document_start') continue
         if (script.world !== 'MAIN' || (frame.parent && !script.allFrames)) continue
-        if (!this.scriptMatches(script, frame) || !script._code) continue
+        if (!this.scriptMatches(script, frame, currentUrl) || !script._code) continue
         const guardId = JSON.stringify(`${extensionId}:${script.id}`)
         payloads.push(
           `window.__crxInjected=window.__crxInjected||{};` +

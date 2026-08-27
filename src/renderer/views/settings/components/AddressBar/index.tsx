@@ -2,10 +2,17 @@ import * as React from 'react';
 
 import { Dropdown } from '~/renderer/components/Dropdown';
 import { Switch } from '~/renderer/components/Switch';
-import { Title, Control, Header, Back, Row, SecondaryText } from '../App/style';
+import {
+  Title,
+  Control,
+  Header,
+  Back,
+  Row,
+  SecondaryText,
+  SettingIcon,
+} from '../App/style';
 import {
   HighlightRow,
-  HighlightBadge,
   Group,
   GroupTitle,
   GroupRow,
@@ -24,9 +31,19 @@ import {
   EditButton,
   EngineOption,
   EngineIcon,
+  EfficiencySearchCard,
+  ModeSelector,
+  ModeButton,
+  EngineChoices,
+  EngineChoice,
+  ChoiceMark,
+  ChoiceHelp,
+  SuggestionGrid,
+  SuggestionItem,
 } from './style';
 import { NormalButton } from '../App';
-import { ISearchEngine } from '~/interfaces';
+import { EfficiencySearchMode, ISearchEngine } from '~/interfaces';
+import { Check, MagnifyingGlass, Sparkle } from '@phosphor-icons/react';
 
 // 导航行右侧的 > 箭头(跟随 currentColor)
 const ChevronIcon = () => (
@@ -49,20 +66,18 @@ const SearchAnnotatorToggle = observer(() => {
   const value = (store.settings as any).searchAnnotator as boolean;
 
   return (
-    <HighlightRow onClick={onSwitchChange('searchAnnotator')}>
+    <GroupRow onClick={onSwitchChange('searchAnnotator')}>
+      <SettingIcon tone="purple">
+        <Sparkle size={19} weight="fill" />
+      </SettingIcon>
       <div>
-        <Title>
-          搜索引擎 AI 建议面板
-          <HighlightBadge>AI</HighlightBadge>
-        </Title>
-        <SecondaryText>
-          在搜索结果上标注相关性角标与气泡,并尝试直接给出答案。
-        </SecondaryText>
+        <Title>搜索引擎 AI 建议面板</Title>
+        <SecondaryText>在搜索结果中提供相关性提示与答案建议。</SecondaryText>
       </div>
       <Control>
         <Switch value={value} />
       </Control>
-    </HighlightRow>
+    </GroupRow>
   );
 });
 
@@ -71,10 +86,13 @@ const SuggestionsToggle = observer(() => {
 
   return (
     <GroupRow onClick={onSwitchChange('suggestions')}>
+      <SettingIcon tone="cyan">
+        <MagnifyingGlass size={19} weight="fill" />
+      </SettingIcon>
       <div>
         <Title>展示搜索和网站建议</Title>
         <SecondaryText>
-          在地址栏输入时,显示来自标签页、历史记录、书签等的联想
+          在地址栏输入时显示标签页、历史记录和书签等联想。
         </SecondaryText>
       </div>
       <Control>
@@ -91,8 +109,7 @@ const SuggestSourceRow = observer(
     const value = (store.settings as any)[settingKey] as boolean;
 
     return (
-      <GroupRow
-        indent
+      <SuggestionItem
         disabled={!suggestions}
         onClick={suggestions ? onSwitchChange(settingKey) : undefined}
       >
@@ -100,7 +117,7 @@ const SuggestSourceRow = observer(
         <Control>
           <Switch value={value} />
         </Control>
-      </GroupRow>
+      </SuggestionItem>
     );
   },
 );
@@ -143,10 +160,17 @@ const SearchEngineRow = observer(() => {
   );
 });
 
-// 双引擎搜索总开关:开启后,搜索时右侧边栏加载副引擎(移动端 UA)。
-// 高亮卡片(同 AI 建议面板),id 供 ?highlight=dualEngineSearch 滚动定位+脉冲提示。
-const DualEngineToggle = observer(() => {
-  const dualEngineSearch = store.settings.dualEngineSearch;
+const EFFICIENCY_MODES: Array<{
+  value: EfficiencySearchMode;
+  label: string;
+}> = [
+  { value: 'normal', label: '正常' },
+  { value: 'dual', label: '双列搜索' },
+  { value: 'multi-tab', label: '多开标签' },
+];
+
+const EfficiencySearchSetting = observer(() => {
+  const mode = store.settings.efficiencySearchMode;
   // 渲染期读取以订阅变化(effect 才能在 highlightedSetting 改变后重跑)。
   const highlight = store.highlightedSetting;
   const [flashing, setFlashing] = React.useState(false);
@@ -157,13 +181,14 @@ const DualEngineToggle = observer(() => {
   // 注意:不能在此 effect 里回写 highlightedSetting——它在依赖数组中,回写会立刻
   // 触发 cleanup,清掉滚动用的 setTimeout,导致永远滚不到。改用 ref 去重。
   React.useEffect(() => {
-    if (highlight !== 'dualEngineSearch') return;
+    if (highlight !== 'efficiencySearch' && highlight !== 'dualEngineSearch')
+      return;
     if (handledRef.current === highlight) return;
     handledRef.current = highlight;
 
     const doScroll = () =>
       document
-        .getElementById('setting-dual-engine')
+        .getElementById('setting-efficiency-search')
         ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
     setFlashing(true);
@@ -180,34 +205,36 @@ const DualEngineToggle = observer(() => {
   }, [highlight]);
 
   return (
-    <HighlightRow
-      id="setting-dual-engine"
-      flashing={flashing}
-      onClick={onSwitchChange('dualEngineSearch')}
-    >
-      <div>
-        <Title>
-          双引擎搜索
-          <HighlightBadge>新</HighlightBadge>
-        </Title>
-        <SecondaryText>
-          搜索时,主面板使用主搜索引擎,右侧边栏同步加载副搜索引擎(移动端排版)。
-        </SecondaryText>
-      </div>
-      <Control>
-        <Switch value={dualEngineSearch} />
-      </Control>
-    </HighlightRow>
+    <EfficiencySearchCard id="setting-efficiency-search" flashing={flashing}>
+      <ModeSelector role="radiogroup" aria-label="效率搜索模式">
+        {EFFICIENCY_MODES.map((item) => {
+          return (
+            <ModeButton
+              key={item.value}
+              type="button"
+              role="radio"
+              aria-checked={mode === item.value}
+              selected={mode === item.value}
+              onClick={() => {
+                store.settings.efficiencySearchMode = item.value;
+                store.save();
+              }}
+            >
+              {item.label}
+            </ModeButton>
+          );
+        })}
+      </ModeSelector>
+    </EfficiencySearchCard>
   );
 });
 
 // 副搜索引擎选择(双引擎关闭时禁用并置灰)。
 const SecondaryEngineRow = observer(() => {
   const se = store.secondarySearchEngine;
-  const dualEngineSearch = store.settings.dualEngineSearch;
 
   return (
-    <GroupRowStatic disabled={!dualEngineSearch}>
+    <GroupRowStatic>
       <Title>副搜索引擎</Title>
       <Control>
         <Dropdown
@@ -228,20 +255,69 @@ const SecondaryEngineRow = observer(() => {
   );
 });
 
+const MultiEngineRows = observer(() => {
+  const selected = new Set(store.settings.efficiencySearchEngineKeywords || []);
+
+  const toggle = (keyword: string) => {
+    const next = new Set(selected);
+    if (next.has(keyword)) {
+      if (next.size <= 2) return;
+      next.delete(keyword);
+    } else {
+      next.add(keyword);
+    }
+    store.settings.efficiencySearchEngineKeywords = Array.from(next);
+    store.save();
+  };
+
+  return (
+    <GroupRowStatic>
+      <div style={{ width: '100%' }}>
+        <ChoiceHelp>
+          至少选择两个搜索引擎；此选择不受默认搜索引擎影响。
+        </ChoiceHelp>
+        <EngineChoices>
+          {store.settings.searchEngines.map((engine) => {
+            const checked = selected.has(engine.keyword);
+            const disabled = checked && selected.size <= 2;
+            return (
+              <EngineChoice
+                key={engine.keyword}
+                type="button"
+                role="checkbox"
+                aria-checked={checked}
+                selected={checked}
+                disabled={disabled}
+                onClick={() => toggle(engine.keyword)}
+                title={disabled ? '多开标签至少需要两个搜索引擎' : undefined}
+              >
+                <ChoiceMark selected={checked}>
+                  {checked && <Check size={12} weight="bold" />}
+                </ChoiceMark>
+                <EngineIcon icon={engine.icon} />
+                {engine.name}
+              </EngineChoice>
+            );
+          })}
+        </EngineChoices>
+      </div>
+    </GroupRowStatic>
+  );
+});
+
 const onBackClick = () => {
   store.selectedSection = 'address-bar';
 };
 
-const onEditMenuClick = (data: ISearchEngine) => (
-  e: React.MouseEvent<HTMLDivElement>,
-) => {
-  const { top, left } = e.currentTarget.getBoundingClientRect();
-  store.menuInfo.left = left - store.menuRef.current.offsetWidth;
-  store.menuInfo.top = top;
+const onEditMenuClick =
+  (data: ISearchEngine) => (e: React.MouseEvent<HTMLDivElement>) => {
+    const { top, left } = e.currentTarget.getBoundingClientRect();
+    store.menuInfo.left = left - store.menuRef.current.offsetWidth;
+    store.menuInfo.top = top;
 
-  store.editedSearchEngine = data;
-  store.menuVisible = true;
-};
+    store.editedSearchEngine = data;
+    store.menuVisible = true;
+  };
 
 const reorderEngines = (fromKeyword: string, toKeyword: string) => {
   if (fromKeyword === toKeyword) return;
@@ -291,7 +367,12 @@ export const SearchEngine = observer(({ data }: { data: ISearchEngine }) => {
   };
 
   return (
-    <TableRow bold={isDefault} dragging={dragging} onDragOver={onDragOver} onDrop={onDrop}>
+    <TableRow
+      bold={isDefault}
+      dragging={dragging}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
       <TableCell>
         <div style={{ display: 'flex', alignItems: 'center' }}>
           <EngineIcon icon={data.icon} />
@@ -328,7 +409,7 @@ export const ManageSearchEngines = observer(() => {
         管理搜索引擎
       </Header>
       <Row>
-        <Title>地址栏搜索引擎</Title>
+        <Title>搜索引擎</Title>
         <Control>
           <NormalButton onClick={onAddClick}>添加</NormalButton>
         </Control>
@@ -353,21 +434,27 @@ const onManageSearchEngines = () => {
 };
 
 export const AddressBar = observer(() => {
+  const efficiencyMode = store.settings.efficiencySearchMode;
+
   return (
     <>
-      <Header>地址栏</Header>
-
-      {/* 搜索建议:总开关 + 各联想来源收进同一张卡片,来源项缩进体现层级 */}
-      <GroupTitle>搜索与网站建议</GroupTitle>
+      <GroupTitle>搜索建议</GroupTitle>
       <Group>
         <SuggestionsToggle />
-        <SuggestSourceRow settingKey="suggestTabs" title="联想打开的标签页" />
-        <SuggestSourceRow settingKey="suggestSearchHistory" title="联想历史搜索词" />
-        <SuggestSourceRow settingKey="suggestBookmarks" title="联想书签" />
-        <SuggestSourceRow settingKey="suggestHistory" title="联想历史记录" />
-        <SuggestSourceRow settingKey="suggestEngine" title="联想搜索引擎建议词" />
-        <SuggestSourceRow settingKey="suggestClipboard" title="联想剪贴板内容" />
       </Group>
+
+      <GroupTitle>建议来源</GroupTitle>
+      <SuggestionGrid>
+        <SuggestSourceRow settingKey="suggestTabs" title="打开的标签页" />
+        <SuggestSourceRow
+          settingKey="suggestSearchHistory"
+          title="历史搜索词"
+        />
+        <SuggestSourceRow settingKey="suggestBookmarks" title="书签" />
+        <SuggestSourceRow settingKey="suggestHistory" title="历史记录" />
+        <SuggestSourceRow settingKey="suggestEngine" title="搜索引擎建议词" />
+        <SuggestSourceRow settingKey="suggestClipboard" title="剪贴板内容" />
+      </SuggestionGrid>
 
       {/* 搜索引擎:默认引擎下拉 + 管理入口(箭头示意可跳转) */}
       <GroupTitle>搜索引擎</GroupTitle>
@@ -381,16 +468,22 @@ export const AddressBar = observer(() => {
         </GroupRow>
       </Group>
 
-      {/* 双引擎搜索:总开关(高亮卡片) + 副引擎下拉 */}
-      <GroupTitle>双引擎搜索</GroupTitle>
-      <DualEngineToggle />
-      <Group>
-        <SecondaryEngineRow />
-      </Group>
+      <GroupTitle>效率搜索</GroupTitle>
+      <EfficiencySearchSetting />
+      {efficiencyMode !== 'normal' && (
+        <Group>
+          {efficiencyMode === 'dual' ? (
+            <SecondaryEngineRow />
+          ) : (
+            <MultiEngineRows />
+          )}
+        </Group>
+      )}
 
-      {/* 智能建议:AI 面板单独高亮卡片 */}
       <GroupTitle>智能</GroupTitle>
-      <SearchAnnotatorToggle />
+      <Group>
+        <SearchAnnotatorToggle />
+      </Group>
     </>
   );
 });

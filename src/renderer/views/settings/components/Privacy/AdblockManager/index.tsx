@@ -33,9 +33,8 @@ const AUTO_OPTIONS = [
 
 const Wrapper = styled.div`
   width: 100%;
-  margin-top: 10px;
   padding: 16px 18px;
-  border-radius: 16px;
+  border-radius: 18px;
 
   ${({ theme }: { theme?: ITheme }) => {
     const p = getPalette(theme);
@@ -44,6 +43,20 @@ const Wrapper = styled.div`
       box-shadow: inset 0 0 0 1px ${p.line}, 0 1px 2px rgba(20, 27, 45, 0.04);
     `;
   }}
+`;
+
+const GroupBlock = styled.div`
+  margin-top: 26px;
+`;
+
+const GroupLabel = styled.div`
+  padding: 0 4px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textSub};
+  `}
 `;
 
 const TopBar = styled.div`
@@ -93,7 +106,10 @@ const Select = styled.select`
   }}
 `;
 
-const SmallButton = styled.button<{ theme?: ITheme; kind?: 'primary' | 'ghost' | 'danger' }>`
+const SmallButton = styled.button<{
+  theme?: ITheme;
+  kind?: 'primary' | 'ghost' | 'danger';
+}>`
   font-family: inherit;
   font-size: 13px;
   font-weight: 600;
@@ -108,7 +124,13 @@ const SmallButton = styled.button<{ theme?: ITheme; kind?: 'primary' | 'ghost' |
     cursor: default;
   }
 
-  ${({ theme, kind }: { theme?: ITheme; kind?: 'primary' | 'ghost' | 'danger' }) => {
+  ${({
+    theme,
+    kind,
+  }: {
+    theme?: ITheme;
+    kind?: 'primary' | 'ghost' | 'danger';
+  }) => {
     const p = getPalette(theme);
     if (kind === 'danger') {
       return css`
@@ -267,7 +289,9 @@ const fmtTime = (ts: number) => {
   if (!ts) return '从未更新';
   const d = new Date(ts);
   const pad = (n: number) => (n < 10 ? '0' + n : '' + n);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(
+    d.getHours(),
+  )}:${pad(d.getMinutes())}`;
 };
 
 export default observer(() => {
@@ -281,7 +305,9 @@ export default observer(() => {
   const [busy, setBusy] = React.useState<string | null>(null); // url 或 'add'/'all'/'auto'
 
   const load = React.useCallback(async () => {
-    const res: ISubStore = await ipcRenderer.invoke('adblock-get-subscriptions');
+    const res: ISubStore = await ipcRenderer.invoke(
+      'adblock-get-subscriptions',
+    );
     if (res) setData(res);
   }, []);
 
@@ -304,7 +330,10 @@ export default observer(() => {
     if (!url) return;
     setBusy('add');
     setError('');
-    const res: ISubStore = await ipcRenderer.invoke('adblock-add-subscription', url);
+    const res: ISubStore = await ipcRenderer.invoke(
+      'adblock-add-subscription',
+      url,
+    );
     apply(res);
     if (res && !res.error) setInput('');
     setBusy(null);
@@ -312,21 +341,31 @@ export default observer(() => {
 
   const onRemove = async (url: string) => {
     setBusy(url);
-    const res: ISubStore = await ipcRenderer.invoke('adblock-remove-subscription', url);
+    const res: ISubStore = await ipcRenderer.invoke(
+      'adblock-remove-subscription',
+      url,
+    );
     apply(res);
     setBusy(null);
   };
 
   const onToggle = async (url: string, enabled: boolean) => {
     setBusy(url);
-    const res: ISubStore = await ipcRenderer.invoke('adblock-toggle-subscription', url, enabled);
+    const res: ISubStore = await ipcRenderer.invoke(
+      'adblock-toggle-subscription',
+      url,
+      enabled,
+    );
     apply(res);
     setBusy(null);
   };
 
   const onUpdate = async (url: string) => {
     setBusy(url);
-    const res: ISubStore = await ipcRenderer.invoke('adblock-update-subscription', url);
+    const res: ISubStore = await ipcRenderer.invoke(
+      'adblock-update-subscription',
+      url,
+    );
     apply(res);
     setBusy(null);
   };
@@ -340,7 +379,10 @@ export default observer(() => {
 
   const onAutoChange = async (hours: number) => {
     setBusy('auto');
-    const res: ISubStore = await ipcRenderer.invoke('adblock-set-auto-update', hours);
+    const res: ISubStore = await ipcRenderer.invoke(
+      'adblock-set-auto-update',
+      hours,
+    );
     apply(res);
     setBusy(null);
   };
@@ -349,102 +391,104 @@ export default observer(() => {
   const anyBusy = busy !== null;
 
   return (
-    <Wrapper theme={theme}>
-      <TopBar>
-        <TopTitle theme={theme}>订阅列表</TopTitle>
-        <Spacer />
-        <AutoWrap theme={theme}>
-          自动更新
-          <Select
+    <GroupBlock>
+      <GroupLabel theme={theme}>规则订阅</GroupLabel>
+      <Wrapper theme={theme}>
+        <TopBar>
+          <Spacer />
+          <AutoWrap theme={theme}>
+            自动更新
+            <Select
+              theme={theme}
+              value={data.autoUpdateHours}
+              disabled={anyBusy}
+              onChange={(e) => onAutoChange(Number(e.target.value))}
+            >
+              {AUTO_OPTIONS.map((o) => (
+                <option key={o.hours} value={o.hours}>
+                  {o.label}
+                </option>
+              ))}
+            </Select>
+          </AutoWrap>
+          <SmallButton
             theme={theme}
-            value={data.autoUpdateHours}
-            disabled={anyBusy}
-            onChange={(e) => onAutoChange(Number(e.target.value))}
+            kind="primary"
+            disabled={anyBusy || data.items.length === 0}
+            onClick={onUpdateAll}
           >
-            {AUTO_OPTIONS.map((o) => (
-              <option key={o.hours} value={o.hours}>
-                {o.label}
-              </option>
-            ))}
-          </Select>
-        </AutoWrap>
-        <SmallButton
-          theme={theme}
-          kind="primary"
-          disabled={anyBusy || data.items.length === 0}
-          onClick={onUpdateAll}
-        >
-          {busy === 'all' ? '更新中…' : '一键更新'}
-        </SmallButton>
-      </TopBar>
+            {busy === 'all' ? '更新中…' : '一键更新'}
+          </SmallButton>
+        </TopBar>
 
-      <AddRow>
-        <Input
-          theme={theme}
-          value={input}
-          placeholder="添加订阅地址，如 https://easylist.to/easylist/easylist.txt"
-          disabled={busy === 'add'}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') onAdd();
-          }}
-        />
-        <SmallButton
-          theme={theme}
-          kind="primary"
-          disabled={anyBusy || !input.trim()}
-          onClick={onAdd}
-        >
-          {busy === 'add' ? '添加中…' : '添加'}
-        </SmallButton>
-      </AddRow>
+        <AddRow>
+          <Input
+            theme={theme}
+            value={input}
+            placeholder="添加订阅地址，如 https://easylist.to/easylist/easylist.txt"
+            disabled={busy === 'add'}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') onAdd();
+            }}
+          />
+          <SmallButton
+            theme={theme}
+            kind="primary"
+            disabled={anyBusy || !input.trim()}
+            onClick={onAdd}
+          >
+            {busy === 'add' ? '添加中…' : '添加'}
+          </SmallButton>
+        </AddRow>
 
-      {error ? <ErrorText theme={theme}>{error}</ErrorText> : null}
+        {error ? <ErrorText theme={theme}>{error}</ErrorText> : null}
 
-      {data.items.length === 0 ? (
-        <Empty theme={theme}>暂无订阅，添加一个开始拦截广告</Empty>
-      ) : (
-        <List>
-          {data.items.map((it) => {
-            const itemBusy = busy === it.url;
-            return (
-              <Item key={it.url} theme={theme}>
-                <Switch
-                  value={it.enabled}
-                  onClick={() => !anyBusy && onToggle(it.url, !it.enabled)}
-                />
-                <ItemInfo>
-                  <ItemName theme={theme}>
-                    {it.name || it.url}
-                    {it.builtin ? <Badge theme={theme}>内置</Badge> : null}
-                  </ItemName>
-                  <ItemMeta theme={theme}>
-                    {`${it.count} 条规则 · ${fmtTime(it.updatedAt)}`}
-                  </ItemMeta>
-                </ItemInfo>
-                <Actions>
-                  <SmallButton
-                    theme={theme}
-                    kind="ghost"
-                    disabled={anyBusy}
-                    onClick={() => onUpdate(it.url)}
-                  >
-                    {itemBusy ? '…' : '更新'}
-                  </SmallButton>
-                  <SmallButton
-                    theme={theme}
-                    kind="danger"
-                    disabled={anyBusy}
-                    onClick={() => onRemove(it.url)}
-                  >
-                    删除
-                  </SmallButton>
-                </Actions>
-              </Item>
-            );
-          })}
-        </List>
-      )}
-    </Wrapper>
+        {data.items.length === 0 ? (
+          <Empty theme={theme}>暂无订阅，添加一个开始拦截广告</Empty>
+        ) : (
+          <List>
+            {data.items.map((it) => {
+              const itemBusy = busy === it.url;
+              return (
+                <Item key={it.url} theme={theme}>
+                  <Switch
+                    value={it.enabled}
+                    onClick={() => !anyBusy && onToggle(it.url, !it.enabled)}
+                  />
+                  <ItemInfo>
+                    <ItemName theme={theme}>
+                      {it.name || it.url}
+                      {it.builtin ? <Badge theme={theme}>内置</Badge> : null}
+                    </ItemName>
+                    <ItemMeta theme={theme}>
+                      {`${it.count} 条规则 · ${fmtTime(it.updatedAt)}`}
+                    </ItemMeta>
+                  </ItemInfo>
+                  <Actions>
+                    <SmallButton
+                      theme={theme}
+                      kind="ghost"
+                      disabled={anyBusy}
+                      onClick={() => onUpdate(it.url)}
+                    >
+                      {itemBusy ? '…' : '更新'}
+                    </SmallButton>
+                    <SmallButton
+                      theme={theme}
+                      kind="danger"
+                      disabled={anyBusy}
+                      onClick={() => onRemove(it.url)}
+                    >
+                      删除
+                    </SmallButton>
+                  </Actions>
+                </Item>
+              );
+            })}
+          </List>
+        )}
+      </Wrapper>
+    </GroupBlock>
   );
 });

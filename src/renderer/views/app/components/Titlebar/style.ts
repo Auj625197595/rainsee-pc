@@ -1,8 +1,6 @@
 import styled, { css } from 'styled-components';
 import { ITheme } from '~/interfaces';
 import { platform } from 'os';
-import { ICON_FULLSCREEN_EXIT } from '~/renderer/constants/icons'
-import { centerIcon } from '~/renderer/mixins';
 
 // margin-top: ${isHTMLFullscreen ? -TOOLBAR_HEIGHT : 0}px;
 
@@ -46,28 +44,6 @@ export const StyledTitlebar = styled.div`
   `};
 `;
 
-export const FullscreenExitButton = styled.div`
-  top: 0;
-  right: 0;
-  height: 32px;
-  min-width: 45px;
-  -webkit-app-region: no-drag;
-  marginLeft: 8;
-  background-image: url(${ICON_FULLSCREEN_EXIT});
-  transition: 0.1s background-color;
-  ${centerIcon(24)};
-
-  ${({ theme }: { theme?: ITheme }) => css`
-    filter: ${theme['dialog.lightForeground']
-      ? `invert(100%)`
-      : `none`};
-  `}
-
-  &:hover {
-    background-color: rgba(60, 60, 60, 0.4);
-  }
-`;
-
 // Brand block shown at the very left of the title bar (design spec: logo +
 // "雨见浏览器 / RainPC"). Hidden in compact mode where space is tight.
 export const Brand = styled.div`
@@ -104,6 +80,8 @@ export const BrandLogo = styled.div`
 export const BrandText = styled.div`
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  max-width: 180px;
   line-height: 1.1;
 `;
 
@@ -122,6 +100,9 @@ export const BrandTitle = styled.div`
   font-size: 14px;
   font-weight: 800;
   letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 
   ${({ theme }: { theme?: ITheme }) => css`
     color: ${theme['toolbar.lightForeground'] ? '#ffffff' : '#161b2d'};
@@ -136,9 +117,18 @@ export const BrandSub = styled.div`
   color: #a8b2c7;
 `;
 
-// RainPC 副标题行
+// RainPC 与工作区圆点同一行
 export const BrandSubRow = styled.div`
   display: flex;
   align-items: center;
   gap: 5px;
+`;
+
+export const WorkspaceDot = styled.div<{ color: string }>`
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: ${({ color }) => color};
+  box-shadow: 0 0 0 2px ${({ color }) => `${color}33`};
 `;

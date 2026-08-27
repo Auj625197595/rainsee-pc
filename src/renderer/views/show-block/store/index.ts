@@ -22,7 +22,7 @@ export class Store extends DialogStore {
       this.filterCount = await ipcRenderer.invoke('get-ad-filter-count');
     })();
 
-    // 持久弹窗：显示与数据都通过 'visible' 事件下发（弹窗已预加载，秒开后内容再渲染）
+    // 持久弹窗：显示与数据都通过 'visible' 事件下发，隐藏后由主进程回收。
     ipcRenderer.on('visible', async (e, flag, data) => {
       this.visible = flag;
       if (!flag || !data) return;

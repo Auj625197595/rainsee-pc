@@ -183,24 +183,45 @@ export const Nav = styled.div`
   height: 100vh;
   display: flex;
   flex-flow: column;
-  padding: 24px 20px;
+  padding: 26px 18px 20px;
   overflow: hidden;
 
   ${({ theme }: { theme?: ITheme }) => {
     const p = getPalette(theme);
     return css`
-      background-color: ${p.bg};
+      background: ${theme && theme['pages.lightForeground']
+        ? p.bg
+        : 'linear-gradient(180deg, #FBFBFE 0%, #F5F5FB 100%)'};
       border-right: 1px solid ${p.line};
     `;
   }}
 `;
 
+export const NavBrand = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 0 8px 18px;
+`;
+
+export const NavLogo = styled.div`
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: #fff;
+  background: linear-gradient(135deg, #4a5ae9, #7a6ceb);
+  box-shadow: 0 6px 14px -5px rgba(74, 90, 233, 0.6);
+`;
+
 export const NavTitle = styled.h1`
   margin: 0;
-  padding: 0 4px;
-  font-size: 26px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: 0;
 
   ${({ theme }: { theme?: ITheme }) => css`
     color: ${getPalette(theme).textMain};
@@ -208,13 +229,13 @@ export const NavTitle = styled.h1`
 `;
 
 export const NavSearch = styled.div`
-  margin-top: 20px;
-  height: 40px;
+  height: 38px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
   padding: 0 14px;
-  border-radius: 14px;
+  margin-bottom: 16px;
+  border-radius: 9999px;
   font-size: 13px;
   transition: box-shadow 0.16s ease, border-color 0.16s ease;
 
@@ -278,10 +299,39 @@ export const NavSearchClear = styled.button`
   }
 `;
 
+export const NavKeyboardShortcut = styled.span`
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 16px;
+
+  ${({ theme }: { theme?: ITheme }) => {
+    const p = getPalette(theme);
+    return css`
+      color: ${p.textMute};
+      background-color: ${theme && theme['pages.lightForeground']
+        ? 'rgba(255, 255, 255, 0.07)'
+        : '#F1F2F8'};
+    `;
+  }}
+`;
+
+export const NavSectionLabel = styled.div`
+  padding: 4px 10px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textMute};
+  `}
+`;
+
 // ===== 搜索结果列表（替换导航列表展示）=====
 
 export const NavResults = styled.div`
-  margin-top: 14px;
   flex: 1;
   min-height: 0;
   overflow: hidden auto;
@@ -344,7 +394,6 @@ export const NavResultEmpty = styled.div`
 `;
 
 export const NavList = styled.nav`
-  margin-top: 22px;
   flex: 1;
   min-height: 0;
   overflow: hidden auto;
@@ -361,8 +410,8 @@ export const NavItem = styled.div`
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 9px 12px;
-  border-radius: 12px;
+  padding: 9px 10px;
+  border-radius: 10px;
   cursor: pointer;
   transition: background-color 0.16s ease;
 
@@ -370,7 +419,7 @@ export const NavItem = styled.div`
     const p = getPalette(theme);
     return css`
       background-color: ${selected ? p.primarySoft : 'transparent'};
-      box-shadow: ${selected ? `inset 0 0 0 1px ${p.primary}26` : 'none'};
+      box-shadow: none;
 
       &:hover {
         background-color: ${selected ? p.primarySoft : p.surface};
@@ -379,22 +428,44 @@ export const NavItem = styled.div`
   }}
 `;
 
+const navTones = {
+  blue: ['#4A5AE9', '#EEF0FF'],
+  purple: ['#8A7DE8', '#F4F2FF'],
+  green: ['#00B06B', '#E6F7F0'],
+  orange: ['#FF8F1F', '#FFF4EB'],
+  red: ['#F53F3F', '#FFECEC'],
+  cyan: ['#00B4C8', '#E5F8FA'],
+  pink: ['#EC5BAD', '#FCEAF5'],
+};
+
+export type SettingsTone = keyof typeof navTones;
+
 export const NavIcon = styled.span`
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 32px;
-  width: 32px;
-  min-width: 32px;
-  border-radius: 10px;
+  height: 30px;
+  width: 30px;
+  min-width: 30px;
+  border-radius: 9px;
   transition: background-color 0.16s ease, color 0.16s ease;
 
-  ${({ theme, selected }: { theme?: ITheme; selected?: boolean }) => {
-    const p = getPalette(theme);
+  ${({
+    theme,
+    selected,
+    tone = 'blue',
+  }: {
+    theme?: ITheme;
+    selected?: boolean;
+    tone?: SettingsTone;
+  }) => {
+    const colors = navTones[tone];
     return css`
-      background-color: ${selected ? p.primary : p.surface};
-      color: ${selected ? '#fff' : p.textSub};
-      box-shadow: ${selected ? 'none' : `inset 0 0 0 1px ${p.line}`};
+      background-color: ${theme && theme['pages.lightForeground']
+        ? `${colors[0]}22`
+        : colors[1]};
+      color: ${colors[0]};
+      box-shadow: ${selected ? `0 4px 10px -4px ${colors[0]}80` : 'none'};
     `;
   }}
 `;
@@ -410,10 +481,84 @@ export const NavLabel = styled.span`
   ${({ theme, selected }: { theme?: ITheme; selected?: boolean }) => {
     const p = getPalette(theme);
     return css`
-      font-weight: ${selected ? 700 : 500};
+      font-weight: ${selected ? 600 : 500};
       color: ${selected ? p.primary : p.textMain};
     `;
   }}
+`;
+
+export const AccountCard = styled.div`
+  appearance: none;
+  width: 100%;
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-height: 62px;
+  padding: 11px 12px;
+  border-radius: 14px;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: filter 0.16s ease;
+
+  ${({ theme }: { theme?: ITheme }) => {
+    const p = getPalette(theme);
+    return css`
+      color: ${p.textMain};
+      background-color: ${p.surface};
+      border: 1px solid ${p.line};
+    `;
+  }}
+
+  &:hover {
+    filter: brightness(0.98);
+  }
+
+  &:focus-visible {
+    outline: 2px solid ${({ theme }: { theme?: ITheme }) =>
+      getPalette(theme).primary};
+    outline-offset: 2px;
+  }
+`;
+
+export const AccountAvatar = styled.div`
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  background: linear-gradient(135deg, #ff8f1f, #ec5bad);
+  overflow: hidden;
+`;
+
+export const AccountAvatarImage = styled.img`
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+`;
+
+export const AccountMeta = styled.div`
+  flex: 1;
+  min-width: 0;
+`;
+
+export const AccountName = styled.div`
+  font-size: 13.5px;
+  font-weight: 600;
+`;
+
+export const AccountStatus = styled.div`
+  margin-top: 1px;
+  font-size: 11.5px;
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textSub};
+  `}
 `;
 
 // ===== 内容区 =====
@@ -421,13 +566,84 @@ export const NavLabel = styled.span`
 export const Main = styled.div`
   flex: 1;
   min-width: 0;
+  min-height: 0;
   height: 100vh;
-  overflow: auto;
-  padding: 36px 48px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
 
   ${({ theme }: { theme?: ITheme }) => css`
     background-color: ${getPalette(theme).surface};
   `}
+`;
+
+export const MainTopbar = styled.div`
+  min-height: 73px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 40px;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    border-bottom: 1px solid ${getPalette(theme).line};
+  `}
+`;
+
+export const Breadcrumb = styled.div`
+  font-size: 13px;
+  font-weight: 500;
+
+  ${({ theme }: { theme?: ITheme }) => {
+    const p = getPalette(theme);
+    return css`
+      color: ${p.textSub};
+      strong {
+        color: ${p.textMain};
+        font-weight: 600;
+      }
+    `;
+  }}
+`;
+
+export const TopbarActions = styled.div`
+  display: flex;
+  gap: 8px;
+`;
+
+export const TopbarButton = styled.button`
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease;
+
+  ${({ theme }: { theme?: ITheme }) => {
+    const p = getPalette(theme);
+    return css`
+      color: ${p.textMain};
+      background-color: ${theme && theme['pages.lightForeground']
+        ? 'rgba(255, 255, 255, 0.07)'
+        : '#F4F5FA'};
+      &:hover {
+        color: ${p.primary};
+        background-color: ${p.primarySoft};
+      }
+    `;
+  }}
+`;
+
+export const MainContent = styled.div`
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 30px 40px 48px;
 
   &::-webkit-scrollbar {
     width: 9px;
@@ -441,9 +657,21 @@ export const Main = styled.div`
 `;
 
 export const MainInner = styled.div`
-  max-width: 820px;
+  max-width: 780px;
   margin: 0 auto;
   position: relative;
+`;
+
+export const PageHeading = styled.h2`
+  margin: 0;
+  font-size: 26px;
+  line-height: 1.3;
+  font-weight: 600;
+  letter-spacing: 0;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textMain};
+  `}
 `;
 
 // ===== 区块原子（沿用既有导入名，重做外观）=====
@@ -451,13 +679,14 @@ export const MainInner = styled.div`
 export const Header = styled.div`
   display: flex;
   align-items: center;
-  font-size: 28px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  margin-bottom: 14px;
+  margin-top: 26px;
+  padding: 0 4px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
 
   ${({ theme }: { theme?: ITheme }) => css`
-    color: ${getPalette(theme).textMain};
+    color: ${getPalette(theme).textSub};
   `}
 `;
 
@@ -465,10 +694,11 @@ export const Row = styled.div`
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 14px;
   margin-top: 10px;
-  padding: 16px 18px;
-  border-radius: 16px;
+  min-height: 68px;
+  padding: 14px 18px;
+  border-radius: 18px;
   cursor: pointer;
   transition: box-shadow 0.18s ease;
 
@@ -476,19 +706,19 @@ export const Row = styled.div`
     const p = getPalette(theme);
     return css`
       background-color: ${p.surface};
-      box-shadow: inset 0 0 0 1px ${p.line}, 0 1px 2px rgba(20, 27, 45, 0.04);
+      box-shadow: inset 0 0 0 1px ${p.line};
 
       &:hover {
-        box-shadow: inset 0 0 0 1px ${p.primary}40,
-          0 10px 30px -22px rgba(40, 60, 120, 0.3);
+        background-color: ${p.hover};
+        box-shadow: inset 0 0 0 1px ${p.line};
       }
     `;
   }}
 `;
 
 export const Title = styled.div`
-  font-size: 15px;
-  font-weight: 700;
+  font-size: 14.5px;
+  font-weight: 600;
 
   ${({ theme }: { theme?: ITheme }) => css`
     color: ${getPalette(theme).textMain};
@@ -496,9 +726,10 @@ export const Title = styled.div`
 `;
 
 export const SecondaryText = styled.div`
-  margin-top: 3px;
-  font-size: 13px;
-  font-weight: 400;
+  margin-top: 2px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  font-weight: 500;
 
   ${({ theme }: { theme?: ITheme }) => css`
     color: ${getPalette(theme).textSub};
@@ -509,6 +740,74 @@ export const Control = styled.div`
   margin-left: auto;
   display: flex;
   align-items: center;
+`;
+
+export const SettingGroupLabel = styled.div`
+  padding: 0 4px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textSub};
+  `}
+`;
+
+export const SettingGroup = styled.section`
+  margin-top: 26px;
+  overflow: hidden;
+  border-radius: 18px;
+
+  ${({ theme }: { theme?: ITheme }) => {
+    const p = getPalette(theme);
+    return css`
+      background-color: ${p.surface};
+      border: 1px solid ${p.line};
+
+      ${Row} {
+        margin-top: 0;
+        border-radius: 0;
+        box-shadow: none;
+      }
+
+      ${Row} + ${Row} {
+        border-top: 1px solid ${p.line};
+      }
+    `;
+  }}
+`;
+
+export const SettingGroupBlock = styled.div`
+  margin-top: 26px;
+
+  ${SettingGroup} {
+    margin-top: 0;
+  }
+`;
+
+export const SettingIcon = styled.span`
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+
+  ${({ tone = 'blue', theme }: { tone?: SettingsTone; theme?: ITheme }) => {
+    const colors = navTones[tone];
+    return css`
+      color: ${colors[0]};
+      background-color: ${theme && theme['pages.lightForeground']
+        ? `${colors[0]}22`
+        : colors[1]};
+    `;
+  }}
+`;
+
+export const SettingCopy = styled.div`
+  flex: 1;
+  min-width: 0;
 `;
 
 export const IconButton = styled.div`

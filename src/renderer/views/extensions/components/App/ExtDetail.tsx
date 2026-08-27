@@ -140,7 +140,11 @@ export const ExtDetail = observer(({ item }: { item: IExtItem }) => {
             <DetailName title={item.name}>{item.name}</DetailName>
             <DetailMeta>
               <span>版本 {item.version || '?'}</span>
-              <span>Manifest V{item.manifestVersion}</span>
+              <span>
+                {item.type === 'theme'
+                  ? 'Chrome 主题'
+                  : `Manifest V${item.manifestVersion}`}
+              </span>
             </DetailMeta>
           </DetailIdentity>
           <Switch
@@ -155,10 +159,12 @@ export const ExtDetail = observer(({ item }: { item: IExtItem }) => {
           <DetailText>{item.description || '此扩展没有提供描述。'}</DetailText>
         </DetailSection>
 
-        <DetailSection>
-          <DetailSectionTitle>权限</DetailSectionTitle>
-          <PermissionList items={item.permissions} />
-        </DetailSection>
+        {item.type !== 'theme' && (
+          <DetailSection>
+            <DetailSectionTitle>权限</DetailSectionTitle>
+            <PermissionList items={item.permissions} />
+          </DetailSection>
+        )}
 
         {item.hostPermissions?.length > 0 && (
           <DetailSection>
@@ -184,7 +190,7 @@ export const ExtDetail = observer(({ item }: { item: IExtItem }) => {
           </DetailSetting>
         )}
 
-        <DetailSetting>
+        {item.type !== 'theme' && <DetailSetting>
           <DetailSettingBody>
             <DetailSettingTitle>在无痕模式下启用</DetailSettingTitle>
             <DetailSettingText>
@@ -196,7 +202,7 @@ export const ExtDetail = observer(({ item }: { item: IExtItem }) => {
             value={!!item.incognitoAllowed}
             onClick={() => store.setIncognitoAllowed(item, !item.incognitoAllowed)}
           />
-        </DetailSetting>
+        </DetailSetting>}
 
         {item.optionsUrl && (
           <DetailSetting>

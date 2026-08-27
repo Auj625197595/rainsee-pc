@@ -3,6 +3,96 @@ import { ExtensionContext } from '../context'
 import debug from 'debug'
 
 const d = debug('electron-chrome-extensions:webRequest')
+const webRequestVerbose =
+  process.env.CRX_WEBREQUEST_DEBUG === '1' || process.env.CRX_VERBOSE === '1'
+const shortUrl = (url: unknown) => {
+  const value = typeof url === 'string' ? url : ''
+  return value.length > 180 ? `${value.slice(0, 177)}...` : value
+}
+const isMediaRequest = (details: any) =>
+  details?.type === 'media' ||
+  details?.type === 'object' ||
+  /\.(aac|flac|m3u8|m4a|m4s|mp3|mp4|mpd|ogg|opus|ts|webm)(?:$|[?#])/i.test(
+    details?.url || '',
+  )
+
+// Electron's details object can contain values that are valid in the main
+// process but cannot cross the ServiceWorker IPC structured-clone boundary.
+// Keep only the Chrome webRequest contract and coerce header values to strings.
+const cloneSafeWebRequestDetails = (details: any) => {
+  if (!details || typeof details !== 'object') return details
+  const out: any = {}
+  const scalarKeys = [
+    'requestId', 'url', 'method', 'frameId', 'parentFrameId', 'tabId', 'type',
+    'timeStamp', 'statusCode', 'statusLine', 'fromCache', 'ip', 'fromOrigin',
+    'error', 'redirectUrl', 'initiator', 'originUrl', 'windowId', 'incognito',
+    'documentId', 'parentDocumentId', 'documentLifecycle', 'frameType', 'scheme',
+    'requestBody', 'challenger', 'isProxy', 'realm',
+  ]
+  const cloneValue = (value: any, seen = new WeakSet<object>()): any => {
+    if (value == null || typeof value !== 'object') return value
+    if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value
+    if (seen.has(value)) return null
+    seen.add(value)
+    if (Array.isArray(value)) {
+      const out = value.map((item) => cloneValue(item, seen))
+      seen.delete(value)
+      return out
+    }
+    const out: any = {}
+    for (const key of Object.keys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)
+      if (!descriptor || descriptor.get || descriptor.set) continue
+      out[key] = cloneValue(descriptor.value, seen)
+    }
+    seen.delete(value)
+    return out
+  }
+  for (const key of scalarKeys) {
+    const value = details[key]
+    if (
+      value === null ||
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'boolean' ||
+      (value && typeof value === 'object')
+    ) {
+      out[key] = cloneValue(value)
+    }
+  }
+  const copyHeaders = (headers: any) => {
+    if (!headers) return undefined
+    const rows: Array<{ name: string; value: string }> = []
+    if (Array.isArray(headers)) {
+      for (const item of headers) {
+        if (!item || typeof item.name !== 'string') continue
+        rows.push({name: item.name, value: item.value == null ? '' : String(item.value)})
+      }
+    } else if (typeof headers === 'object') {
+      for (const [name, values] of Object.entries(headers)) {
+        if (Array.isArray(values)) {
+          for (const value of values) rows.push({name, value: value == null ? '' : String(value)})
+        } else {
+          rows.push({name, value: values == null ? '' : String(values)})
+        }
+      }
+    }
+    return rows
+  }
+  const requestHeaders = copyHeaders(details.requestHeaders)
+  const responseHeaders = copyHeaders(details.responseHeaders)
+  if (requestHeaders) out.requestHeaders = requestHeaders
+  if (responseHeaders) out.responseHeaders = responseHeaders
+  return out
+}
+
+let mediaDispatchLogCount = 0
+const logMediaDispatch = (message: string) => {
+  if (!webRequestVerbose) return
+  if (mediaDispatchLogCount >= 200) return
+  mediaDispatchLogCount++
+  console.log(`[crx-webRequest] ${message}`)
+}
 
 // `app.on('login')` is registered once per session to fire onAuthRequired.
 const authListeningSessions = new WeakSet<Electron.Session>()
@@ -42,6 +132,9 @@ function normalizeResourceType(t: string | undefined): string {
     fetch: 'xmlhttprequest',
     cspReport: 'csp_report',
     webSocket: 'websocket',
+    serviceWorker: 'service_worker',
+    signedExchange: 'signed_exchange',
+    webTransport: 'webtransport',
   }
   return map[t] || t
 }
@@ -104,6 +197,9 @@ const arrayToRespRecord = (arr: Array<{ name: string; value?: string }>) => {
  * 由 adblock.ts 接回(event.ts 回传 crx-webrequest-response,cancel 胜出),不在这里处理。
  */
 export class WebRequestAPI {
+  private mediaWorkerExtensions: Electron.Extension[] | undefined
+  private mediaWorkerExtensionsAt = 0
+
   constructor(private ctx: ExtensionContext) {
     try {
       this.ctx.webRequest = this
@@ -111,6 +207,13 @@ export class WebRequestAPI {
       this.ctx.router.apiHandler()
       this.setupSessionListeners()
       this.setupAuthListener()
+      const extensions: any = this.ctx.session.extensions || this.ctx.session
+      const invalidate = () => {
+        this.mediaWorkerExtensions = undefined
+        this.mediaWorkerExtensionsAt = 0
+      }
+      extensions.addListener?.('extension-loaded', invalidate)
+      extensions.addListener?.('extension-unloaded', invalidate)
     } catch (err) {
       console.error('[WebRequestAPI] Constructor error:', err)
     }
@@ -181,10 +284,17 @@ export class WebRequestAPI {
     })
   }
 
-  private setupSessionListeners() {
+  installBeforeRequestListener = () => {
     const session = this.ctx.session
-
     session.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, (details, callback) => {
+      // The adblock hook replaces this listener when enabled. Keep the same
+      // Chrome-owned resource fallback here for the non-adblock path.
+      const specialRedirect = this.ctx.store.impl.resolveChromeExtensionResourceUrl?.(details.url)
+      if (specialRedirect) {
+        console.log(`[crx-resource] redirect ${details.url} -> ${specialRedirect.slice(0, 32)}...`)
+        callback({ redirectURL: specialRedirect })
+        return
+      }
       try {
         this.dispatchEvent('onBeforeRequest', details)
       } catch (err) {
@@ -197,7 +307,7 @@ export class WebRequestAPI {
       let response: any = {}
       try {
         const dnr = this.ctx.declarativeNetRequest
-        if (dnr && isNetworkUrl(details.url)) {
+        if (dnr?.hasHeaderRules('request') && isNetworkUrl(details.url)) {
           const verdict = dnr.matchBeforeRequest(details as any)
           if (verdict) response = verdict
         }
@@ -206,6 +316,23 @@ export class WebRequestAPI {
       }
       callback(response)
     })
+  }
+
+  private getMediaWorkerExtensions(): Electron.Extension[] {
+    const now = Date.now()
+    if (this.mediaWorkerExtensions && now - this.mediaWorkerExtensionsAt < 5000) {
+      return this.mediaWorkerExtensions
+    }
+    const extensions: any = this.ctx.session.extensions || this.ctx.session
+    this.mediaWorkerExtensions = extensions.getAllExtensions?.() || []
+    this.mediaWorkerExtensionsAt = now
+    return this.mediaWorkerExtensions || []
+  }
+
+  private setupSessionListeners() {
+    const session = this.ctx.session
+
+    this.installBeforeRequestListener()
 
     session.webRequest.onBeforeSendHeaders({ urls: ['<all_urls>'] }, (details, callback) => {
       try {
@@ -235,7 +362,7 @@ export class WebRequestAPI {
       let responseHeaders = details.responseHeaders as Record<string, string[]> | undefined
       try {
         const dnr = this.ctx.declarativeNetRequest
-        if (dnr && isNetworkUrl(details.url) && responseHeaders) {
+        if (dnr?.hasHeaderRules('response') && isNetworkUrl(details.url) && responseHeaders) {
           const modified = dnr.matchHeaders(details as any, 'response', respRecordToArray(responseHeaders))
           if (modified) responseHeaders = arrayToRespRecord(modified)
         }
@@ -295,7 +422,19 @@ export class WebRequestAPI {
     if (details.url && details.url.startsWith('chrome-extension://')) {
       return
     }
+    const lightweight = this.toChromeDetails(details, false)
+    if (!this.shouldDispatchChromeEvent(eventName, lightweight)) return
     this.dispatchChromeEvent(eventName, this.toChromeDetails(details))
+  }
+
+  shouldDispatchChromeEvent(eventName: string, chromeDetails: any): boolean {
+    const routedName = eventName.startsWith('webRequest.')
+      ? eventName
+      : `webRequest.${eventName}`
+    return (
+      isMediaRequest(chromeDetails) ||
+      this.ctx.router.listenerExtensionIds(routedName, chromeDetails).length > 0
+    )
   }
 
   dispatchChromeEvent(eventName: string, chromeDetails: any) {
@@ -303,25 +442,120 @@ export class WebRequestAPI {
     const routedName = eventName.startsWith('webRequest.')
       ? eventName
       : `webRequest.${eventName}`
-    for (const extensionId of this.ctx.router.listenerExtensionIds(routedName)) {
-      if (this.ctx.permissions?.hasPermission(extensionId, 'webRequest') !== true) continue
-      if (this.ctx.permissions?.hasOrigin(extensionId, chromeDetails.url) !== true) continue
+    const candidates = this.ctx.router.listenerExtensionIds(routedName, chromeDetails)
+    const verifiedCandidates = new Set<string>()
+    // A cold MV3 worker may have started but not yet sent its listener
+    // registration IPC. Chrome queues the first event during that startup
+    // turn; mirror that behavior for media requests by targeting loaded MV3
+    // workers which are explicitly granted webRequest + the request origin.
+    // ExtensionRouter keeps this as a bounded 30s queue until addListener
+    // arrives, so unrelated extensions never receive arbitrary traffic.
+    const mediaRequest = isMediaRequest(chromeDetails)
+    if (mediaRequest) {
+      const knownCandidates = new Set(candidates)
+      let coldAdded = 0
+      for (const extension of this.getMediaWorkerExtensions()) {
+        const manifest: any = extension?.manifest
+        if (
+          manifest?.manifest_version !== 3 ||
+          typeof manifest?.background?.service_worker !== 'string' ||
+          this.ctx.permissions?.hasPermission(extension.id, 'webRequest') !== true ||
+          this.ctx.permissions?.hasOrigin(extension.id, chromeDetails.url) !== true
+        ) {
+          continue
+        }
+        if (!knownCandidates.has(extension.id)) {
+          candidates.push(extension.id)
+          knownCandidates.add(extension.id)
+          verifiedCandidates.add(extension.id)
+          coldAdded++
+        }
+      }
+      if (webRequestVerbose && coldAdded > 0) {
+        console.log(
+          `[crx-webRequest] cold-worker candidates=${candidates.join(',')} ` +
+            `event=${routedName} url=${shortUrl(chromeDetails.url)}`,
+        )
+      }
+    }
+    if (candidates.length === 0) return
+    chromeDetails = cloneSafeWebRequestDetails(chromeDetails)
+    const recipients: string[] = []
+    for (const extensionId of candidates) {
+      if (verifiedCandidates.has(extensionId)) {
+        recipients.push(extensionId)
+        this.ctx.router.sendEvent(extensionId, routedName, chromeDetails)
+        continue
+      }
+      if (this.ctx.permissions?.hasPermission(extensionId, 'webRequest') !== true) {
+        if (webRequestVerbose) {
+          console.log(`[crx-webRequest] skip ${routedName} ext=${extensionId} reason=permission`)
+        }
+        continue
+      }
+      if (this.ctx.permissions?.hasOrigin(extensionId, chromeDetails.url) !== true) {
+        if (webRequestVerbose) {
+          console.log(
+            `[crx-webRequest] skip ${routedName} ext=${extensionId} ` +
+              `reason=origin url=${shortUrl(chromeDetails.url)}`,
+          )
+        }
+        continue
+      }
+      verifiedCandidates.add(extensionId)
+      recipients.push(extensionId)
       this.ctx.router.sendEvent(extensionId, routedName, chromeDetails)
+    }
+    if (mediaRequest && webRequestVerbose) {
+      logMediaDispatch(
+        `${routedName} requestId=${chromeDetails.requestId} tab=${chromeDetails.tabId ?? -1} ` +
+          `candidates=${candidates.join(',') || '-'} recipients=${recipients.join(',') || '-'} ` +
+          `headers=${chromeDetails.responseHeaders?.length || 0} url=${shortUrl(chromeDetails.url)}`,
+      )
+    }
+    if (
+      webRequestVerbose &&
+      (mediaRequest || recipients.length > 0 || candidates.length === 0)
+    ) {
+      console.log(
+        `[crx-webRequest] ${routedName} type=${chromeDetails?.type || 'other'} ` +
+          `tab=${chromeDetails?.tabId ?? -1} frame=${chromeDetails?.frameId ?? 0} ` +
+          `candidates=${candidates.join(',') || '-'} recipients=${recipients.join(',') || '-'} ` +
+          `url=${shortUrl(chromeDetails?.url)}`,
+      )
     }
   }
 
-  private toChromeDetails(details: any): any {
+  private toChromeDetails(details: any, includeHeaders = true): any {
+    const physicalTabId =
+      typeof details.webContentsId === 'number'
+        ? details.webContentsId
+        : typeof details.tabId === 'number'
+          ? details.tabId
+          : undefined
+    const tabId =
+      typeof physicalTabId === 'number'
+        ? this.ctx.store.impl.resolveTabId
+          ? this.ctx.store.impl.resolveTabId(physicalTabId) ?? -1
+          : physicalTabId
+        : -1
     return {
-      requestId: details.id || Math.random().toString(36).substr(2, 9),
+      requestId: String(details.id ?? Math.random().toString(36).substr(2, 9)),
       url: details.url,
-      method: details.method || 'GET',
-      frameId: details.frameId || 0,
-      parentFrameId: details.parentFrameId || -1,
-      tabId: details.webContentsId || -1,
+      method: details.method ?? 'GET',
+      // Electron uses 0 for the top frame. Do not use `||` here: a valid
+      // frame id of 0 must remain distinguishable from an absent field.
+      frameId: typeof details.frameId === 'number' ? details.frameId : 0,
+      parentFrameId: typeof details.parentFrameId === 'number' ? details.parentFrameId : -1,
+      tabId,
       type: normalizeResourceType(details.resourceType),
-      timeStamp: details.timestamp || Date.now(),
-      requestHeaders: toChromeHeaders(details.requestHeaders),
-      responseHeaders: toChromeHeaders(details.responseHeaders),
+      timeStamp: typeof details.timestamp === 'number' ? details.timestamp : Date.now(),
+      ...(includeHeaders
+        ? {
+            requestHeaders: toChromeHeaders(details.requestHeaders),
+            responseHeaders: toChromeHeaders(details.responseHeaders),
+          }
+        : {}),
       statusCode: details.statusCode,
       statusLine: details.statusLine,
       fromCache: details.fromCache,
@@ -329,7 +563,19 @@ export class WebRequestAPI {
       fromOrigin: details.fromOrigin,
       error: details.error,
       redirectUrl: details.redirectUrl,
-      initiator: details.initiator || '',
+      documentId: details.documentId,
+      parentDocumentId: details.parentDocumentId,
+      documentLifecycle: details.documentLifecycle,
+      frameType: details.frameType,
+      requestBody: details.requestBody,
+      // Chrome leaves initiator undefined when the request has no initiator.
+      // Do not coerce the missing value to an empty string: extensions such
+      // as Cat Catch use `undefined` to distinguish a normal network request
+      // from special pages and would otherwise drop every media response.
+      initiator:
+        typeof details.initiator === 'string' && details.initiator.length > 0
+          ? details.initiator
+          : undefined,
     }
   }
 }

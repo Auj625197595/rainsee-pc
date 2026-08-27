@@ -1,29 +1,35 @@
 import { ipcRenderer } from 'electron';
 import * as React from 'react';
-import anime from 'animejs';
 import store from '../../store';
 import { observer } from 'mobx-react-lite';
 import {
   BookmarkButton,
   BookmarkBar as StyledBookmarkBar,
+  BookmarkDropIndicator,
   BookmarkSection,
   Favicon,
-  Title,MibileBookmarkSection, MobileBookmarkIcon
+  Title,
+  MibileBookmarkSection,
+  MobileBookmarkIcon,
 } from './style';
 import { ToolbarButton } from '../ToolbarButton';
-import {
-  ICON_ARROW_RIGHT,
-  ICON_ALL
-} from '~/renderer/constants/icons';
+import { ICON_ARROW_RIGHT, ICON_ALL } from '~/renderer/constants/icons';
 import { getWebUIURL } from '~/common/webui';
 import { getIconByUrlNet } from '~/utils/url';
 import { IBookmark } from '~/interfaces';
-import { TAB_ANIMATION_DURATION } from '../../constants/tabs';
+import { getDraggedLinkData, isLinkDragEvent } from '../../utils/link-drop';
+import { BookmarkDropTarget } from '../../store/bookmark-bar';
+import {
+  normalizeBookmarkBarDisplay,
+  shouldShowBookmarkBar,
+} from '~/common/bookmark-bar';
 
 // 按下后位移超过此距离(px)才进入拖拽——对齐标签栏 mousedown→move 阈值,
 // 消除原 350ms 长按死区(此前等待期内移动完全无响应)。纯点击(几乎不动)不触发拖拽,
 // click 照常打开书签/进文件夹。
 const ARM_THRESHOLD = 4;
+// 文件夹悬停展开延迟。短暂停留不应打断长按拖拽,只有指针保持不动才展开。
+const FOLDER_HOVER_DELAY = 400;
 
 // 黄色文件夹图标
 const FolderIcon = () => (
@@ -44,7 +50,6 @@ const GlobeIcon = () => (
   </svg>
 );
 
-
 type BookmarkProps = {
   title: string;
   url: string;
@@ -52,6 +57,7 @@ type BookmarkProps = {
   isFolder: boolean;
   id: string;
   dragging: boolean;
+  dropActive: boolean;
   // 拖拽发生过为 true,Bookmark 用它在 click 里抑制误开标签,读后复位。
   dragOccurredRef: React.MutableRefObject<boolean>;
   onPointerDown: (id: string, e: React.PointerEvent<HTMLDivElement>) => void;
@@ -65,10 +71,43 @@ const Bookmark = observer(
     isFolder,
     id,
     dragging,
+    dropActive,
     dragOccurredRef,
     onPointerDown,
   }: BookmarkProps) => {
     const { buttonWidth } = store.bookmarksBar;
+    const iconsOnly = store.settings.object.bookmarksBarIconsOnly;
+    const [expandLeft, setExpandLeft] = React.useState(false);
+    const folderHoverTimerRef = React.useRef<ReturnType<
+      typeof setTimeout
+    > | null>(null);
+    const folderHoverPointRef = React.useRef<{ x: number; y: number } | null>(
+      null,
+    );
+
+    const cancelFolderHoverExpand = React.useCallback(() => {
+      if (folderHoverTimerRef.current !== null) {
+        clearTimeout(folderHoverTimerRef.current);
+        folderHoverTimerRef.current = null;
+      }
+      folderHoverPointRef.current = null;
+    }, []);
+
+    const scheduleFolderHoverExpand = React.useCallback(
+      (target: HTMLDivElement, x: number, y: number) => {
+        cancelFolderHoverExpand();
+        folderHoverPointRef.current = { x, y };
+        folderHoverTimerRef.current = setTimeout(() => {
+          if (!folderHoverPointRef.current) return;
+          folderHoverTimerRef.current = null;
+          folderHoverPointRef.current = null;
+          store.bookmarksBar.showFolderDropdown({ currentTarget: target }, id);
+        }, FOLDER_HOVER_DELAY);
+      },
+      [cancelFolderHoverExpand, id],
+    );
+
+    React.useEffect(() => cancelFolderHoverExpand, [cancelFolderHoverExpand]);
 
     // 图标解析(与书签管理器一致):优先本地 favicon(data URL 或 http URL),
     // 缺失时走在线图标服务 getIconByUrlNet(url)。在线图标加载失败则回退地球图标。
@@ -79,6 +118,7 @@ const Bookmark = observer(
         : undefined;
 
     function onClick(event: any) {
+      cancelFolderHoverExpand();
       // 拖拽刚结束:抑制紧随其后的 click,避免松手时误开标签。
       if (dragOccurredRef.current) {
         dragOccurredRef.current = false;
@@ -95,17 +135,70 @@ const Bookmark = observer(
     }
 
     function onContextMenu(event: any) {
+      cancelFolderHoverExpand();
+      event.preventDefault();
+      event.stopPropagation();
       store.bookmarksBar.createContextMenu(event, id);
     }
 
     function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
+      cancelFolderHoverExpand();
       // 仅左键触发拖拽;右键留给上下文菜单。
       if (event.button !== 0) return;
       onPointerDown(id, event);
     }
 
+    function handleMouseEnter(event: React.MouseEvent<HTMLDivElement>) {
+      // 文件夹只有在悬停一段时间且指针保持不动时才展开,避免拦截长按拖拽。
+      if (isFolder) {
+        scheduleFolderHoverExpand(
+          event.currentTarget,
+          event.clientX,
+          event.clientY,
+        );
+      }
+
+      if (iconsOnly) {
+        const section = event.currentTarget.closest(
+          '[data-bookmark-section]',
+        ) as HTMLElement | null;
+        if (!section) return;
+
+        const buttonRect = event.currentTarget.getBoundingClientRect();
+        const sectionRect = section.getBoundingClientRect();
+        const estimatedTitleWidth = Math.min(
+          150,
+          Math.max(24, title.length * 12),
+        );
+        setExpandLeft(
+          sectionRect.right - buttonRect.right < estimatedTitleWidth,
+        );
+      }
+    }
+
+    function handleMouseMove(event: React.MouseEvent<HTMLDivElement>) {
+      if (!isFolder) return;
+      const point = folderHoverPointRef.current;
+      if (!point) return;
+      if (event.clientX !== point.x || event.clientY !== point.y) {
+        // 移动期间不展开,但在移动停止后重新开始等待,避免进入时的
+        // 首个 mousemove 取消计时器后再也无法触发悬停菜单。
+        scheduleFolderHoverExpand(
+          event.currentTarget,
+          event.clientX,
+          event.clientY,
+        );
+      }
+    }
+
     return (
       <BookmarkButton
+        data-rainsee-part="bookmark-item"
+        data-rainsee-kind={isFolder ? 'folder' : 'bookmark'}
+        data-icons-only={iconsOnly ? 'true' : undefined}
+        data-expand-left={iconsOnly && expandLeft ? 'true' : undefined}
+        data-drop-active={dropActive ? 'true' : undefined}
+        aria-label={iconsOnly ? title : undefined}
         dense
         width={buttonWidth}
         dragging={dragging}
@@ -114,10 +207,13 @@ const Bookmark = observer(
         toggled={false}
         disabled={false}
         onClick={onClick}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={cancelFolderHoverExpand}
+        onMouseMove={handleMouseMove}
         onContextMenu={onContextMenu}
         onPointerDown={handlePointerDown}
       >
-        <Favicon>
+        <Favicon data-rainsee-part="bookmark-icon">
           {isFolder ? (
             <FolderIcon />
           ) : faviconSrc ? (
@@ -133,7 +229,7 @@ const Bookmark = observer(
             <GlobeIcon />
           )}
         </Favicon>
-        <Title>{title}</Title>
+        <Title data-rainsee-part="bookmark-title">{title}</Title>
       </BookmarkButton>
     );
   },
@@ -141,6 +237,19 @@ const Bookmark = observer(
 
 export const BookmarkBar = observer(() => {
   const { bookmarkBarItems: list, showOverflow } = store.bookmarksBar;
+  const bookmarkBarDisplay = normalizeBookmarkBarDisplay(
+    store.settings.object.bookmarksBarDisplay,
+    store.settings.object.bookmarksBar,
+  );
+  const newTabUrl = React.useMemo(
+    () => getWebUIURL('newtab'),
+    [store.settings.object.newtab],
+  );
+  const selectedUrl = store.tabs.selectedTab?.url || '';
+  const bookmarkBarVisible = React.useMemo(
+    () => shouldShowBookmarkBar(bookmarkBarDisplay, selectedUrl, newTabUrl),
+    [bookmarkBarDisplay, selectedUrl, newTabUrl],
+  );
 
   // dragId / order 既有 state(驱动渲染)又有 ref(window 监听闭包内读取最新值,避免 stale)。
   const [dragId, setDragId] = React.useState<string | null>(null);
@@ -153,16 +262,81 @@ export const BookmarkBar = observer(() => {
   const armedRef = React.useRef<{ id: string; x: number; y: number } | null>(
     null,
   );
-  // FLIP 快照:重排前各子项的布局坐标(transform 免疫)。
-  const firstRectsRef = React.useRef<Map<string, { x: number; y: number }> | null>(
+  // 拖拽虚影独立挂到 body，书签栏中的原项始终留在原位置。
+  const dragPreviewRef = React.useRef<HTMLElement | null>(null);
+  const dragPreviewOffsetRef = React.useRef({ x: 0, y: 0 });
+  const [dropTarget, setDropTarget] = React.useState<BookmarkDropTarget | null>(
     null,
   );
-  // 被拖项跟手:按下点坐标 + 槽位累计位移。被拖项 transform = 光标位移 - slotShift,
-  // 这样它实时贴着光标滑动;每次换槽(slotLeft 变化)时把增量并入 slotShift,保持视觉连续不跳。
-  const dragStartPointerRef = React.useRef({ x: 0, y: 0 });
-  const slotShiftRef = React.useRef({ x: 0, y: 0 });
-  // 松手归位动画实例:新一轮拖拽开始前 pause,避免与跟手 anime.set 互相覆盖抖动。
-  const dropAnimRef = React.useRef<ReturnType<typeof anime> | null>(null);
+
+  const updateDropTarget = React.useCallback(
+    (clientX: number, clientY: number) => {
+      const target = store.bookmarksBar.getDropTargetAtPoint(clientX, clientY);
+      setDropTarget(target);
+      return target;
+    },
+    [],
+  );
+
+  const onExternalDragOver = React.useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      const sidebarTab = store.tabs.getTabById(store.tabs.sidebarDragId);
+      if (!sidebarTab && !isLinkDragEvent(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'copy';
+      updateDropTarget(e.clientX, e.clientY);
+    },
+    [updateDropTarget],
+  );
+
+  const onExternalDragLeave = React.useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      if (e.relatedTarget && e.currentTarget.contains(e.relatedTarget as Node))
+        return;
+      setDropTarget(null);
+    },
+    [],
+  );
+
+  const onExternalDrop = React.useCallback(
+    async (e: React.DragEvent<HTMLDivElement>) => {
+      const sidebarTab = store.tabs.getTabById(store.tabs.sidebarDragId);
+      const link = sidebarTab
+        ? {
+            url: sidebarTab.url,
+            title: sidebarTab.title,
+            favicon: sidebarTab.favicon,
+          }
+        : getDraggedLinkData(e.dataTransfer);
+      e.preventDefault();
+      e.stopPropagation();
+      const target = updateDropTarget(e.clientX, e.clientY);
+      setDropTarget(null);
+      if (!link) return;
+      store.tabs.clearSidebarDrag();
+      if (!target) return;
+      await store.bookmarksBar.addDroppedBookmark(link, target);
+    },
+    [updateDropTarget],
+  );
+
+  // 顶部标签页采用 mousemove 拖拽而非 HTML5 DragEvent，这里只负责同步投放高亮；
+  // 实际松手提交在 TabsStore.onMouseUp 中完成，以便先于“撕离标签页”逻辑处理。
+  React.useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      const tab = store.tabs.selectedTab;
+      if (!store.tabs.isDragging || !tab?.isDragging) return;
+      updateDropTarget(e.clientX, e.clientY);
+    };
+    const clear = () => setDropTarget(null);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', clear);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', clear);
+    };
+  }, [updateDropTarget]);
 
   const setDragIdBoth = React.useCallback((v: string | null) => {
     dragIdRef.current = v;
@@ -173,7 +347,7 @@ export const BookmarkBar = observer(() => {
     setOrder(v);
   }, []);
 
-  // 当前被拖项 DOM(React 按 key 移动节点而非重建,故每次按 data-id 取最新引用)。
+  // 当前被拖项 DOM。
   const getDraggedEl = React.useCallback((): HTMLElement | null => {
     const id = dragIdRef.current;
     const section = sectionRef.current;
@@ -184,65 +358,60 @@ export const BookmarkBar = observer(() => {
     return el ?? null;
   }, []);
 
-  // 被拖项即时跟手(anime.set 无动画,对齐标签栏 animation:false)。仅水平跟随:
-  // 书签栏单行为主,纵向跟随会被 section 的 overflow:hidden 裁切,且换行由命中重排处理。
-  const applyDraggedTransform = React.useCallback(
-    (clientX: number) => {
-      const el = getDraggedEl();
-      if (!el) return;
-      const tx = clientX - dragStartPointerRef.current.x - slotShiftRef.current.x;
-      anime.set(el, { translateX: tx });
-    },
-    [getDraggedEl],
-  );
-
-  // 重排前快照各子项布局坐标。用 offsetLeft/offsetTop(忽略 CSS transform),
-  // 这样即使上一轮 FLIP 动画仍在进行,旧位采样也不会被 transform 污染、不会漂移。
-  const snapshotFirst = React.useCallback(() => {
-    const section = sectionRef.current;
-    if (!section) {
-      firstRectsRef.current = null;
-      return;
-    }
-    const m = new Map<string, { x: number; y: number }>();
-    Array.from(section.children).forEach((child) => {
-      const el = child as HTMLElement;
-      const elId = el.dataset.id;
-      if (elId) m.set(elId, { x: el.offsetLeft, y: el.offsetTop });
-    });
-    firstRectsRef.current = m;
+  const removeDragPreview = React.useCallback(() => {
+    dragPreviewRef.current?.remove();
+    dragPreviewRef.current = null;
   }, []);
 
-  // FLIP Play:order 变更提交后立即跑(useLayoutEffect 在浏览器绘制前同步执行)。
-  // 被拖项跳过(它由 applyDraggedTransform 单独跟手管理);其余项从旧位反演 transform
-  // 后用 easeOutCirc 滑动归零——与标签栏同时长、同缓动。
-  React.useLayoutEffect(() => {
-    const first = firstRectsRef.current;
-    const curDragId = dragIdRef.current;
-    if (!first) return; // 无快照(首次锁定/收尾渲染),不动画
-    firstRectsRef.current = null;
-    const section = sectionRef.current;
-    if (!section) return;
-    Array.from(section.children).forEach((child) => {
-      const el = child as HTMLElement;
-      const elId = el.dataset.id;
-      if (!elId) return;
-      const oldPos = first.get(elId);
-      if (!oldPos) return;
-      const dx = oldPos.x - el.offsetLeft;
-      const dy = oldPos.y - el.offsetTop;
-      if (dx === 0 && dy === 0) return;
-      if (elId === curDragId) return; // 被拖项不 FLIP
-      anime.set(el, { translateX: dx, translateY: dy });
-      anime({
-        targets: el,
-        translateX: 0,
-        translateY: 0,
-        duration: TAB_ANIMATION_DURATION,
-        easing: 'easeOutCirc',
-      });
-    });
-  }, [order]);
+  const createDragPreview = React.useCallback(
+    (clientX: number, clientY: number) => {
+      removeDragPreview();
+      const source = getDraggedEl();
+      if (!source) return;
+
+      const rect = source.getBoundingClientRect();
+      const computed = window.getComputedStyle(source);
+      const preview = source.cloneNode(true) as HTMLElement;
+      preview.removeAttribute('data-id');
+      preview.removeAttribute('data-rainsee-part');
+      preview.removeAttribute('data-drop-active');
+      preview.setAttribute('aria-hidden', 'true');
+      preview.style.position = 'fixed';
+      preview.style.left = '0';
+      preview.style.top = '0';
+      preview.style.zIndex = '10000';
+      preview.style.width = `${rect.width}px`;
+      preview.style.maxWidth = 'none';
+      preview.style.margin = '0';
+      preview.style.pointerEvents = 'none';
+      preview.style.opacity = '0.82';
+      preview.style.color = computed.color;
+      preview.style.fontFamily = computed.fontFamily;
+      preview.style.backgroundColor = 'transparent';
+      preview.style.boxShadow = 'none';
+      preview.style.willChange = 'transform';
+
+      dragPreviewOffsetRef.current = {
+        x: clientX - rect.left,
+        y: clientY - rect.top,
+      };
+      document.body.appendChild(preview);
+      dragPreviewRef.current = preview;
+    },
+    [getDraggedEl, removeDragPreview],
+  );
+
+  const moveDragPreview = React.useCallback(
+    (clientX: number, clientY: number) => {
+      const preview = dragPreviewRef.current;
+      if (!preview) return;
+      const { x, y } = dragPreviewOffsetRef.current;
+      preview.style.transform = `translate3d(${clientX - x}px, ${
+        clientY - y
+      }px, 0)`;
+    },
+    [],
+  );
 
   const onWinPointerMove = React.useCallback(
     (e: PointerEvent) => {
@@ -253,105 +422,105 @@ export const BookmarkBar = observer(() => {
         const dy = e.clientY - armed.y;
         if (dx * dx + dy * dy < ARM_THRESHOLD * ARM_THRESHOLD) return;
         dragOccurredRef.current = true;
-        dragStartPointerRef.current = { x: armed.x, y: armed.y };
-        slotShiftRef.current = { x: 0, y: 0 };
-        if (dropAnimRef.current) {
-          // 中断上一次松手归位动画,避免与跟手 set 互相覆盖。
-          dropAnimRef.current.pause();
-          dropAnimRef.current = null;
-        }
         const ids = store.bookmarksBar.bookmarkBarItems.map((b) => b._id);
         setOrderBoth(ids);
         setDragIdBoth(armed.id);
+        createDragPreview(armed.x, armed.y);
       }
 
       const id = dragIdRef.current;
       if (!id) return;
-      const section = sectionRef.current;
-      if (!section) return;
-      const cur = orderRef.current;
-      if (!cur) return;
+      moveDragPreview(e.clientX, e.clientY);
 
-      // 2) 被拖项实时跟手(即便不换槽也跟随光标,这是手感的关键)
-      applyDraggedTransform(e.clientX);
-
-      // 3) 命中并重排
-      const others = Array.from(section.children).filter(
-        (n) => (n as HTMLElement).dataset.id !== id,
-      ) as HTMLElement[];
-      // 命中:指针在某项所在行上方,或同行且偏左 → 应插到该项之前。
-      // 单行退化为纯"偏左即插前",多行按行正确处理(修复原逻辑"中点下方一律跳末尾")。
-      let to = others.length;
-      for (let i = 0; i < others.length; i++) {
-        const r = others[i].getBoundingClientRect();
-        const cx = r.left + r.width / 2;
-        const beforeRow = e.clientY < r.top;
-        const sameRowBefore =
-          e.clientY >= r.top && e.clientY <= r.bottom && e.clientX < cx;
-        if (beforeRow || sameRowBefore) {
-          to = i;
-          break;
-        }
-      }
-
-      const from = cur.indexOf(id);
-      if (from === -1) return;
-      const next = cur.slice();
-      next.splice(from, 1);
-      next.splice(Math.min(to, next.length), 0, id);
-      if (next.join(' ') === cur.join(' ')) return; // 顺序未变(仅跟手位移)
-
-      // 4) 换槽:记录被拖项旧槽位 → 快照邻居 → 重排 → 把槽位增量并入 slotShift → 重校跟手 transform
-      const draggedEl = getDraggedEl();
-      const oldX = draggedEl ? draggedEl.offsetLeft : 0;
-      snapshotFirst(); // 邻居旧位(布局坐标)
-      setOrderBoth(next); // React17 同步 → DOM 已重排
-      if (draggedEl) {
-        slotShiftRef.current.x += draggedEl.offsetLeft - oldX;
-      }
-      applyDraggedTransform(e.clientX); // 用更新后的 slotShift 重校,保持视觉连续
-    },
-    [applyDraggedTransform, getDraggedEl, setDragIdBoth, setOrderBoth, snapshotFirst],
-  );
-
-  const onWinPointerUp = React.useCallback(() => {
-    armedRef.current = null;
-
-    window.removeEventListener('pointermove', onWinPointerMove);
-    window.removeEventListener('pointerup', onWinPointerUp);
-    window.removeEventListener('pointercancel', onWinPointerUp);
-
-    const finalOrder = orderRef.current;
-    const hadDrag = dragOccurredRef.current;
-    const id = dragIdRef.current;
-
-    // 被拖项从跟手位置 easeOutCirc 滑回最终槽位(对齐标签栏 mouseup 后 updateTabsBounds(true))。
-    if (id) {
-      const el = getDraggedEl();
-      if (el) {
-        dropAnimRef.current = anime({
-          targets: el,
-          translateX: 0,
-          duration: TAB_ANIMATION_DURATION,
-          easing: 'easeOutCirc',
-        });
-      }
-    }
-
-    setDragIdBoth(null);
-
-    if (hadDrag && finalOrder && finalOrder.length > 1) {
-      const storeIds = store.bookmarksBar.bookmarkBarItems.map((b) => b._id);
-      if (finalOrder.join(' ') !== storeIds.join(' ')) {
-        // 顺序确实改变:提交。保留本地 order,防止 store 重载前回退闪烁——
-        // anti-flicker effect 会在 store 重载后顺序一致时清掉 order。
-        store.bookmarksBar.reorder(finalOrder);
+      // 文件夹中心区域是“移入”落点；边缘区域仍按普通插入槽位参与排序。
+      const drop = updateDropTarget(e.clientX, e.clientY);
+      if (
+        drop &&
+        drop.insertIndex === undefined &&
+        store.bookmarksBar.canMoveItemToFolder(id, drop.parentId)
+      ) {
         return;
       }
-    }
-    // 未拖拽 / 净未变 / 单项:立即清本地 order。
-    setOrderBoth(null);
-  }, [getDraggedEl, onWinPointerMove, setDragIdBoth, setOrderBoth]);
+      if (drop && drop.insertIndex === undefined) setDropTarget(null);
+    },
+    [
+      createDragPreview,
+      moveDragPreview,
+      setDragIdBoth,
+      setOrderBoth,
+      updateDropTarget,
+    ],
+  );
+
+  const onWinPointerUp = React.useCallback(
+    (e: PointerEvent) => {
+      armedRef.current = null;
+
+      window.removeEventListener('pointermove', onWinPointerMove);
+      window.removeEventListener('pointerup', onWinPointerUp);
+      window.removeEventListener('pointercancel', onWinPointerUp);
+
+      const hadDrag = dragOccurredRef.current;
+      const id = dragIdRef.current;
+      const finalTarget =
+        e.type === 'pointerup' && id
+          ? store.bookmarksBar.getDropTargetAtPoint(e.clientX, e.clientY)
+          : null;
+      removeDragPreview();
+
+      // pointercancel 只收尾不提交；正常松手命中文件夹中心时优先执行“移入”，
+      // 否则根据最终插入线一次性生成新顺序。
+      if (
+        id &&
+        finalTarget &&
+        finalTarget.insertIndex === undefined &&
+        store.bookmarksBar.moveItemToFolder(id, finalTarget.parentId)
+      ) {
+        setDropTarget(null);
+        setDragIdBoth(null);
+        setOrderBoth(null);
+        return;
+      }
+
+      setDragIdBoth(null);
+      setDropTarget(null);
+
+      const currentOrder = orderRef.current;
+      if (
+        hadDrag &&
+        id &&
+        currentOrder &&
+        currentOrder.length > 1 &&
+        finalTarget?.insertIndex != null
+      ) {
+        const from = currentOrder.indexOf(id);
+        if (from >= 0) {
+          const next = currentOrder.slice();
+          next.splice(from, 1);
+          const adjustedIndex =
+            from < finalTarget.insertIndex
+              ? finalTarget.insertIndex - 1
+              : finalTarget.insertIndex;
+          next.splice(Math.max(0, Math.min(adjustedIndex, next.length)), 0, id);
+          if (next.join(' ') !== currentOrder.join(' ')) {
+            // 松手后立即切到最终顺序，并保留到 store 重载完成，避免视觉回退。
+            setOrderBoth(next);
+            store.bookmarksBar.reorder(next);
+            return;
+          }
+        }
+      }
+      if (hadDrag) {
+        // 拖出书签栏、取消或净位置未变。
+        if (currentOrder) {
+          setOrderBoth(null);
+          return;
+        }
+      }
+      setOrderBoth(null);
+    },
+    [onWinPointerMove, removeDragPreview, setDragIdBoth, setOrderBoth],
+  );
 
   const onItemPointerDown = React.useCallback(
     (id: string, e: React.PointerEvent<HTMLDivElement>) => {
@@ -368,18 +537,61 @@ export const BookmarkBar = observer(() => {
   React.useEffect(
     () => () => {
       armedRef.current = null;
+      removeDragPreview();
       window.removeEventListener('pointermove', onWinPointerMove);
       window.removeEventListener('pointerup', onWinPointerUp);
       window.removeEventListener('pointercancel', onWinPointerUp);
     },
-    [onWinPointerMove, onWinPointerUp],
+    [onWinPointerMove, onWinPointerUp, removeDragPreview],
   );
 
-  // 书签栏可见性或行数变化时(含设置页跨窗口改行数触发的 update-settings 广播、
+  // 书签栏可见性、展示目录或行数变化时(含设置页跨窗口改行数触发的 update-settings 广播、
   // 以及刚开启书签栏 section 挂载后),用 section 实测宽度重新拆分可见项/溢出项。
   React.useEffect(() => {
     store.bookmarksBar.setBookmarkBarItems();
-  }, [store.settings.object.bookmarksBar, store.settings.object.bookmarksBarRows]);
+  }, [
+    bookmarkBarVisible,
+    store.settings.object.bookmarksBarFolderId,
+    store.settings.object.bookmarksBarIconsOnly,
+    store.settings.object.bookmarksBarRows,
+  ]);
+
+  // 真实监听书签区宽度变化:窗口 resize 之外,更多按钮显隐/布局切换/容器重排
+  // 也会改变 section 宽度。仅靠 window.resize 可能拿不到最终宽度,这里补一层
+  // ResizeObserver,让 overflow 拆分跟随真实可用宽度重算。
+  React.useEffect(() => {
+    const section = sectionRef.current;
+    if (!section || typeof ResizeObserver === 'undefined') return;
+
+    let rafId = 0;
+    let lastWidth = Math.round(section.getBoundingClientRect().width);
+    const schedule = () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        store.bookmarksBar.setBookmarkBarItems();
+      });
+    };
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const nextWidth = Math.round(entry.contentRect.width);
+      if (nextWidth === lastWidth) return;
+      lastWidth = nextWidth;
+      schedule();
+    });
+
+    observer.observe(section);
+    return () => {
+      observer.disconnect();
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, [
+    bookmarkBarVisible,
+    store.settings.object.bookmarksBarFolderId,
+    store.settings.object.bookmarksBarIconsOnly,
+    store.settings.object.bookmarksBarRows,
+  ]);
 
   // 修正估算拆分的裁切:setBookmarkBarItems 按字符数估算按钮宽度,中文/宽字符标题
   // 实际更宽,估算偏乐观会把 CSS 装不下的项也塞进 bookmarkBarItems——它们被
@@ -388,6 +600,9 @@ export const BookmarkBar = observer(() => {
   // 各按钮 offsetTop,把超出可见行的尾部项下沉到 overflowItems(经 refitOverflow),
   // 使两者首尾相接。useLayoutEffect 在绘制前同步执行,无闪烁。
   const measuredRows = store.settings.object.bookmarksBarRows || 1;
+  // 防止"上调→下沉"死循环:用 (main 书签总数, section 宽度, 行数) 组合作 key,
+  // 同一组状态只 promote 一次。resize / 增删书签会改变其中任一项 → 自动重试。
+  const promoteKeyRef = React.useRef('');
   React.useLayoutEffect(() => {
     if (dragId) return; // 拖拽中不修正,避免干扰排序
     const section = sectionRef.current;
@@ -395,18 +610,42 @@ export const BookmarkBar = observer(() => {
     // 与 BookmarkSection 的 CSS max-height 一致:行高 26px(dense) + 行间 gap 4px
     const maxH = measuredRows * 26 + (measuredRows - 1) * 4;
     const children = Array.from(section.children) as HTMLElement[];
+    if (children.length === 0) return;
     // 第一个 offsetTop 越过可见区域的按钮 = 被裁切的开始;之前的都可见
-    let splitIdx = children.length;
+    let visibleCount = children.length;
     for (let i = 0; i < children.length; i++) {
       if (children[i].offsetTop >= maxH) {
-        splitIdx = i;
+        visibleCount = i;
         break;
       }
     }
-    if (splitIdx < children.length) {
-      store.bookmarksBar.refitOverflow(splitIdx);
+    // 下沉:有裁切 → 超出可见行的尾部项移到溢出菜单(修正估算偏乐观,如中文短标题)
+    if (visibleCount < children.length) {
+      store.bookmarksBar.refitOverflow(visibleCount);
+      return;
     }
-  }, [list, measuredRows, dragId, order]);
+    // 上调:无裁切但溢出菜单还有项 → 估算偏悲观(英文/数字短标题)把本该可见的项推进了
+    // overflowItems,书签栏右侧留白没铺满。把 overflowItems 全部并回 bookmarkBarItems,
+    // 下一轮本 effect 会按实测重新下沉到刚好铺满。promoteKey 防止"并回→下沉"反复。
+    if (store.bookmarksBar.overflowItems.length > 0) {
+      const sectionWidth = Math.round(section.getBoundingClientRect().width);
+      const totalMain = visibleCount + store.bookmarksBar.overflowItems.length;
+      const key = `${totalMain}-${sectionWidth}-${measuredRows}-${
+        store.settings.object.bookmarksBarIconsOnly ? 'icons' : 'titles'
+      }`;
+      if (promoteKeyRef.current !== key) {
+        promoteKeyRef.current = key;
+        store.bookmarksBar.promoteOverflow();
+      }
+    }
+  }, [
+    list,
+    measuredRows,
+    dragId,
+    order,
+    store.settings.object.bookmarksBarIconsOnly,
+    store.settings.object.bookmarksBarFolderId,
+  ]);
 
   // 防回退闪烁:提交后保留本地 order,等 store 重载到提交顺序后安全切回 list 渲染。
   // - 顺序完全一致 → 切回(无视觉变化)。
@@ -431,13 +670,20 @@ export const BookmarkBar = observer(() => {
         .filter(Boolean) as IBookmark[])
     : list;
 
-  // 书签栏没有任何可显示的书签(可见项与溢出项都为空)时整行隐藏,
-  // 避免空占位行挤占页面空间。hasBookmarks 仅在书签栏顶层(main 文件夹)有内容时为真。
-  const hasBookmarks =
-    list.length > 0 || store.bookmarksBar.overflowItems.length > 0;
-
-  return store.settings.object.bookmarksBar && hasBookmarks ? (
-    <StyledBookmarkBar>
+  return bookmarkBarVisible ? (
+    <StyledBookmarkBar
+      data-rainsee-part="bookmark-bar"
+      data-drop-active={
+        dropTarget && !dropTarget.indicator ? 'true' : undefined
+      }
+      onDragOver={onExternalDragOver}
+      onDragLeave={onExternalDragLeave}
+      onDrop={onExternalDrop}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        store.bookmarksBar.createContextMenu(event);
+      }}
+    >
       <BookmarkSection
         ref={sectionRef}
         rows={store.settings.object.bookmarksBarRows || 1}
@@ -453,19 +699,36 @@ export const BookmarkBar = observer(() => {
             favicon={favicon}
             isFolder={isFolder}
             dragging={dragId === _id}
+            dropActive={isFolder && dropTarget?.parentId === _id}
             dragOccurredRef={dragOccurredRef}
             onPointerDown={onItemPointerDown}
           />
         ))}
       </BookmarkSection>
+      {dropTarget?.indicator && (
+        <BookmarkDropIndicator
+          style={{
+            left: dropTarget.indicator.left,
+            top: dropTarget.indicator.top,
+            height: dropTarget.indicator.height,
+          }}
+        />
+      )}
       {store.bookmarksBar.overflowItems.length > 0 && (
         <ToolbarButton
+          rainseeAction="bookmark-overflow"
           icon={ICON_ARROW_RIGHT}
           onClick={showOverflow}
-          onMouseEnter={store.bookmarksBar.preloadOverflow}
         />
       )}
       <MibileBookmarkSection
+        data-icons-only={
+          store.settings.object.bookmarksBarIconsOnly ? 'true' : undefined
+        }
+        data-rainsee-action="open-bookmarks"
+        aria-label={
+          store.settings.object.bookmarksBarIconsOnly ? '全部书签' : undefined
+        }
         onClick={() => {
           ipcRenderer.send(`add-tab-${store.windowId}`, {
             url: getWebUIURL('bookmarks'),

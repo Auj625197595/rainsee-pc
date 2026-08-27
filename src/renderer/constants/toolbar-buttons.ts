@@ -2,12 +2,12 @@ import * as React from 'react';
 import {
   HouseSimpleIcon,
   PuzzlePiece,
-  BellSimple,
-  Sparkle,
   ShieldCheckIcon,
   Translate,
   ClockCounterClockwiseIcon,
   BookmarksSimpleIcon,
+  Broom,
+  Camera,
 } from '@phosphor-icons/react';
 
 import { ICON_DOWNLOAD, ICON_STAR, ICON_VIDEO } from './icons';
@@ -32,13 +32,11 @@ export interface SiteButtonMeta {
 
 // 集群按钮:可拖拽排序(在所属区域内)。后退/前进/刷新/停止 与 菜单(3-dot)
 // 固定不在此列(始终渲染、不可隐藏/移动)。数组顺序即默认顺序。
-// defaultHidden 的常驻入口(历史/书签)默认不显示,用户可在「自定义工具栏」开启。
+// defaultHidden 的常驻入口默认不显示,用户可在「自定义工具栏」开启。
 export const CLUSTER_BUTTONS: ClusterButtonMeta[] = [
   { id: 'home', label: '主页', area: 'left', Icon: HouseSimpleIcon },
   { id: 'extensions', label: '扩展', area: 'right', Icon: PuzzlePiece },
   { id: 'downloads', label: '下载', area: 'right', Icon: ICON_DOWNLOAD },
-  { id: 'subscribe', label: '订阅', area: 'right', Icon: BellSimple },
-  { id: 'ai', label: '雨见 AI', area: 'right', Icon: Sparkle },
   {
     id: 'history',
     label: '历史',
@@ -51,6 +49,27 @@ export const CLUSTER_BUTTONS: ClusterButtonMeta[] = [
     label: '书签',
     area: 'right',
     Icon: BookmarksSimpleIcon,
+    defaultHidden: true,
+  },
+  {
+    id: 'clear-browsing-data',
+    label: '清理浏览数据',
+    area: 'right',
+    Icon: Broom,
+    defaultHidden: true,
+  },
+  {
+    id: 'screenshot',
+    label: '截图',
+    area: 'right',
+    Icon: Camera,
+    defaultHidden: true,
+  },
+  {
+    id: 'translate-page',
+    label: '翻译',
+    area: 'right',
+    Icon: Translate,
     defaultHidden: true,
   },
 ];
@@ -82,18 +101,22 @@ export const DEFAULT_HIDDEN_IDS = CLUSTER_BUTTONS.filter(
   (b) => b.defaultHidden,
 ).map((b) => b.id);
 
+export type DownloadVisibility = 'always' | 'on-download' | 'hidden';
+
 export interface ToolbarLayout {
   left: string[];
   right: string[];
   hidden: string[];
+  downloadVisibility: DownloadVisibility;
 }
 
 // 默认布局(全新用户/恢复默认用):CLUSTER_BUTTONS 顺序即默认顺序;
-// defaultHidden 的按钮(历史/书签)放入 hidden,默认不显示。
+// defaultHidden 的按钮放入 hidden,默认不显示。
 export const DEFAULT_TOOLBAR_LAYOUT: ToolbarLayout = {
   left: LEFT_CLUSTER_IDS.slice(),
   right: RIGHT_CLUSTER_IDS.slice(),
   hidden: DEFAULT_HIDDEN_IDS.slice(),
+  downloadVisibility: 'on-download',
 };
 
 // 归一化用户存盘的布局,保证前向兼容:
@@ -101,13 +124,25 @@ export const DEFAULT_TOOLBAR_LAYOUT: ToolbarLayout = {
 //  - 每个按钮恒属其默认区域(left/right 不跨区,即便用户数组放错也回收到默认区);
 //  - 区域内保留用户顺序,随后补齐缺失的已知按钮(新版本新增按钮自动出现在末尾);
 //  - hidden 保留用户已隐藏的已知按钮,并自动隐藏「新引入的默认隐藏按钮」
-//    (历史/书签对老用户是新增的,首次出现时默认隐藏,而非突然显示)。
+//    (默认隐藏按钮对老用户首次出现时也保持隐藏,而非突然显示)。
 // 入参可为空/部分字段(老用户 settings.json 无 toolbarLayout)。
 export const resolveToolbarLayout = (layout: any): ToolbarLayout => {
   const raw = layout && typeof layout === 'object' ? layout : {};
-  const leftIn = Array.isArray(raw.left) ? raw.left : [];
-  const rightIn = Array.isArray(raw.right) ? raw.right : [];
-  const hiddenIn = Array.isArray(raw.hidden) ? raw.hidden : [];
+  const stringsOnly = (value: any): string[] =>
+    Array.isArray(value)
+      ? value.filter((id: unknown): id is string => typeof id === 'string')
+      : [];
+  const leftIn = stringsOnly(raw.left);
+  const rightIn = stringsOnly(raw.right);
+  const hiddenIn = stringsOnly(raw.hidden);
+  const downloadVisibility: DownloadVisibility =
+    raw.downloadVisibility === 'always' ||
+    raw.downloadVisibility === 'on-download' ||
+    raw.downloadVisibility === 'hidden'
+      ? raw.downloadVisibility
+      : hiddenIn.includes('downloads')
+      ? 'hidden'
+      : DEFAULT_TOOLBAR_LAYOUT.downloadVisibility;
 
   // 归一化单个区域:保留用户顺序的已知 id,再补齐缺失的已知按钮。
   // 返回有序列表 + 本次「新引入」(用户数组里没有)的 id,用于决定是否默认隐藏。
@@ -141,6 +176,8 @@ export const resolveToolbarLayout = (layout: any): ToolbarLayout => {
   const hiddenSet = new Set<string>(
     hiddenIn.filter((id) => ALL_TOOLBAR_BUTTON_IDS.includes(id)),
   );
+  // 下载按钮使用独立三态配置。老配置里的 hidden 已在上方迁移，不再重复保存。
+  hiddenSet.delete('downloads');
   for (const id of [...leftR.appended, ...rightR.appended]) {
     if (DEFAULT_HIDDEN_IDS.includes(id)) {
       hiddenSet.add(id);
@@ -151,5 +188,6 @@ export const resolveToolbarLayout = (layout: any): ToolbarLayout => {
     left: leftR.out,
     right: rightR.out,
     hidden: [...hiddenSet],
+    downloadVisibility,
   };
 };

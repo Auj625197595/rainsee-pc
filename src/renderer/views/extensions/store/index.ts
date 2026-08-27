@@ -1,6 +1,16 @@
 import { observable, computed, action, makeObservable } from 'mobx';
 
-import { ISettings, ITheme, IExtItem, IExtInspectView } from '~/interfaces';
+import {
+  ISettings,
+  ITheme,
+  IExtItem,
+  IExtensionGroup,
+  IExtInspectView,
+  IBrowserExtensionImportItem,
+  IBrowserExtensionImportResult,
+  IBrowserExtensionImportSource,
+  IBrowserExtensionImportScan,
+} from '~/interfaces';
 import { getTheme } from '~/utils/themes';
 import { RUFFLE_EXTENSION_ID } from '~/constants';
 import { ipcRenderer } from '~/common/renderer-ipc';
@@ -25,7 +35,7 @@ const writeDevMode = (v: boolean) => {
 
 export type ExtFilter = 'all' | 'enabled' | 'disabled';
 
-// 拓展商店项(来自 https://admin.yujianpay.com/api/crx/getAll)。
+// 拓展商店项(开源版:由主进程内置精选清单生成)。
 export interface IStoreExt {
   id: number;
   name: string;
@@ -97,6 +107,30 @@ export class Store {
   @observable
   public autoUpdate = true;
 
+  @observable
+  public migrationOpen = false;
+
+  @observable
+  public migrationLoading = false;
+
+  @observable
+  public migrationImporting = false;
+
+  @observable
+  public migrationItems: IBrowserExtensionImportItem[] = [];
+
+  @observable
+  public migrationSelectedKeys: string[] = [];
+
+  @observable
+  public migrationSources: IBrowserExtensionImportSource[] = [];
+
+  @observable
+  public migrationDuplicateCount = 0;
+
+  @observable
+  public migrationError: string | null = null;
+
   // 提示自动清除的令牌,避免旧定时器清掉新提示。
   private statusToken = 0;
 
@@ -108,13 +142,44 @@ export class Store {
   @computed
   public get list(): IExtItem[] {
     const q = this.searched;
-    return this.extensions.filter((x) => {
+    const filtered = this.extensions.filter((x) => {
       if (this.selectedFilter === 'enabled' && !x.enabled) return false;
       if (this.selectedFilter === 'disabled' && x.enabled) return false;
       if (q && !`${x.name} ${x.description}`.toLowerCase().includes(q))
         return false;
       return true;
     });
+    const byId = new Map(filtered.map((item) => [item.id, item]));
+    const ordered: IExtItem[] = [];
+    this.groups.forEach((group) => {
+      (Array.isArray(group.extensionIds) ? group.extensionIds : []).forEach((id) => {
+        const item = byId.get(id);
+        if (item) {
+          ordered.push(item);
+          byId.delete(id);
+        }
+      });
+    });
+    return [...ordered, ...byId.values()];
+  }
+
+  @computed
+  public get groups(): IExtensionGroup[] {
+    return Array.isArray(this.settings.extensionGroups)
+      ? this.settings.extensionGroups
+      : [];
+  }
+
+  public itemsForGroup(groupId: string | null): IExtItem[] {
+    const ids = groupId
+      ? this.groups.find((group) => group.id === groupId)?.extensionIds || []
+      : this.groups.reduce(
+          (all, group) =>
+            all.concat(Array.isArray(group.extensionIds) ? group.extensionIds : []),
+          [] as string[],
+        );
+    const grouped = new Set(ids);
+    return this.list.filter((item) => (groupId ? grouped.has(item.id) : !grouped.has(item.id)));
   }
 
   @computed
@@ -148,6 +213,7 @@ export class Store {
     );
     if (!list) return;
     this.extensions = list;
+    this.normalizeGroups(list);
     // 若详情面板指向的扩展已被卸载,关闭面板。
     if (this.selectedId && !list.find((x) => x.id === this.selectedId)) {
       this.selectedId = null;
@@ -181,6 +247,88 @@ export class Store {
 
   public async setEnabled(item: IExtItem, enabled: boolean) {
     await ipcRenderer.invoke('extension-set-enabled', item.id, enabled);
+    await this.load();
+  }
+
+  private persistGroups(groups: IExtensionGroup[]) {
+    const extensionGroups = groups.map((group) => ({
+      ...group,
+      extensionIds: [...new Set(group.extensionIds)],
+    }));
+    this.settings = { ...this.settings, extensionGroups };
+    void ipcRenderer.invoke('extensions-set-groups', extensionGroups).catch(() => undefined);
+  }
+
+  private normalizeGroups(list: IExtItem[]) {
+    const validIds = new Set(list.map((item) => item.id));
+    const seen = new Set<string>();
+    const next = this.groups
+      .filter((group) => group && typeof group.id === 'string' && typeof group.name === 'string')
+      .map((group) => ({
+        id: group.id,
+        name: group.name.trim().slice(0, 40) || '未命名分组',
+        extensionIds: (Array.isArray(group.extensionIds) ? group.extensionIds : []).filter(
+          (id) => validIds.has(id) && !seen.has(id) && seen.add(id),
+        ),
+      }));
+    const current = JSON.stringify(this.groups);
+    if (JSON.stringify(next) !== current) this.persistGroups(next);
+  }
+
+  @action
+  public createGroup(name: string) {
+    const trimmed = name.trim().slice(0, 40);
+    if (!trimmed) return;
+    this.persistGroups([
+      ...this.groups,
+      { id: `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: trimmed, extensionIds: [] },
+    ]);
+  }
+
+  @action
+  public renameGroup(groupId: string, name: string) {
+    const trimmed = name.trim().slice(0, 40);
+    if (!trimmed) return;
+    this.persistGroups(this.groups.map((group) => (group.id === groupId ? { ...group, name: trimmed } : group)));
+  }
+
+  @action
+  public removeGroup(groupId: string) {
+    this.persistGroups(this.groups.filter((group) => group.id !== groupId));
+  }
+
+  @action
+  public moveExtension(id: string, groupId: string | null, beforeId?: string) {
+    const next = this.groups.map((group) => ({
+      ...group,
+      extensionIds: group.extensionIds.filter((extensionId) => extensionId !== id),
+    }));
+    if (groupId) {
+      const target = next.find((group) => group.id === groupId);
+      if (target) {
+        const index = beforeId ? target.extensionIds.indexOf(beforeId) : -1;
+        if (index >= 0) target.extensionIds.splice(index, 0, id);
+        else target.extensionIds.push(id);
+      }
+    }
+    this.persistGroups(next);
+  }
+
+  public groupEnabled(groupId: string): boolean {
+    const ids = new Set(
+      this.groups.find((group) => group.id === groupId)?.extensionIds || [],
+    );
+    const items = this.extensions.filter((item) => ids.has(item.id));
+    return items.length > 0 && items.every((item) => item.enabled);
+  }
+
+  public async setGroupEnabled(groupId: string, enabled: boolean) {
+    const group = this.groups.find((item) => item.id === groupId);
+    if (!group) return;
+    const items = (Array.isArray(group.extensionIds) ? group.extensionIds : [])
+      .map((id) => this.extensions.find((item) => item.id === id))
+      .filter((item): item is IExtItem => !!item && item.enabled !== enabled);
+    await Promise.all(items.map((item) => ipcRenderer.invoke('extension-set-enabled', item.id, enabled)));
     await this.load();
   }
 
@@ -315,6 +463,115 @@ export class Store {
       await this.load();
       await this.loadStore();
       this.setStatus(`已加载「${res.name}」`);
+    }
+  }
+
+  @action
+  public async openBrowserMigration() {
+    this.migrationOpen = true;
+    this.migrationError = null;
+    await this.scanBrowserImports(false);
+  }
+
+  @action
+  public closeBrowserMigration() {
+    if (this.migrationImporting) return;
+    this.migrationOpen = false;
+  }
+
+  @action
+  public async scanBrowserImports(selectDirectory: boolean) {
+    if (this.migrationLoading || this.migrationImporting) return;
+    this.migrationLoading = true;
+    this.migrationError = null;
+    try {
+      const result: IBrowserExtensionImportScan = await ipcRenderer.invoke(
+        'extensions-scan-browser-import',
+        selectDirectory,
+      );
+      if (result?.canceled) {
+        if (this.migrationItems.length === 0) {
+          this.migrationError = '未选择浏览器数据目录。';
+        }
+        return;
+      }
+      if (!selectDirectory && result && !result.detected) {
+        this.migrationLoading = false;
+        await this.scanBrowserImports(true);
+        return;
+      }
+      this.migrationItems = result?.items || [];
+      this.migrationSelectedKeys = this.migrationItems.map((item) => item.key);
+      this.migrationSources = result?.sources || [];
+      this.migrationDuplicateCount = result?.duplicateCount || 0;
+      if (this.migrationItems.length === 0) {
+        this.migrationError = this.migrationDuplicateCount
+          ? '找到的扩展均已安装，无需重复导入。'
+          : '所选目录中没有找到可导入的扩展。';
+      }
+    } catch {
+      this.migrationError = '读取浏览器扩展失败，请选择浏览器数据目录后重试。';
+    } finally {
+      this.migrationLoading = false;
+    }
+  }
+
+  @action
+  public toggleBrowserMigrationItem(key: string) {
+    this.migrationSelectedKeys = this.migrationSelectedKeys.includes(key)
+      ? this.migrationSelectedKeys.filter((item) => item !== key)
+      : [...this.migrationSelectedKeys, key];
+  }
+
+  @action
+  public toggleAllBrowserMigrationItems() {
+    this.migrationSelectedKeys =
+      this.migrationSelectedKeys.length === this.migrationItems.length
+        ? []
+        : this.migrationItems.map((item) => item.key);
+  }
+
+  @action
+  public async importSelectedBrowserExtensions() {
+    if (this.migrationImporting || this.migrationSelectedKeys.length === 0)
+      return;
+    this.migrationImporting = true;
+    this.migrationError = null;
+    const requested = this.migrationSelectedKeys.length;
+    try {
+      const result: IBrowserExtensionImportResult = await ipcRenderer.invoke(
+        'extensions-import-from-browser',
+        [...this.migrationSelectedKeys],
+      );
+      const imported = result?.imported?.length || 0;
+      const failed = result?.failed || [];
+      if (imported > 0) {
+        await this.load();
+        await this.loadStore();
+      }
+      if (failed.length > 0) {
+        const failedKeys = new Set(failed.map((item) => item.key));
+        this.migrationItems = this.migrationItems.filter((item) =>
+          failedKeys.has(item.key),
+        );
+        this.migrationSelectedKeys = this.migrationItems.map(
+          (item) => item.key,
+        );
+        this.migrationError = `已导入 ${imported} 个，${failed.length} 个导入失败。`;
+        return;
+      }
+      this.migrationOpen = false;
+      if (imported > 0) {
+        this.setStatus(`已从本地浏览器导入 ${imported} 个扩展`);
+      } else if ((result?.skipped || 0) > 0) {
+        this.setStatus('所选扩展已存在，已过滤重复项');
+      } else {
+        this.setStatus(`未导入扩展（已选择 ${requested} 个）`);
+      }
+    } catch {
+      this.migrationError = '导入失败，请确认浏览器扩展目录可读取。';
+    } finally {
+      this.migrationImporting = false;
     }
   }
 

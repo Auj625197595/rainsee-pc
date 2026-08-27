@@ -25,19 +25,65 @@ export const BookmarkBar = styled.div`
       ${theme.isCompact
         ? 'transparent'
         : theme['toolbar.bottomLine.backgroundColor']};
-    color: ${theme['addressbar.textColor']};
+    color: ${theme['bookmark.textColor'] || theme['addressbar.textColor']};
   `};
+
+  &[data-drop-active='true'] {
+    box-shadow: inset 0 0 0 2px rgba(26, 115, 232, 0.7);
+  }
+`;
+
+export const BookmarkDropIndicator = styled.div`
+  position: absolute;
+  z-index: 3;
+  width: 2px;
+  border-radius: 1px;
+  pointer-events: none;
+  background: #1a73e8;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.75);
 `;
 export const MibileBookmarkSection = styled.div`
+  position: relative;
   font-size: 12px;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 4px;
   border: 1px solid #dedede;
   border-radius: 5px;
   padding: 3px 6px;
   white-space: nowrap;
   cursor: pointer;
+
+  &[data-icons-only='true'] {
+    width: 28px;
+    height: 24px;
+    padding: 3px;
+
+    & > div {
+      display: none;
+    }
+
+    &:hover {
+      z-index: 2;
+
+      & > div {
+        position: absolute;
+        top: -1px;
+        right: 23px;
+        display: flex;
+        align-items: center;
+        height: 24px;
+        padding: 0 5px 0 7px;
+        border: 1px solid #dedede;
+        border-right: 0;
+        border-radius: 5px 0 0 5px;
+        ${({ theme }: { theme: ITheme }) =>
+          `background-color: ${theme['toolbar.backgroundColor']};`}
+      }
+    }
+  }
+
   &:hover {
     background-color: rgba(0, 0, 0, 0.1);
   }
@@ -93,27 +139,52 @@ export const BookmarkButton = styled(Button)`
   flex-direction: row;
   align-items: center;
 
-  ${({ dragging, theme }: { dragging?: boolean; theme: ITheme }) =>
+  &[data-icons-only='true'] {
+    position: relative;
+    width: 34px;
+    padding: 4px 1px;
+    justify-content: center;
+
+    [data-rainsee-part='bookmark-title'] {
+      display: none;
+    }
+
+    &:hover {
+      z-index: 2;
+
+      [data-rainsee-part='bookmark-title'] {
+        position: absolute;
+        top: 0;
+        left: 30px;
+        display: flex;
+        align-items: center;
+        width: max-content;
+        height: 26px;
+        padding: 0 8px 0 4px;
+        border-radius: 0 2px 2px 0;
+        ${({ theme }: { theme: ITheme }) =>
+          `background-color: ${theme['toolbar.backgroundColor']};`}
+      }
+    }
+
+    &[data-expand-left='true']:hover [data-rainsee-part='bookmark-title'] {
+      right: 30px;
+      left: auto;
+      padding: 0 4px 0 8px;
+      border-radius: 2px 0 0 2px;
+    }
+  }
+
+  &[data-drop-active='true'] {
+    background-color: rgba(26, 115, 232, 0.16) !important;
+    box-shadow: inset 0 0 0 1px rgba(26, 115, 232, 0.55);
+  }
+
+  ${({ dragging }: { dragging?: boolean; theme: ITheme }) =>
     dragging &&
     css`
-      /* 被拖项:实色卡片底(不透明)+ 圆角 + 收敛阴影,呈现"拾起"观感。
-         position:relative 使 z-index 生效,跟手 transform 时盖在邻居之上。
-         !important + &:active/:hover 覆盖基类 Button 的 :active{bg!important}(按住时半透明底),
-         否则拖拽中背景始终被覆盖成 rgba(0,0,0,0.1) 半透明。 */
-      position: relative;
-      z-index: 1;
+      /* 实体留在原槽位，独立虚影负责跟随指针。 */
       cursor: grabbing;
-      background-color: ${theme['toolbar.lightForeground']
-        ? '#3c4043'
-        : '#ffffff'} !important;
-      border-radius: 8px;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
-      &:active,
-      &:hover {
-        background-color: ${theme['toolbar.lightForeground']
-          ? '#3c4043'
-          : '#ffffff'} !important;
-      }
     `};
 `;
 
@@ -140,5 +211,10 @@ export const Favicon = styled.div`
     height: 16px;
     width: 16px;
     object-fit: contain;
+  }
+
+  [data-icons-only='true'] & {
+    margin-left: 0;
+    margin-right: 0;
   }
 `;

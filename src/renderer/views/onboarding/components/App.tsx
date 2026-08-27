@@ -4,6 +4,7 @@ import type { CSSProperties } from 'react';
 import { ipcRenderer } from '~/common/renderer-ipc';
 import * as S from './styles';
 import { C } from './styles';
+import {MigrationDialog, MigrationMode} from './MigrationDialog';
 
 // 应用图标：内联 file-loader 加载（与 Titlebar/About 一致，!! 前缀绕过 webpack5 asset module）
 const APP_ICON = require('!!file-loader?esModule=false&outputPath=res!../../../../../static/icons/icon.png');
@@ -12,8 +13,6 @@ import {
   ShieldCheck,
   MagnifyingGlass,
   PlayCircle,
-  DeviceMobile,
-  Sparkle,
   Sun,
   Moon,
   Monitor,
@@ -21,31 +20,36 @@ import {
   SidebarSimple,
   RocketLaunch,
   HandPointing,
+  MouseSimple,
   ArrowLeft,
   ArrowRight,
   Check,
   CaretDown,
   GearSix,
   X,
+  BookmarksSimple,
+  ClockCounterClockwise,
+  PuzzlePiece,
+  Browsers,
 } from '@phosphor-icons/react';
 
 type ThemeChoice = 'system' | 'light' | 'dark';
 type TabChoice = 'left' | 'top';
 type StartupChoice = 'continue' | 'empty';
 
-const TOTAL = 3;
+const TOTAL = 4;
 
-// 第 2 页 5 张特性卡（图标 / 配色 / 文案 1:1 对照设计稿）
+// 第 2 页 5 张特性卡（本地功能）
 const FEATURES = [
   {
     Icon: MagnifyingGlass, bg: '#3452FF', fg: '#fff',
-    title: '搜索引擎标注', tag: '一眼获得你想要的答案',
-    tagColor: '#3452FF', desc: 'AI 标注搜索结果，关键答案直达眼前。',
+    title: '多引擎搜索', tag: '百度 · 搜狗 · 必应…',
+    tagColor: '#3452FF', desc: '内置丰富搜索引擎，地址栏一键直达。',
   },
   {
     Icon: ShieldCheck, bg: '#DCFCE7', fg: '#16A34A',
     title: '广告过滤', tag: '干净纯粹的阅读',
-    tagColor: '#16A34A', desc: '强效拦截广告与追踪，告别弹窗。',
+    tagColor: '#16A34A', desc: 'EasyList China 规则强效拦截广告与追踪。',
   },
   {
     Icon: PlayCircle, bg: '#F3E8FF', fg: '#9333EA',
@@ -53,25 +57,49 @@ const FEATURES = [
     tagColor: '#9333EA', desc: '视频弹出独立播放器，一键下载。',
   },
   {
-    Icon: DeviceMobile, bg: '#FFEDD5', fg: '#EA580C',
-    title: '移动互联', tag: '共享书签、历史',
-    tagColor: '#EA580C', desc: '扫码连接手机，多端实时同步。',
+    Icon: BookmarksSimple, bg: '#FFEDD5', fg: '#EA580C',
+    title: '书签与阅读', tag: '本地优先的数据',
+    tagColor: '#EA580C', desc: '书签历史全存本机，内置 EPUB 阅读器。',
   },
   {
-    Icon: Sparkle, bg: '#FCE7F3', fg: '#DB2777',
-    title: 'AI 深度结合', tag: '右键问 AI · 网页总结',
-    tagColor: '#DB2777', desc: '智能搜索推荐，浏览与创作提效。',
+    Icon: Sun, bg: '#FCE7F3', fg: '#DB2777',
+    title: '翻译与夜间模式', tag: '网页翻译 · 护眼暗色',
+    tagColor: '#DB2777', desc: '免费微软翻译接口，一键全网夜间浏览。',
   },
 ];
 
 export default function App() {
+  const manual = new URLSearchParams(window.location.search).get('manual') === '1';
+  const currentSettings = React.useMemo(() => {
+    try {
+      return ipcRenderer.sendSync('get-settings-sync') || {};
+    } catch {
+      return {};
+    }
+  }, []);
   const [page, setPage] = useState(0);
-  const [theme, setTheme] = useState<ThemeChoice>('system');
-  const [tabbar, setTabbar] = useState<TabChoice>('left');
-  const [startup, setStartup] = useState<StartupChoice>('continue');
-  const [adblock, setAdblock] = useState(true);
-  const [gestures, setGestures] = useState(true);
-  const [agreement, setAgreement] = useState<{url: string; title: string} | null>(null);
+  const [theme, setTheme] = useState<ThemeChoice>(() =>
+    currentSettings.themeAuto !== false
+      ? 'system'
+      : currentSettings.theme === 'wexond-dark' ? 'dark' : 'light',
+  );
+  const [tabbar, setTabbar] = useState<TabChoice>(
+    currentSettings.tabsLayout === 'top' ? 'top' : 'left',
+  );
+  const [startup, setStartup] = useState<StartupChoice>(
+    currentSettings.startupBehavior?.type === 'empty' ? 'empty' : 'continue',
+  );
+  const [adblock, setAdblock] = useState(currentSettings.shield !== false);
+  const [gestures, setGestures] = useState(currentSettings.mouseGesturesEnabled !== false);
+  const [closeTabOnDoubleClick, setCloseTabOnDoubleClick] = useState(
+    currentSettings.closeTabOnDoubleClick !== false,
+  );
+  const [migrationMode, setMigrationMode] = useState<MigrationMode | null>(null);
+  const [migrationStatus, setMigrationStatus] = useState<Record<MigrationMode, string>>({
+    bookmarks: '',
+    history: '',
+    extensions: '',
+  });
 
   const go = (i: number) => setPage(Math.max(0, Math.min(TOTAL - 1, i)));
   const next = () => go(page + 1);
@@ -85,6 +113,7 @@ export default function App() {
       startupBehavior: { type: startup },
       shield: adblock,
       mouseGesturesEnabled: gestures,
+      closeTabOnDoubleClick,
     };
     if (theme !== 'system') {
       partial.theme = theme === 'dark' ? 'wexond-dark' : 'wexond-light';
@@ -98,7 +127,12 @@ export default function App() {
   };
 
   const exitApp = () => {
-    ipcRenderer.send('onboarding-exit');
+    ipcRenderer.send(manual ? 'onboarding-close' : 'onboarding-exit');
+  };
+
+  const closeOrFinish = () => {
+    if (manual) ipcRenderer.send('onboarding-close');
+    else finish();
   };
 
   // 键盘左右导航
@@ -111,8 +145,7 @@ export default function App() {
     return () => document.removeEventListener('keydown', onKey);
   }, [page]);
 
-  // 协议链接：弹窗内 iframe 加载（不跳转、不开系统浏览器）
-  const openAgreement = (url: string, title: string) => setAgreement({url, title});
+  // 开源版：无用户协议/隐私政策在线页(隐私说明见仓库《隐私协议.md》)。
 
   return (
     <S.Root>
@@ -123,7 +156,7 @@ export default function App() {
           <S.LogoMark src={APP_ICON} alt="雨见浏览器" />
           <S.BrandText>雨见浏览器</S.BrandText>
         </S.LogoBox>
-        <S.SkipButton onClick={finish}>跳过引导</S.SkipButton>
+        <S.SkipButton onClick={closeOrFinish}>{manual ? '关闭引导' : '跳过引导'}</S.SkipButton>
       </S.Header>
 
       {/* 滑动主体 */}
@@ -145,15 +178,8 @@ export default function App() {
                     隐私与安全
                   </S.PrivacyTitle>
                   <S.PrivacyText>
-                    我们将严格保护您的数据安全。继续使用即表示您同意我们的
-                    <S.LinkA onClick={() => openAgreement('https://www.zhso.org/post/2062', '用户协议')}>
-                      《用户协议》
-                    </S.LinkA>
-                    与
-                    <S.LinkA onClick={() => openAgreement('https://www.zhso.org/post/2065', '隐私政策')}>
-                      《隐私政策》
-                    </S.LinkA>
-                    。
+                    纯本地浏览器：不收集、不上传您的任何浏览数据。
+                    书签、历史与设置全部保存在您自己的电脑上。
                   </S.PrivacyText>
                 </S.PrivacyCard>
               </S.Page1Content>
@@ -184,7 +210,68 @@ export default function App() {
             </S.Page2Wrap>
           </S.Slide>
 
-          {/* —— 第 3 页：快速设置 —— */}
+          {/* —— 第 3 页：迁移浏览数据 —— */}
+          <S.Slide>
+            <S.MigrationPageWrap>
+              <S.PageHead>
+                <S.PageTitle style={anim(0.05)}>带上常用数据</S.PageTitle>
+                <S.PageSubtitle style={anim(0.1)}>
+                  从本机其他浏览器迁移书签、历史与扩展
+                </S.PageSubtitle>
+              </S.PageHead>
+              <S.MigrationCards>
+                <S.MigrationCard style={anim(0.16)}>
+                  <S.MigrationCardIcon $bg="#E8F1FF" $fg="#2563EB">
+                    <BookmarksSimple size={30} weight="duotone" />
+                  </S.MigrationCardIcon>
+                  <S.MigrationCardBody>
+                    <S.MigrationCardTitle>导入书签</S.MigrationCardTitle>
+                    <S.MigrationCardText>支持 Chrome、Edge 与 Firefox</S.MigrationCardText>
+                    <S.MigrationBrowserTags>
+                      <span>Chrome</span><span>Edge</span><span>Firefox</span>
+                    </S.MigrationBrowserTags>
+                  </S.MigrationCardBody>
+                  <S.MigrationAction type="button" onClick={() => setMigrationMode('bookmarks')}>
+                    <Browsers size={17} />{migrationStatus.bookmarks || '选择浏览器'}
+                  </S.MigrationAction>
+                </S.MigrationCard>
+
+                <S.MigrationCard style={anim(0.22)}>
+                  <S.MigrationCardIcon $bg="#ECFDF5" $fg="#0F766E">
+                    <ClockCounterClockwise size={30} weight="duotone" />
+                  </S.MigrationCardIcon>
+                  <S.MigrationCardBody>
+                    <S.MigrationCardTitle>导入历史</S.MigrationCardTitle>
+                    <S.MigrationCardText>迁移本机浏览器中的访问记录</S.MigrationCardText>
+                    <S.MigrationBrowserTags>
+                      <span>Chrome</span><span>Edge</span><span>Firefox</span>
+                    </S.MigrationBrowserTags>
+                  </S.MigrationCardBody>
+                  <S.MigrationAction type="button" onClick={() => setMigrationMode('history')}>
+                    <ClockCounterClockwise size={17} />{migrationStatus.history || '选择浏览器'}
+                  </S.MigrationAction>
+                </S.MigrationCard>
+
+                <S.MigrationCard style={anim(0.28)}>
+                  <S.MigrationCardIcon $bg="#F3E8FF" $fg="#9333EA">
+                    <PuzzlePiece size={30} weight="duotone" />
+                  </S.MigrationCardIcon>
+                  <S.MigrationCardBody>
+                    <S.MigrationCardTitle>导入扩展</S.MigrationCardTitle>
+                    <S.MigrationCardText>读取 Chrome、Edge 中已安装的扩展</S.MigrationCardText>
+                    <S.MigrationBrowserTags>
+                      <span>Chrome</span><span>Edge</span><span>自动去重</span>
+                    </S.MigrationBrowserTags>
+                  </S.MigrationCardBody>
+                  <S.MigrationAction type="button" onClick={() => setMigrationMode('extensions')}>
+                    <PuzzlePiece size={17} />{migrationStatus.extensions || '扫描扩展'}
+                  </S.MigrationAction>
+                </S.MigrationCard>
+              </S.MigrationCards>
+            </S.MigrationPageWrap>
+          </S.Slide>
+
+          {/* —— 第 4 页：快速设置 —— */}
           <S.Slide>
             <S.Page3Wrap>
               <S.PageHead>
@@ -252,8 +339,8 @@ export default function App() {
                   </S.SectionHead>
                   <S.PickGrid $cols={2}>
                     {([
-                      { key: 'top' as TabChoice, label: '顶部', Icon: Rectangle, layout: 'top' },
-                      { key: 'left' as TabChoice, label: '左侧（垂直）', Icon: SidebarSimple, layout: 'left' },
+                      { key: 'top' as TabChoice, label: '顶部', Icon: Rectangle, layout: 'top' as const },
+                      { key: 'left' as TabChoice, label: '左侧（垂直）', Icon: SidebarSimple, layout: 'left' as const },
                     ]).map((o) => (
                       <S.PickCard key={o.key} $active={tabbar === o.key} $row onClick={() => setTabbar(o.key)}>
                         <S.CheckBadge $active={tabbar === o.key}>
@@ -302,14 +389,31 @@ export default function App() {
                     </S.PanelIconBox>
                     <div>
                       <S.PanelTitle>广告拦截</S.PanelTitle>
-                      <S.PanelSub>杀手锏，默认开启</S.PanelSub>
+                      <S.PanelSub>清爽的网页浏览 隐私保护</S.PanelSub>
                     </div>
                   </S.PanelLeft>
                   <S.Toggle $active={adblock} onClick={() => setAdblock(!adblock)} />
                 </S.Panel>
 
+                {/* 双击关闭标签页 */}
+                <S.Panel style={anim(0.35)}>
+                  <S.PanelLeft>
+                    <S.PanelIconBox $bg="#E0F2FE" $fg="#0284C7">
+                      <MouseSimple size={18} weight="fill" />
+                    </S.PanelIconBox>
+                    <div>
+                      <S.PanelTitle>双击关闭标签页</S.PanelTitle>
+                      <S.PanelSub>双击标签页即可快速关闭</S.PanelSub>
+                    </div>
+                  </S.PanelLeft>
+                  <S.Toggle
+                    $active={closeTabOnDoubleClick}
+                    onClick={() => setCloseTabOnDoubleClick(!closeTabOnDoubleClick)}
+                  />
+                </S.Panel>
+
                 {/* 鼠标手势 */}
-                <S.GesturePanel style={anim(0.35)}>
+                <S.GesturePanel style={anim(0.4)}>
                   <S.GesturePanelTop>
                     <S.PanelLeft>
                       <S.PanelIconBox $bg="#FEF3C7" $fg="#D97706">
@@ -350,11 +454,12 @@ export default function App() {
       {/* 悬浮主按钮 */}
       <S.FloatingCTAWrap>
         <S.PrimaryButton onClick={ctaAction}>
-          {page === 2 && <RocketLaunch size={18} weight="fill" />}
+          {page === 3 && <RocketLaunch size={18} weight="fill" />}
           {page === 0 && '同意并继续'}
-          {page === 1 && '继续设置'}
-          {page === 2 && '开启浏览之旅'}
-          {page === 1 && <ArrowRight size={16} weight="bold" />}
+          {page === 1 && '迁移浏览数据'}
+          {page === 2 && '继续设置'}
+          {page === 3 && (manual ? '保存并关闭' : '开启浏览之旅')}
+          {(page === 1 || page === 2) && <ArrowRight size={16} weight="bold" />}
         </S.PrimaryButton>
       </S.FloatingCTAWrap>
 
@@ -366,27 +471,25 @@ export default function App() {
         </S.BackButton>
         <S.FooterCenter>
           <S.Dots>
-            {[0, 1, 2].map((i) => (
+            {[0, 1, 2, 3].map((i) => (
               <S.Dot key={i} $active={page === i} onClick={() => go(i)} />
             ))}
           </S.Dots>
-          <S.ExitButton onClick={exitApp}>退出</S.ExitButton>
+          <S.ExitButton onClick={exitApp}>{manual ? '关闭' : '退出'}</S.ExitButton>
         </S.FooterCenter>
       </S.Footer>
 
-      {/* 协议弹窗（iframe 加载，点遮罩或关闭按钮关闭） */}
-      {agreement && (
-        <S.AgreementOverlay onClick={() => setAgreement(null)}>
-          <S.AgreementDialog onClick={(e: React.MouseEvent) => e.stopPropagation()}>
-            <S.AgreementHeader>
-              <S.AgreementTitle>{agreement.title}</S.AgreementTitle>
-              <S.AgreementClose onClick={() => setAgreement(null)}>
-                <X size={18} />
-              </S.AgreementClose>
-            </S.AgreementHeader>
-            <S.AgreementFrame src={agreement.url} />
-          </S.AgreementDialog>
-        </S.AgreementOverlay>
+      {/* 协议弹窗已随开源版移除 */}
+
+      {migrationMode && (
+        <MigrationDialog
+          mode={migrationMode}
+          onClose={() => setMigrationMode(null)}
+          onImported={(mode, message) => {
+            setMigrationStatus((current) => ({...current, [mode]: message}));
+            setMigrationMode(null);
+          }}
+        />
       )}
     </S.Root>
   );

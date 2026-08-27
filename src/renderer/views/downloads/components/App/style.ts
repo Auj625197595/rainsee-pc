@@ -26,9 +26,17 @@ export const Sidebar = styled.div`
   }}
 `;
 
+export const SideHeader = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 4px;
+`;
+
 export const SideTitle = styled.h1`
   margin: 0;
-  padding: 0 4px;
+  padding: 0;
   font-size: 26px;
   font-weight: 700;
   letter-spacing: -0.02em;
@@ -36,6 +44,40 @@ export const SideTitle = styled.h1`
   ${({ theme }: { theme?: ITheme }) => css`
     color: ${getPalette(theme).textMain};
   `}
+`;
+
+export const SettingsButton = styled.button`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex-shrink: 0;
+  height: 32px;
+  padding: 0 9px;
+  border: none;
+  border-radius: 9px;
+  cursor: pointer;
+  background-color: transparent;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  transition: background-color 0.16s ease, color 0.16s ease;
+
+  svg {
+    flex-shrink: 0;
+  }
+
+  ${({ theme }: { theme?: ITheme }) => {
+    const p = getPalette(theme);
+    return css`
+      color: ${p.textSub};
+
+      &:hover {
+        color: ${p.primary};
+        background-color: ${p.primarySoft};
+      }
+    `;
+  }}
 `;
 
 export const SearchBox = styled.div`

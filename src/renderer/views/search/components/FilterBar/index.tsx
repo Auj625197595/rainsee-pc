@@ -32,7 +32,7 @@ const onFilterClick = (filter: SuggestionFilter) => (
   }
 };
 
-// 打开地址栏设置页。
+// 打开搜索设置页。
 const onSettingsClick = (e: React.MouseEvent<HTMLDivElement>) => {
   e.stopPropagation();
   callViewMethod(
@@ -72,7 +72,7 @@ export const FilterBar = observer(({ visible }: Props) => {
       ))}
       <Spacer />
       <SettingsButton
-        title="地址栏设置"
+        title="搜索设置"
         style={{ backgroundImage: `url(${ICON_SETTINGS})` }}
         onClick={onSettingsClick}
       />

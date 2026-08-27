@@ -1,5 +1,6 @@
 import { observer } from 'mobx-react-lite';
 import * as React from 'react';
+import { platform } from 'os';
 
 import { StyledToolbar } from './style';
 import { NavigationButtons } from '../NavigationButtons';
@@ -11,7 +12,10 @@ import store from '../../store';
 
 export const Toolbar = observer(() => {
   return (
-    <StyledToolbar>
+    <StyledToolbar
+      data-rainsee-part="toolbar"
+      $macRight={platform() === 'darwin' && store.tabsLayout === 'right'}
+    >
       <NavigationButtons />
       <AddressBar />
       <RightButtons />

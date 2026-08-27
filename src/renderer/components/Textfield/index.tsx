@@ -42,7 +42,7 @@ export class Textfield extends React.PureComponent<TextFieldProps, State> {
     activated: false,
     focused: false,
     error: false,
-    value: undefined,
+    value: '',
   };
 
   public get value() {

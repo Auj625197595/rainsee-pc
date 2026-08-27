@@ -5,7 +5,7 @@ import { getWebUIURL } from '~/common/webui';
 
 export class Store extends DialogStore {
   public constructor() {
-    // 持久弹窗:启动预加载、常驻复用,自己处理 visible 事件,实现秒开
+    // 持久弹窗自己处理 visible 事件，隐藏后由主进程回收。
     super({ persistent: true, visibilityWrapper: false });
 
     ipcRenderer.on('visible', (e, flag) => {

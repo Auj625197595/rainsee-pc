@@ -106,16 +106,16 @@ export const Container = styled.div`
   padding: 18px 0 0;
 `;
 
-export const HeaderLabel = styled.div`
+export const HeaderLabel = styled.div<{ $align?: 'start' | 'end' }>`
   min-width: 0;
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 
-  ${({ align, theme }: { align?: 'start' | 'end'; theme?: ITheme }) => css`
+  ${({ $align, theme }: { $align?: 'start' | 'end'; theme?: ITheme }) => css`
     color: ${getPalette(theme).textMute};
-    text-align: ${align === 'end' ? 'right' : 'left'};
+    text-align: ${$align === 'end' ? 'right' : 'left'};
   `}
 `;
 
@@ -146,14 +146,14 @@ export const Row = styled.div`
   }}
 `;
 
-export const ValueCell = styled.div`
+export const ValueCell = styled.div<{ $align?: 'start' | 'end' }>`
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 12px;
 
-  ${({ align }: { align?: 'start' | 'end' }) => css`
-    justify-content: ${align === 'end' ? 'flex-end' : 'flex-start'};
+  ${({ $align }: { $align?: 'start' | 'end' }) => css`
+    justify-content: ${$align === 'end' ? 'flex-end' : 'flex-start'};
   `}
 `;
 
@@ -275,7 +275,7 @@ export const Toolbar = styled.div`
   margin-bottom: 18px;
 `;
 
-export const CloudButton = styled.button`
+export const CloudButton = styled.button<{ $variant?: 'primary' }>`
   height: 36px;
   padding: 0 18px;
   border-radius: 12px;
@@ -286,10 +286,10 @@ export const CloudButton = styled.button`
   transition: transform 0.16s ease, box-shadow 0.16s ease,
     background-color 0.16s ease, border-color 0.16s ease;
 
-  ${({ variant, theme }: { variant?: 'primary'; theme?: ITheme }) => {
+  ${({ $variant, theme }: { $variant?: 'primary'; theme?: ITheme }) => {
     const p = getPalette(theme);
 
-    if (variant === 'primary') {
+    if ($variant === 'primary') {
       return css`
         color: #ffffff;
         background-color: ${p.primary};

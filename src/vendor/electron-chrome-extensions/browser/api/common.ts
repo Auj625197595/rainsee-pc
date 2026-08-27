@@ -237,10 +237,14 @@ export const isRelatedFrameUrl = (url: string): boolean => RELATED_FRAME_URL_RE.
  */
 export const getFrameMatchUrls = (
   frame: Electron.WebFrameMain | null | undefined,
-  opts: { matchAboutBlank?: boolean; matchOriginAsFallback?: boolean } = {},
+  opts: {
+    matchAboutBlank?: boolean
+    matchOriginAsFallback?: boolean
+    urlOverride?: string
+  } = {},
 ): string[] => {
   const urls: string[] = []
-  const url = safeFrameUrl(frame)
+  const url = opts.urlOverride || safeFrameUrl(frame)
   pushUnique(urls, url)
   if (!frame || !isRelatedFrameUrl(url)) return urls
 

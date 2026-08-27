@@ -1,5 +1,6 @@
 import { promises as fs, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { performance } from 'node:perf_hooks'
 import { app } from 'electron'
 import debug from 'debug'
 
@@ -8,6 +9,9 @@ import { ExtensionEvent } from '../router'
 import { resolveExtensionPath } from './common'
 
 const d = debug('electron-chrome-extensions:dnr')
+const CRX_PERF = process.env.CRX_PERF === '1' || process.env.CRX_VERBOSE === '1'
+const CRX_DEBUG = process.env.CRX_WEBREQUEST_DEBUG === '1' || process.env.CRX_VERBOSE === '1'
+let headerMatchLogCount = 0
 
 const DNR_PERMISSIONS = ['declarativeNetRequest', 'declarativeNetRequestWithHostAccess']
 
@@ -38,6 +42,8 @@ interface CompiledRule {
   action: any
   condition: any
   urlRe?: RegExp | null
+  urlLiteral?: string
+  urlLiteralCaseSensitive?: boolean
   regexRe?: RegExp | null
   domainHints?: string[]
 }
@@ -46,11 +52,48 @@ export interface DNRRequest {
   url: string
   type: string
   initiator?: string
+  requestHost?: string
+  initiatorHost?: string
+  urlLower?: string
   method?: string
   tabId?: number
   frame?: Electron.WebFrameMain | null
   requestId?: string
 }
+
+type RuleStage = 'beforeRequest' | 'allow' | 'requestHeaders' | 'responseHeaders'
+
+interface RuleIndex {
+  all: CompiledRule[]
+  general: CompiledRule[]
+  generalFallback: CompiledRule[]
+  byHost: Map<string, CompiledRule[]>
+  byToken: Map<string, CompiledRule[]>
+  extensionIds: string[]
+}
+
+interface PerfBucket {
+  calls: number
+  candidates: number
+  totalMs: number
+  maxMs: number
+}
+
+const emptyRuleIndex = (): RuleIndex => ({
+  all: [],
+  general: [],
+  generalFallback: [],
+  byHost: new Map(),
+  byToken: new Map(),
+  extensionIds: [],
+})
+
+const emptyPerfBucket = (): PerfBucket => ({
+  calls: 0,
+  candidates: 0,
+  totalMs: 0,
+  maxMs: 0,
+})
 
 const hostOf = (url?: string): string => {
   if (!url) return ''
@@ -66,8 +109,7 @@ const hostInDomain = (host: string, domain: string) => {
   domain = domain.toLowerCase().replace(/^\./, '')
   return host === domain || host.endsWith(`.${domain}`)
 }
-const hostInAnyDomain = (host: string, domains: string[]) =>
-  !!host && domains.some((dom) => hostInDomain(host, dom))
+const hostInAnyDomain = (host: string, domains: string[]) => !!host && domains.some((dom) => hostInDomain(host, dom))
 
 // Curated set of common two-label public suffixes (co.uk, com.cn, …) so the
 // naive "last two labels" registrable-domain computation doesn't treat
@@ -75,13 +117,48 @@ const hostInAnyDomain = (host: string, domains: string[]) =>
 // sites as first-party). Not a full Public Suffix List, but covers the common
 // cases that matter for `domainType: thirdParty|firstParty` detection.
 const MULTI_PART_SUFFIXES = new Set([
-  'co.uk', 'org.uk', 'ac.uk', 'gov.uk', 'net.uk', 'me.uk', 'sch.uk',
-  'com.cn', 'net.cn', 'org.cn', 'gov.cn', 'edu.cn', 'ac.cn',
-  'co.jp', 'or.jp', 'ne.jp', 'ac.jp', 'go.jp',
-  'com.au', 'net.au', 'org.au', 'edu.au', 'gov.au',
-  'co.nz', 'co.kr', 'co.in', 'co.id', 'co.th', 'co.za',
-  'com.br', 'com.ar', 'com.mx', 'com.tw', 'com.hk', 'com.sg',
-  'com.my', 'com.ph', 'com.vn', 'com.tr', 'com.ua', 'com.ru', 'com.pl',
+  'co.uk',
+  'org.uk',
+  'ac.uk',
+  'gov.uk',
+  'net.uk',
+  'me.uk',
+  'sch.uk',
+  'com.cn',
+  'net.cn',
+  'org.cn',
+  'gov.cn',
+  'edu.cn',
+  'ac.cn',
+  'co.jp',
+  'or.jp',
+  'ne.jp',
+  'ac.jp',
+  'go.jp',
+  'com.au',
+  'net.au',
+  'org.au',
+  'edu.au',
+  'gov.au',
+  'co.nz',
+  'co.kr',
+  'co.in',
+  'co.id',
+  'co.th',
+  'co.za',
+  'com.br',
+  'com.ar',
+  'com.mx',
+  'com.tw',
+  'com.hk',
+  'com.sg',
+  'com.my',
+  'com.ph',
+  'com.vn',
+  'com.tr',
+  'com.ua',
+  'com.ru',
+  'com.pl',
 ])
 
 /** Registrable (eTLD+1) domain, accounting for the curated multi-part suffixes. */
@@ -112,13 +189,30 @@ const addDomainHint = (set: Set<string>, domain: string) => {
   if (normalized && normalized !== '*') set.add(normalized)
 }
 
-const extractDomainHints = (cond: any): string[] => {
+const anchoredHostFromUrlFilter = (urlFilter: string): string => {
+  let authorityStart = -1
+  if (urlFilter.startsWith('||')) {
+    authorityStart = 2
+  } else {
+    const absolute = urlFilter.match(/^\|[a-z][a-z0-9+.-]*:\/\//i)
+    if (absolute) authorityStart = absolute[0].length
+  }
+  if (authorityStart < 0) return ''
+
+  const authority = urlFilter.slice(authorityStart).split(/[\/^:?#|]/, 1)[0]
+  const host = authority.startsWith('*.') ? authority.slice(2) : authority
+  // An internal wildcard makes the eventual request host unknowable. Indexing
+  // a partial prefix (for example `telemetry` from `telemetry*.example.com`)
+  // creates a bucket no real hostname suffix can reach and silently drops the
+  // rule. Such filters stay in the token/fallback index instead.
+  return host && !host.includes('*') && /^[a-z0-9._-]+$/i.test(host) ? host : ''
+}
+
+export const extractDomainHints = (cond: any): string[] => {
   const hints = new Set<string>()
   for (const domain of cond?.requestDomains || []) addDomainHint(hints, domain)
   const urlFilter = typeof cond?.urlFilter === 'string' ? cond.urlFilter : ''
-  const anchoredDomain =
-    urlFilter.match(/^\|\|(?:\*\.)?([^/^:*?#|]+)/)?.[1] ||
-    urlFilter.match(/^\|[a-z][a-z0-9+.-]*:\/\/([^/^:*?#|]+)/i)?.[1]
+  const anchoredDomain = anchoredHostFromUrlFilter(urlFilter)
   if (anchoredDomain) addDomainHint(hints, anchoredDomain)
   return Array.from(hints)
 }
@@ -157,15 +251,7 @@ const compileUrlFilter = (filter: string, caseSensitive: boolean): RegExp => {
 }
 
 const actionRank = (type: string) =>
-  type === 'allow'
-    ? 5
-    : type === 'allowAllRequests'
-      ? 4
-      : type === 'block'
-        ? 3
-        : type === 'upgradeScheme'
-          ? 2
-          : 1
+  type === 'allow' ? 5 : type === 'allowAllRequests' ? 4 : type === 'block' ? 3 : type === 'upgradeScheme' ? 2 : 1
 
 const crossExtensionActionRank = (type: string) =>
   type === 'block' ? 3 : type === 'redirect' || type === 'upgradeScheme' ? 2 : 1
@@ -183,12 +269,7 @@ const isRegexSafe = (src: string): boolean => {
   // `(?:.+){2,}`. Require the inner quantifier at the END of the group;
   // scanning any `?` inside falsely rejects non-capturing/optional syntax such
   // as `(?:\.min)?` and lazy syntax such as `(.+?)`.
-  if (
-    /\((?:\?:)?[^()]*(?:[+*?]|\{\d+(?:,\d*)?\})\??\)(?:[+*?]|\{\d+(?:,\d*)?\})/.test(
-      src,
-    )
-  )
-    return false
+  if (/\((?:\?:)?[^()]*(?:[+*?]|\{\d+(?:,\d*)?\})\??\)(?:[+*?]|\{\d+(?:,\d*)?\})/.test(src)) return false
   // Do not reject `+?`, `*?`, `??` or `{m,n}?`: the trailing `?` makes a
   // quantifier lazy and is standard regex syntax. Invalid doubled quantifiers
   // such as `a++` / `a**` are rejected by `new RegExp` below.
@@ -211,8 +292,7 @@ const isRegexSafe = (src: string): boolean => {
 const normalizeRegexForJs = (src: string): string =>
   src.replace(
     /\((\?:)?(\[(?:\\.|[^\]\\])+\])\+\)\+/g,
-    (_match, nonCapturing: string | undefined, characterClass: string) =>
-      `(${nonCapturing || ''}${characterClass}+)`,
+    (_match, nonCapturing: string | undefined, characterClass: string) => `(${nonCapturing || ''}${characterClass}+)`,
   )
 
 /**
@@ -244,10 +324,20 @@ export class DeclarativeNetRequestAPI {
 
   /** Flattened active rules across all DNR extensions; rebuilt on any change. */
   private active: CompiledRule[] = []
-  /** General rules without a request-host hint. */
-  private activeGeneral: CompiledRule[] = []
-  /** Request-host buckets to avoid scanning every static rule on every request. */
-  private activeByHost = new Map<string, CompiledRule[]>()
+  /** Per-stage indexes keep header processing away from unrelated block rules. */
+  private ruleIndexes: Record<RuleStage, RuleIndex> = {
+    beforeRequest: emptyRuleIndex(),
+    allow: emptyRuleIndex(),
+    requestHeaders: emptyRuleIndex(),
+    responseHeaders: emptyRuleIndex(),
+  }
+  private perfStartedAt = Date.now()
+  private perf: Record<RuleStage, PerfBucket> = {
+    beforeRequest: emptyPerfBucket(),
+    allow: emptyPerfBucket(),
+    requestHeaders: emptyPerfBucket(),
+    responseHeaders: emptyPerfBucket(),
+  }
   /** Frame-scoped allowAllRequests grants, isolated per extension. */
   private allowAllRequests = new WeakMap<Electron.WebFrameMain, Map<string, number>>()
   private loadedExtensions = new Set<string>()
@@ -269,10 +359,7 @@ export class DeclarativeNetRequestAPI {
     handle('declarativeNetRequest.getSessionRules', this.getSessionRules.bind(this))
     handle('declarativeNetRequest.getEnabledRulesets', this.getEnabledRulesets.bind(this))
     handle('declarativeNetRequest.updateEnabledRulesets', this.updateEnabledRulesets.bind(this))
-    handle(
-      'declarativeNetRequest.getAvailableStaticRuleCount',
-      this.getAvailableStaticRuleCount.bind(this),
-    )
+    handle('declarativeNetRequest.getAvailableStaticRuleCount', this.getAvailableStaticRuleCount.bind(this))
     handle('declarativeNetRequest.getMatchedRules', this.getMatchedRules.bind(this))
     handle('declarativeNetRequest.isRegexSupported', this.isRegexSupported.bind(this))
     handle('declarativeNetRequest.setExtensionActionOptions', this.setExtensionActionOptions.bind(this))
@@ -322,20 +409,10 @@ export class DeclarativeNetRequestAPI {
     if (!rule || !Number.isInteger(rule.id) || rule.id <= 0 || !rule.action || !rule.condition) {
       throw new Error('Invalid DNR rule: id must be a positive integer and action/condition are required')
     }
-    if (
-      rule.priority !== undefined &&
-      (!Number.isInteger(rule.priority) || (rule.priority as number) <= 0)
-    ) {
+    if (rule.priority !== undefined && (!Number.isInteger(rule.priority) || (rule.priority as number) <= 0)) {
       throw new Error(`Invalid priority for rule ${rule.id}`)
     }
-    const actionTypes = new Set([
-      'block',
-      'allow',
-      'allowAllRequests',
-      'redirect',
-      'upgradeScheme',
-      'modifyHeaders',
-    ])
+    const actionTypes = new Set(['block', 'allow', 'allowAllRequests', 'redirect', 'upgradeScheme', 'modifyHeaders'])
     if (!actionTypes.has(rule.action.type)) throw new Error(`Invalid action for rule ${rule.id}`)
     const cond = rule.condition
     if (cond.urlFilter && cond.regexFilter) {
@@ -343,10 +420,15 @@ export class DeclarativeNetRequestAPI {
     }
     const caseSensitive = cond.isUrlFilterCaseSensitive === true
     let urlRe: RegExp | null = null
+    let urlLiteral: string | undefined
     let regexRe: RegExp | null = null
     try {
       if (typeof cond.urlFilter === 'string' && cond.urlFilter) {
-        urlRe = compileUrlFilter(cond.urlFilter, caseSensitive)
+        if (!/[*^|]/.test(cond.urlFilter)) {
+          urlLiteral = caseSensitive ? cond.urlFilter : cond.urlFilter.toLowerCase()
+        } else {
+          urlRe = compileUrlFilter(cond.urlFilter, caseSensitive)
+        }
       }
       if (typeof cond.regexFilter === 'string' && cond.regexFilter) {
         // Guard against catastrophic-backtracking regexes (see isRegexSafe) —
@@ -371,6 +453,8 @@ export class DeclarativeNetRequestAPI {
       action: rule.action,
       condition: cond,
       urlRe,
+      urlLiteral,
+      urlLiteralCaseSensitive: caseSensitive,
       regexRe,
       domainHints: extractDomainHints(cond),
     }
@@ -467,25 +551,100 @@ export class DeclarativeNetRequestAPI {
       }
     }
     this.active = rest.concat(regexKept)
-    this.activeByHost.clear()
-    this.activeGeneral = []
-    for (const rule of this.active) {
-      if (rule.domainHints && rule.domainHints.length > 0) {
-        for (const host of rule.domainHints) {
-          const bucket = this.activeByHost.get(host) || []
-          bucket.push(rule)
-          this.activeByHost.set(host, bucket)
-        }
-      } else {
-        this.activeGeneral.push(rule)
-      }
+    const beforeRequest = this.active.filter((rule) =>
+      ['block', 'allow', 'allowAllRequests', 'redirect', 'upgradeScheme'].includes(rule.action?.type),
+    )
+    const allow = beforeRequest.filter((rule) => ['allow', 'allowAllRequests'].includes(rule.action?.type))
+    const requestHeaders = this.active.filter(
+      (rule) => rule.action?.type === 'modifyHeaders' && Array.isArray(rule.action?.requestHeaders),
+    )
+    const responseHeaders = this.active.filter(
+      (rule) => rule.action?.type === 'modifyHeaders' && Array.isArray(rule.action?.responseHeaders),
+    )
+    this.ruleIndexes = {
+      beforeRequest: this.buildRuleIndex(beforeRequest),
+      allow: this.buildRuleIndex(allow),
+      requestHeaders: this.buildRuleIndex(requestHeaders),
+      responseHeaders: this.buildRuleIndex(responseHeaders),
+    }
+    const beforeIndex = this.ruleIndexes.beforeRequest
+    if (CRX_PERF) {
+      console.log(
+        `[crx-dnr] active=${this.active.length} before=${beforeRequest.length} ` +
+          `general=${beforeIndex.general.length} hostBuckets=${beforeIndex.byHost.size} ` +
+          `tokenBuckets=${beforeIndex.byToken.size} fallback=${beforeIndex.generalFallback.length} ` +
+          `requestHeaders=${requestHeaders.length} responseHeaders=${responseHeaders.length}`,
+      )
     }
     d(
       'rebuilt active DNR rules: %d (hostBuckets=%d general=%d)',
       this.active.length,
-      this.activeByHost.size,
-      this.activeGeneral.length,
+      beforeIndex.byHost.size,
+      beforeIndex.general.length,
     )
+  }
+
+  private buildRuleIndex(rules: CompiledRule[]): RuleIndex {
+    const index: RuleIndex = {
+      all: rules,
+      general: [],
+      generalFallback: [],
+      byHost: new Map(),
+      byToken: new Map(),
+      extensionIds: Array.from(new Set(rules.map((rule) => rule.extensionId))),
+    }
+
+    // Most uBO Lite general rules are simple substring filters. Give each one
+    // a rare trigram so a request only tests rules whose token occurs in its
+    // URL, while ruleMatches still performs the authoritative full check.
+    const tokenFrequency = new Map<string, number>()
+    const tokensByRule = new Map<CompiledRule, string[]>()
+    for (const rule of rules) {
+      if ((rule.domainHints?.length || 0) > 0) continue
+      const seen = new Set<string>()
+      const parts = rule.urlLiteral
+        ? [rule.urlLiteral]
+        : typeof rule.condition?.urlFilter === 'string'
+        ? rule.condition.urlFilter.split(/[*^|]+/)
+        : []
+      for (const part of parts) {
+        const literal = part.toLowerCase()
+        for (let i = 0; i <= literal.length - 3; i++) seen.add(literal.slice(i, i + 3))
+      }
+      if (seen.size === 0) continue
+      tokensByRule.set(rule, Array.from(seen))
+      for (const token of seen) tokenFrequency.set(token, (tokenFrequency.get(token) || 0) + 1)
+    }
+    for (const rule of rules) {
+      if (rule.domainHints && rule.domainHints.length > 0) {
+        for (const host of rule.domainHints) {
+          const bucket = index.byHost.get(host) || []
+          bucket.push(rule)
+          index.byHost.set(host, bucket)
+        }
+      } else {
+        index.general.push(rule)
+        const tokens = tokensByRule.get(rule)
+        if (tokens && tokens.length > 0) {
+          let bestToken = tokens[0]
+          let bestFrequency = tokenFrequency.get(bestToken) || Number.MAX_SAFE_INTEGER
+          for (let i = 1; i < tokens.length; i++) {
+            const token = tokens[i]
+            const frequency = tokenFrequency.get(token) || Number.MAX_SAFE_INTEGER
+            if (frequency < bestFrequency) {
+              bestToken = token
+              bestFrequency = frequency
+            }
+          }
+          const bucket = index.byToken.get(bestToken) || []
+          bucket.push(rule)
+          index.byToken.set(bestToken, bucket)
+        } else {
+          index.generalFallback.push(rule)
+        }
+      }
+    }
+    return index
   }
 
   private getExtension(extensionId: string): Electron.Extension | undefined {
@@ -494,9 +653,7 @@ export class DeclarativeNetRequestAPI {
   }
 
   private isExtensionActive(extensionId: string): boolean {
-    const extension = this.loadedExtensions.has(extensionId)
-      ? this.getExtension(extensionId)
-      : undefined
+    const extension = this.loadedExtensions.has(extensionId) ? this.getExtension(extensionId) : undefined
     if (!extension) return false
     return DNR_PERMISSIONS.some((permission) => this.hasPermission(extension, permission))
   }
@@ -505,30 +662,10 @@ export class DeclarativeNetRequestAPI {
 
   private ruleMatches(rule: CompiledRule, req: DNRRequest): boolean {
     const cond = rule.condition || {}
-    if (rule.urlRe && !rule.urlRe.test(req.url)) return false
-    if (rule.regexRe && !rule.regexRe.test(req.url)) return false
-
     const type = req.type
     if (Array.isArray(cond.resourceTypes) && cond.resourceTypes.length && !cond.resourceTypes.includes(type))
       return false
-    if (Array.isArray(cond.excludedResourceTypes) && cond.excludedResourceTypes.includes(type))
-      return false
-
-    const host = hostOf(req.url)
-    if (Array.isArray(cond.requestDomains) && cond.requestDomains.length && !hostInAnyDomain(host, cond.requestDomains))
-      return false
-    if (Array.isArray(cond.excludedRequestDomains) && hostInAnyDomain(host, cond.excludedRequestDomains))
-      return false
-
-    const initHost = hostOf(req.initiator)
-    const initDomains = cond.initiatorDomains || cond.domains
-    if (Array.isArray(initDomains) && initDomains.length && !hostInAnyDomain(initHost, initDomains))
-      return false
-    const exInit = cond.excludedInitiatorDomains || cond.excludedDomains
-    if (Array.isArray(exInit) && initHost && hostInAnyDomain(initHost, exInit)) return false
-
-    if (cond.domainType === 'thirdParty' && initHost && host && sameSite(host, initHost)) return false
-    if (cond.domainType === 'firstParty' && initHost && host && !sameSite(host, initHost)) return false
+    if (Array.isArray(cond.excludedResourceTypes) && cond.excludedResourceTypes.includes(type)) return false
 
     if (Array.isArray(cond.requestMethods) && cond.requestMethods.length) {
       const m = (req.method || 'get').toLowerCase()
@@ -538,6 +675,28 @@ export class DeclarativeNetRequestAPI {
       const m = (req.method || 'get').toLowerCase()
       if (cond.excludedRequestMethods.includes(m)) return false
     }
+
+    if (rule.urlLiteral) {
+      const haystack = rule.urlLiteralCaseSensitive ? req.url : req.urlLower || ''
+      if (!haystack.includes(rule.urlLiteral)) return false
+    }
+    if (rule.urlRe && !rule.urlRe.test(req.url)) return false
+    if (rule.regexRe && !rule.regexRe.test(req.url)) return false
+
+    const host = req.requestHost || ''
+    if (Array.isArray(cond.requestDomains) && cond.requestDomains.length && !hostInAnyDomain(host, cond.requestDomains))
+      return false
+    if (Array.isArray(cond.excludedRequestDomains) && hostInAnyDomain(host, cond.excludedRequestDomains)) return false
+
+    const initHost = req.initiatorHost || ''
+    const initDomains = cond.initiatorDomains || cond.domains
+    if (Array.isArray(initDomains) && initDomains.length && !hostInAnyDomain(initHost, initDomains)) return false
+    const exInit = cond.excludedInitiatorDomains || cond.excludedDomains
+    if (Array.isArray(exInit) && initHost && hostInAnyDomain(initHost, exInit)) return false
+
+    if (cond.domainType === 'thirdParty' && initHost && host && sameSite(host, initHost)) return false
+    if (cond.domainType === 'firstParty' && initHost && host && !sameSite(host, initHost)) return false
+
     if (Array.isArray(cond.tabIds) && cond.tabIds.length) {
       if (typeof req.tabId !== 'number' || !cond.tabIds.includes(req.tabId)) return false
     }
@@ -552,29 +711,43 @@ export class DeclarativeNetRequestAPI {
     return true
   }
 
-  private candidatesFor(req: DNRRequest): CompiledRule[] {
-    const host = hostOf(req.url)
-    if (!host) return this.active.slice()
-    const candidates = this.activeGeneral.slice()
-    const seen = new Set<CompiledRule>(candidates)
+  private candidatesFor(req: DNRRequest, stage: RuleStage = 'beforeRequest'): CompiledRule[] {
+    const index = this.ruleIndexes[stage]
+    const host = req.requestHost || ''
+    if (!host) return index.all
+    let tokenMatches: CompiledRule[] | undefined
+    if (index.byToken.size > 0 && req.urlLower && req.urlLower.length >= 3) {
+      const seenTokens = new Set<string>()
+      for (let i = 0; i <= req.urlLower.length - 3; i++) {
+        const token = req.urlLower.slice(i, i + 3)
+        if (seenTokens.has(token)) continue
+        seenTokens.add(token)
+        const bucket = index.byToken.get(token)
+        if (!bucket) continue
+        if (!tokenMatches) tokenMatches = []
+        tokenMatches.push(...bucket)
+      }
+    }
+    let extras: CompiledRule[] | undefined
+    let seen: Set<CompiledRule> | undefined
     const labels = host.split('.')
     for (let i = 0; i < labels.length; i++) {
       const suffix = labels.slice(i).join('.')
-      const bucket = this.activeByHost.get(suffix)
+      const bucket = index.byHost.get(suffix)
       if (!bucket) continue
       for (const rule of bucket) {
+        if (!seen) seen = new Set()
         if (seen.has(rule)) continue
         seen.add(rule)
-        candidates.push(rule)
+        if (!extras) extras = []
+        extras.push(rule)
       }
     }
-    return candidates
+    if (!tokenMatches && !extras) return index.generalFallback
+    return index.generalFallback.concat(tokenMatches || [], extras || [])
   }
 
-  private inheritedAllowPriority(
-    frame: Electron.WebFrameMain | null | undefined,
-    extensionId: string,
-  ): number {
+  private inheritedAllowPriority(frame: Electron.WebFrameMain | null | undefined, extensionId: string): number {
     let priority = 0
     let current = frame || null
     while (current) {
@@ -585,11 +758,7 @@ export class DeclarativeNetRequestAPI {
     return priority
   }
 
-  private grantAllowAll(
-    frame: Electron.WebFrameMain | null | undefined,
-    extensionId: string,
-    priority: number,
-  ) {
+  private grantAllowAll(frame: Electron.WebFrameMain | null | undefined, extensionId: string, priority: number) {
     if (!frame) return
     let grants = this.allowAllRequests.get(frame)
     if (!grants) {
@@ -610,7 +779,7 @@ export class DeclarativeNetRequestAPI {
   ): CompiledRule | undefined {
     let best: CompiledRule | undefined
     for (const rule of candidates) {
-      if (rule.extensionId !== extensionId || !this.canApplyRule(rule, req)) continue
+      if (rule.extensionId !== extensionId) continue
       const t = rule.action?.type
       if (!types.includes(t)) continue
       if (
@@ -621,7 +790,7 @@ export class DeclarativeNetRequestAPI {
       ) {
         continue
       }
-      if (!this.ruleMatches(rule, req)) continue
+      if (!this.ruleMatches(rule, req) || !this.canApplyRule(rule, req)) continue
       if (
         !best ||
         rule.priority > best.priority ||
@@ -637,10 +806,7 @@ export class DeclarativeNetRequestAPI {
     const extension = this.getExtension(rule.extensionId)
     if (!extension) return false
     const hasBase = this.hasPermission(extension, 'declarativeNetRequest')
-    const hasHostVariant = this.hasPermission(
-      extension,
-      'declarativeNetRequestWithHostAccess',
-    )
+    const hasHostVariant = this.hasPermission(extension, 'declarativeNetRequestWithHostAccess')
     if (!hasBase && !hasHostVariant) return false
     const type = rule.action?.type
     if (hasBase && ['block', 'upgradeScheme', 'allow', 'allowAllRequests'].includes(type)) {
@@ -665,19 +831,67 @@ export class DeclarativeNetRequestAPI {
     frame?: Electron.WebFrameMain | null
     id?: number | string
   }): DNRRequest {
+    const initiator = details.initiator || details.referrer
+    const physicalTabId =
+      typeof details.webContentsId === 'number'
+        ? details.webContentsId
+        : typeof details.tabId === 'number'
+          ? details.tabId
+          : undefined
+    const logicalTabId =
+      typeof physicalTabId === 'number'
+        ? this.ctx.store.impl.resolveTabId
+          ? this.ctx.store.impl.resolveTabId(physicalTabId) ?? -1
+          : physicalTabId
+        : undefined
     return {
       url: details.url,
       type: normalizeResourceType(details.resourceType),
-      initiator: details.initiator || details.referrer,
+      initiator,
+      requestHost: hostOf(details.url),
+      initiatorHost: hostOf(initiator),
+      urlLower: details.url.toLowerCase(),
       method: details.method,
-      tabId:
-        typeof details.tabId === 'number'
-          ? details.tabId
-          : typeof details.webContentsId === 'number'
-            ? details.webContentsId
-            : undefined,
+      tabId: logicalTabId,
       frame: details.frame || null,
       requestId: details.id != null ? String(details.id) : undefined,
+    }
+  }
+
+  hasHeaderRules(kind: 'request' | 'response'): boolean {
+    const stage: RuleStage = kind === 'request' ? 'requestHeaders' : 'responseHeaders'
+    return this.ruleIndexes[stage].all.length > 0
+  }
+
+  private recordPerf(stage: RuleStage, candidateCount: number, elapsedMs: number) {
+    if (!CRX_PERF) return
+    const bucket = this.perf[stage]
+    bucket.calls += 1
+    bucket.candidates += candidateCount
+    bucket.totalMs += elapsedMs
+    if (elapsedMs > bucket.maxMs) bucket.maxMs = elapsedMs
+
+    const now = Date.now()
+    if (now - this.perfStartedAt < 10000) return
+    const parts: string[] = []
+    for (const key of ['beforeRequest', 'requestHeaders', 'responseHeaders'] as RuleStage[]) {
+      const value = this.perf[key]
+      if (value.calls === 0) continue
+      parts.push(
+        `${key} calls=${value.calls} avgCandidates=${Math.round(
+          value.candidates / value.calls,
+        )} totalMs=${value.totalMs.toFixed(1)} maxMs=${value.maxMs.toFixed(1)}`,
+      )
+    }
+    if (parts.length > 0) {
+      console.log(`[crx-perf][dnr] windowMs=${now - this.perfStartedAt} ${parts.join(' | ')}`)
+    }
+    this.perfStartedAt = now
+    this.perf = {
+      beforeRequest: emptyPerfBucket(),
+      allow: emptyPerfBucket(),
+      requestHeaders: emptyPerfBucket(),
+      responseHeaders: emptyPerfBucket(),
     }
   }
 
@@ -700,69 +914,74 @@ export class DeclarativeNetRequestAPI {
     redirectUrl?: string
   } {
     if (this.active.length === 0) return { action: 'none' }
+    const startedAt = CRX_PERF ? performance.now() : 0
     const req = this.toReq(details)
-    const candidates = this.candidatesFor(req)
-    if (req.frame && (req.type === 'main_frame' || req.type === 'sub_frame')) {
-      this.allowAllRequests.delete(req.frame)
-    }
-    const outcomes: Array<{
-      extensionId: string
-      type: string
-      rule?: CompiledRule
-    }> = []
-    for (const extensionId of this.candidateExtensionIds(candidates)) {
-      const inheritedAllow = this.inheritedAllowPriority(req.frame, extensionId)
-      const rule = this.winnerForExtension(
-        req,
-        extensionId,
-        ['block', 'allow', 'allowAllRequests', 'redirect', 'upgradeScheme'],
-        inheritedAllow,
-        candidates,
-      )
-      if (rule) outcomes.push({ extensionId, type: rule.action.type, rule })
-      else if (inheritedAllow > 0) outcomes.push({ extensionId, type: 'allow' })
-    }
-    outcomes.sort((a, b) => {
-      const rank = crossExtensionActionRank(b.type) - crossExtensionActionRank(a.type)
-      if (rank !== 0) return rank
-      return (
-        (this.extensionOrder.get(b.extensionId) || 0) -
-        (this.extensionOrder.get(a.extensionId) || 0)
-      )
-    })
-    const outcome = outcomes[0]
-    if (!outcome) return { action: 'none' }
-    const best = outcome.rule
-    if (!best) return { action: 'allow' }
-    const t = best.action.type
-    if (t === 'allowAllRequests') {
-      this.grantAllowAll(req.frame, best.extensionId, best.priority)
-      this.recordMatch(best, req)
-      return { action: 'allow' }
-    }
-    if (t === 'allow') {
-      this.recordMatch(best, req)
-      return { action: 'allow' }
-    }
-    if (t === 'block') {
-      this.recordMatch(best, req)
-      return { action: 'block' }
-    }
-    if (t === 'upgradeScheme') {
-      if (req.url.startsWith('http://')) {
+    const candidates = this.candidatesFor(req, 'beforeRequest')
+    try {
+      if (req.frame && (req.type === 'main_frame' || req.type === 'sub_frame')) {
+        this.allowAllRequests.delete(req.frame)
+      }
+      const outcomes: Array<{
+        extensionId: string
+        type: string
+        rule?: CompiledRule
+      }> = []
+      for (const extensionId of this.ruleIndexes.beforeRequest.extensionIds) {
+        const inheritedAllow = this.inheritedAllowPriority(req.frame, extensionId)
+        const rule = this.winnerForExtension(
+          req,
+          extensionId,
+          ['block', 'allow', 'allowAllRequests', 'redirect', 'upgradeScheme'],
+          inheritedAllow,
+          candidates,
+        )
+        if (rule) outcomes.push({ extensionId, type: rule.action.type, rule })
+        else if (inheritedAllow > 0) outcomes.push({ extensionId, type: 'allow' })
+      }
+      outcomes.sort((a, b) => {
+        const rank = crossExtensionActionRank(b.type) - crossExtensionActionRank(a.type)
+        if (rank !== 0) return rank
+        return (this.extensionOrder.get(b.extensionId) || 0) - (this.extensionOrder.get(a.extensionId) || 0)
+      })
+      const outcome = outcomes[0]
+      if (!outcome) return { action: 'none' }
+      const best = outcome.rule
+      if (!best) return { action: 'allow' }
+      const t = best.action.type
+      if (t === 'allowAllRequests') {
+        this.grantAllowAll(req.frame, best.extensionId, best.priority)
         this.recordMatch(best, req)
-        return { action: 'upgradeScheme', redirectUrl: 'https://' + req.url.slice(7) }
+        return { action: 'allow' }
+      }
+      if (t === 'allow') {
+        this.recordMatch(best, req)
+        return { action: 'allow' }
+      }
+      if (t === 'block') {
+        this.recordMatch(best, req)
+        return { action: 'block' }
+      }
+      if (t === 'upgradeScheme') {
+        if (req.url.startsWith('http://')) {
+          this.recordMatch(best, req)
+          return {
+            action: 'upgradeScheme',
+            redirectUrl: 'https://' + req.url.slice(7),
+          }
+        }
+        return { action: 'none' }
+      }
+      if (t === 'redirect') {
+        const url = this.resolveRedirect(best, req)
+        if (url) {
+          this.recordMatch(best, req)
+          return { action: 'redirect', redirectUrl: url }
+        }
       }
       return { action: 'none' }
+    } finally {
+      if (CRX_PERF) this.recordPerf('beforeRequest', candidates.length, performance.now() - startedAt)
     }
-    if (t === 'redirect') {
-      const url = this.resolveRedirect(best, req)
-      if (url) {
-        this.recordMatch(best, req)
-        return { action: 'redirect', redirectUrl: url }
-      }
-    }
-    return { action: 'none' }
   }
 
   /**
@@ -791,18 +1010,13 @@ export class DeclarativeNetRequestAPI {
     const redirect = rule.action.redirect || {}
     if (typeof redirect.url === 'string') return redirect.url
     if (typeof redirect.extensionPath === 'string') {
-      const p = redirect.extensionPath.startsWith('/')
-        ? redirect.extensionPath
-        : '/' + redirect.extensionPath
+      const p = redirect.extensionPath.startsWith('/') ? redirect.extensionPath : '/' + redirect.extensionPath
       return `chrome-extension://${rule.extensionId}${p}`
     }
     if (typeof redirect.regexSubstitution === 'string' && rule.regexRe) {
       const m = rule.regexRe.exec(req.url)
       if (m) {
-        return redirect.regexSubstitution.replace(
-          /\\(\d)/g,
-          (_s: string, n: string) => m[Number(n)] ?? '',
-        )
+        return redirect.regexSubstitution.replace(/\\(\d)/g, (_s: string, n: string) => m[Number(n)] ?? '')
       }
     }
     if (redirect.transform && typeof redirect.transform === 'object') {
@@ -841,36 +1055,56 @@ export class DeclarativeNetRequestAPI {
     kind: 'request' | 'response',
     headers: Array<{ name: string; value?: string }>,
   ): Array<{ name: string; value?: string }> | undefined {
-    if (this.active.length === 0) return undefined
+    const stage: RuleStage = kind === 'request' ? 'requestHeaders' : 'responseHeaders'
+    if (this.ruleIndexes[stage].all.length === 0) return undefined
+    const startedAt = CRX_PERF ? performance.now() : 0
     const req = this.toReq(details)
-    const candidates = this.candidatesFor(req)
+    const candidates = this.candidatesFor(req, stage)
+    const allowCandidates = this.candidatesFor(req, 'allow')
     const field = kind === 'request' ? 'requestHeaders' : 'responseHeaders'
     const applicable: CompiledRule[] = []
-    for (const extensionId of this.candidateExtensionIds(candidates)) {
+    const extensionIds = this.candidateExtensionIds(allowCandidates.concat(candidates))
+    const minimumPriorities = new Map<string, number>()
+    for (const extensionId of extensionIds) {
       const inheritedAllow = this.inheritedAllowPriority(req.frame, extensionId)
       const allow = this.winnerForExtension(
         req,
         extensionId,
         ['allow', 'allowAllRequests'],
         inheritedAllow,
-        candidates,
+        allowCandidates,
       )
-      const minimumPriority = Math.max(inheritedAllow, allow?.priority || 0)
-      applicable.push(
-        ...candidates
-          .filter((r) => r.extensionId === extensionId)
-          .filter((r) => r.action?.type === 'modifyHeaders' && Array.isArray(r.action[field]))
-          .filter((r) => r.priority > minimumPriority)
-          .filter((r) => this.canApplyRule(r, req) && this.ruleMatches(r, req)),
-      )
+      minimumPriorities.set(extensionId, Math.max(inheritedAllow, allow?.priority || 0))
+    }
+    for (const rule of candidates) {
+      if (rule.priority <= (minimumPriorities.get(rule.extensionId) || 0)) continue
+      if (!this.ruleMatches(rule, req) || !this.canApplyRule(rule, req)) continue
+      applicable.push(rule)
     }
     applicable.sort((a, b) => {
       const extensionDelta =
-        (this.extensionOrder.get(a.extensionId) || 0) -
-        (this.extensionOrder.get(b.extensionId) || 0)
+        (this.extensionOrder.get(a.extensionId) || 0) - (this.extensionOrder.get(b.extensionId) || 0)
       return extensionDelta || a.priority - b.priority
     })
-    if (applicable.length === 0) return undefined
+    if (applicable.length === 0) {
+      if (CRX_PERF) {
+        this.recordPerf(stage, candidates.length + allowCandidates.length, performance.now() - startedAt)
+      }
+      return undefined
+    }
+    if (CRX_DEBUG && headerMatchLogCount < 200) {
+      headerMatchLogCount++
+      let safeUrl = req.url.slice(0, 180)
+      try {
+        const parsed = new URL(req.url)
+        safeUrl = `${parsed.origin}${parsed.pathname}`.slice(0, 180)
+      } catch {}
+      console.log(
+        `[crx-dnr] modifyHeaders kind=${kind} tab=${req.tabId ?? -1} ` +
+          `rules=${applicable.map((rule) => `${rule.extensionId}:${rule.id}`).join(',')} ` +
+          `url=${safeUrl}`,
+      )
+    }
     for (const r of applicable) this.recordMatch(r, req)
 
     let out = headers.map((h) => ({ ...h }))
@@ -893,6 +1127,9 @@ export class DeclarativeNetRequestAPI {
         }
       }
     }
+    if (CRX_PERF) {
+      this.recordPerf(stage, candidates.length + allowCandidates.length, performance.now() - startedAt)
+    }
     return changed ? out : undefined
   }
 
@@ -901,7 +1138,11 @@ export class DeclarativeNetRequestAPI {
   /** Record a matched rule for getMatchedRules / onRuleMatchedDebug. */
   private recordMatch(rule: CompiledRule, req: DNRRequest) {
     const ruleInfo = {
-      rule: { ruleId: rule.id, rulesetId: rule.rulesetId, extensionId: rule.extensionId },
+      rule: {
+        ruleId: rule.id,
+        rulesetId: rule.rulesetId,
+        extensionId: rule.extensionId,
+      },
       tabId: typeof req.tabId === 'number' ? req.tabId : -1,
       timeStamp: Date.now(),
     }
@@ -917,23 +1158,19 @@ export class DeclarativeNetRequestAPI {
         this.hasPermission(extension, 'declarativeNetRequestFeedback') &&
         this.ctx.router.hasListeners('declarativeNetRequest.onRuleMatchedDebug')
       ) {
-        this.ctx.router.sendEvent(
-          rule.extensionId,
-          'declarativeNetRequest.onRuleMatchedDebug',
-          {
-            rule: ruleInfo.rule,
-            request: {
-              requestId: req.requestId || `${rule.extensionId}:${rule.id}:${ruleInfo.timeStamp}`,
-              url: req.url,
-              method: (req.method || 'get').toUpperCase(),
-              type: req.type,
-              tabId: ruleInfo.tabId,
-              frameId: req.frame ? req.frame.frameTreeNodeId : 0,
-              parentFrameId: req.frame?.parent?.frameTreeNodeId ?? -1,
-              initiator: req.initiator,
-            },
+        this.ctx.router.sendEvent(rule.extensionId, 'declarativeNetRequest.onRuleMatchedDebug', {
+          rule: ruleInfo.rule,
+          request: {
+            requestId: req.requestId || `${rule.extensionId}:${rule.id}:${ruleInfo.timeStamp}`,
+            url: req.url,
+            method: (req.method || 'get').toUpperCase(),
+            type: req.type,
+            tabId: ruleInfo.tabId,
+            frameId: req.frame ? req.frame.frameTreeNodeId : 0,
+            parentFrameId: req.frame?.parent?.frameTreeNodeId ?? -1,
+            initiator: req.initiator,
           },
-        )
+        })
       }
     } catch {
       /* best-effort */
@@ -1117,19 +1354,14 @@ export class DeclarativeNetRequestAPI {
     }))
   }
 
-  private getMatchedRules(
-    { extension }: ExtensionEvent,
-    filter: { tabId?: number; minTimeStamp?: number } = {},
-  ) {
+  private getMatchedRules({ extension }: ExtensionEvent, filter: { tabId?: number; minTimeStamp?: number } = {}) {
     this.ensureExtensionReady(extension)
     if (!this.hasPermission(extension, 'declarativeNetRequestFeedback')) {
       throw new Error('declarativeNetRequestFeedback permission is required')
     }
     const cutoff = Math.max(Date.now() - 5 * 60 * 1000, filter.minTimeStamp || 0)
     const rulesMatchedInfo = (this.matchedRings.get(extension.id) || []).filter(
-      (info) =>
-        info.timeStamp >= cutoff &&
-        (typeof filter.tabId !== 'number' || info.tabId === filter.tabId),
+      (info) => info.timeStamp >= cutoff && (typeof filter.tabId !== 'number' || info.tabId === filter.tabId),
     )
     return { rulesMatchedInfo }
   }

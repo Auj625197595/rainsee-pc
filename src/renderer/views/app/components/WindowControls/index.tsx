@@ -36,14 +36,27 @@ export const WindowControls = observer(() => {
   if (platform() === 'darwin') return null;
 
   return (
-    <ControlsContainer>
-      <ControlButton onClick={onMinimizeClick} title="最小化">
+    <ControlsContainer data-rainsee-part="window-controls">
+      <ControlButton
+        data-rainsee-action="window-minimize"
+        onClick={onMinimizeClick}
+        title="最小化"
+      >
         {ICON_MIN}
       </ControlButton>
-      <ControlButton onClick={onMaximizeClick} title="最大化">
+      <ControlButton
+        data-rainsee-action="window-maximize"
+        onClick={onMaximizeClick}
+        title="最大化"
+      >
         {ICON_MAX}
       </ControlButton>
-      <ControlButton close onClick={onCloseClick} title="关闭">
+      <ControlButton
+        data-rainsee-action="window-close"
+        close
+        onClick={onCloseClick}
+        title="关闭"
+      >
         {ICON_CLOSE}
       </ControlButton>
     </ControlsContainer>

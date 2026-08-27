@@ -4,8 +4,13 @@ import { IBookmark } from '~/interfaces';
 import * as React from 'react';
 import { DialogStore } from '~/models/dialog-store';
 
-const COLLAPSED_DIALOG_HEIGHT = 344;
-const EXPANDED_DIALOG_HEIGHT = 562;
+const COLLAPSED_DIALOG_HEIGHT = 408;
+const EXPANDED_DIALOG_HEIGHT = 626;
+const FOLDER_COLLAPSED_DIALOG_HEIGHT = 344;
+const FOLDER_EXPANDED_DIALOG_HEIGHT = 562;
+
+// 记住上次选择的保存文件夹(localStorage 属弹窗自身 webContents,跨会话持久)。
+const LAST_FOLDER_KEY = 'add-bookmark.last-folder-id';
 
 const getFolderLabel = (item: IBookmark) => {
   if (!item?.static) return item?.title || '';
@@ -17,6 +22,8 @@ const getFolderLabel = (item: IBookmark) => {
 
 export class Store extends DialogStore {
   public titleRef = React.createRef<HTMLInputElement>();
+
+  public urlRef = React.createRef<HTMLInputElement>();
 
   public bookmark: IBookmark;
 
@@ -69,11 +76,11 @@ export class Store extends DialogStore {
       closeFolderPanel: action,
     });
 
-    // 持久弹窗：显示与数据都通过 'visible' 事件下发（弹窗已预加载，秒开后内容再渲染）
+    // 持久弹窗：显示与数据都通过 'visible' 事件下发，隐藏后由主进程回收。
     ipcRenderer.on('visible', async (e, flag, data) => {
       this.visible = flag;
       if (!flag || !data) return;
-      const { bookmark, title, url, favicon } = data;
+      const { bookmark, title, url, favicon, folderId } = data;
 
       this.dialogTitle = !bookmark ? '书签已添加' : '编辑书签';
       this.folderSearch = '';
@@ -88,12 +95,27 @@ export class Store extends DialogStore {
       const mainFolder = this.folders.find((x) => x.static === 'main') || null;
 
       if (!this.bookmark) {
-        if (!mainFolder?._id) return;
+        // 从书签栏空白处新增时优先保存到当前展示目录；其它入口仍记住上次选择。
+        let parentFolder = folderId
+          ? this.folders.find((x) => x._id === folderId) || mainFolder
+          : mainFolder;
+        if (!folderId) {
+          try {
+            const lastId = localStorage.getItem(LAST_FOLDER_KEY);
+            if (lastId) {
+              parentFolder =
+                this.folders.find((x) => x._id === lastId) || mainFolder;
+            }
+          } catch {
+            // localStorage 不可用则回退默认
+          }
+        }
+        if (!parentFolder?._id) return;
         this.bookmark = await ipcRenderer.invoke('bookmarks-add', {
           title,
           url,
           favicon,
-          parent: mainFolder._id,
+          parent: parentFolder._id,
         });
       }
 
@@ -108,11 +130,17 @@ export class Store extends DialogStore {
         this.titleRef.current.focus();
         this.titleRef.current.select();
       }
+
+      if (this.urlRef.current) {
+        this.urlRef.current.value = url || '';
+      }
     });
   }
 
+  // 含「移动设备书签」整棵子树:收藏时可选择保存到移动端目录(经 v3 云服务
+  // mobile scope 双向同步回手机)。
   public async refreshFolders() {
-    this.folders = await ipcRenderer.invoke('bookmarks-get-folders');
+    this.folders = await ipcRenderer.invoke('bookmarks-get-folders', true);
   }
 
   public getFolderLabel(item: IBookmark) {
@@ -158,6 +186,11 @@ export class Store extends DialogStore {
     if (!folder) return;
     this.currentFolder = folder;
     this.expandPath(folder._id);
+    try {
+      localStorage.setItem(LAST_FOLDER_KEY, folder._id);
+    } catch {
+      // localStorage 不可用时静默忽略,记忆功能退化但不影响收藏
+    }
   }
 
   public openFolderPanel() {
@@ -249,9 +282,17 @@ export class Store extends DialogStore {
   }
 
   private resizeDialog(expanded: boolean) {
+    const isFolder = this.bookmark?.isFolder;
+    const collapsedHeight = isFolder
+      ? FOLDER_COLLAPSED_DIALOG_HEIGHT
+      : COLLAPSED_DIALOG_HEIGHT;
+    const expandedHeight = isFolder
+      ? FOLDER_EXPANDED_DIALOG_HEIGHT
+      : EXPANDED_DIALOG_HEIGHT;
+
     this.send(
       'resize-dialog',
-      expanded ? EXPANDED_DIALOG_HEIGHT : COLLAPSED_DIALOG_HEIGHT,
+      expanded ? expandedHeight : collapsedHeight,
     );
   }
 }

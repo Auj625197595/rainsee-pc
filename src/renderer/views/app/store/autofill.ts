@@ -29,13 +29,10 @@ export class AutoFillStore {
     });
 
     ipcRenderer.on('credentials-update', (e, data) => {
-      const { _id, username, passLength } = data;
+      const { _id, fields } = data;
       const item = this.credentials.find((r) => r._id === _id);
 
-      item.fields = {
-        username,
-        passLength,
-      };
+      if (item) Object.assign(item, data, { fields: { ...fields } });
     });
   }
 

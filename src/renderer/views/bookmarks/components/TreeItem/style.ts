@@ -13,14 +13,22 @@ export const StyledTreeItem = styled.div`
   cursor: pointer;
   transition: background-color 0.16s ease;
 
-  ${({ theme, selected }: { theme?: ITheme; selected: boolean }) => {
+  ${({ theme, selected, dropHover }: { theme?: ITheme; selected: boolean; dropHover?: boolean }) => {
     const p = getPalette(theme);
     return css`
-      background-color: ${selected ? p.primarySoft : 'transparent'};
-      box-shadow: ${selected ? `inset 0 0 0 1px ${p.primary}26` : 'none'};
+      background-color: ${dropHover
+        ? p.primarySoft
+        : selected
+          ? p.primarySoft
+          : 'transparent'};
+      box-shadow: ${dropHover
+        ? `inset 0 0 0 2px ${p.primary}`
+        : selected
+          ? `inset 0 0 0 1px ${p.primary}26`
+          : 'none'};
 
       &:hover {
-        background-color: ${selected ? p.primarySoft : p.surface};
+        background-color: ${selected || dropHover ? p.primarySoft : p.surface};
       }
     `;
   }}

@@ -10,15 +10,13 @@ export const StyledApp = styled(PersistentDialogStyle)`
   border-radius: 22px;
   overflow: hidden;
   background-color: rgba(255, 255, 255, 0.96);
-  box-shadow:
-    0 1px 4px rgba(20, 32, 72, 0.05),
-    0 4px 12px rgba(20, 32, 72, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  box-shadow: 0 1px 4px rgba(20, 32, 72, 0.05),
+    0 4px 12px rgba(20, 32, 72, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.7);
   box-sizing: border-box;
   --ring: inset 0 0 0 1px #e3eafb;
 
   ${({ xTransition }: { xTransition: boolean }) => css`
-    transition: 0.15s opacity${xTransition ? ', 0.08s transform' : ''};
+    transition: 0.15s opacity ${xTransition ? ', 0.08s transform' : ''};
   `}
 
   &::after {
@@ -90,3 +88,37 @@ export const Url = styled.div`
   text-overflow: ellipsis;
 `;
 
+export const MemoryBadge = styled.button`
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  height: 24px;
+  border: 0;
+  padding: 0 8px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: linear-gradient(135deg, #6179f4 0%, #4160dc 100%);
+  box-shadow: 0 3px 10px rgba(52, 78, 198, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform 0.14s ease, box-shadow 0.14s ease, filter 0.14s ease;
+
+  &:hover {
+    filter: brightness(1.06);
+    box-shadow: 0 5px 14px rgba(52, 78, 198, 0.38),
+      inset 0 1px 0 rgba(255, 255, 255, 0.24);
+    transform: translateY(-1px);
+  }
+
+  &:active {
+    transform: translateY(0) scale(0.97);
+  }
+`;

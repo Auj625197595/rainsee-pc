@@ -38,7 +38,9 @@ export const ExtCard = observer(({ item }: { item: IExtItem }) => {
           <ExtName title={item.name}>{item.name}</ExtName>
           <ExtMeta>
             <span>v{item.version || '?'}</span>
-            <Badge>MV{item.manifestVersion}</Badge>
+            <Badge>
+              {item.type === 'theme' ? '主题' : `MV${item.manifestVersion}`}
+            </Badge>
             {!item.enabled && <span>已停用</span>}
           </ExtMeta>
         </CardTitle>
@@ -50,6 +52,8 @@ export const ExtCard = observer(({ item }: { item: IExtItem }) => {
 
       {item.description ? (
         <ExtDesc>{item.description}</ExtDesc>
+      ) : item.type === 'theme' ? (
+        <ExtDesc>自定义浏览器框架与新标签页外观</ExtDesc>
       ) : (
         <ExtDesc style={{ opacity: 0.5 }}>暂无描述</ExtDesc>
       )}

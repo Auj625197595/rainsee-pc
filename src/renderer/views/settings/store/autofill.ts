@@ -33,16 +33,15 @@ export class AutoFillStore {
       if (data.type === 'credentials-insert') {
         this.credentials.push(data.data);
       } else if (data.type === 'credentials-update') {
-        const { _id, username, passLength } = data.data;
+        const { _id, fields } = data.data;
         const item = this.credentials.find((r) => r._id === _id);
 
-        item.fields = {
-          username,
-          passLength,
-        };
+        if (item) Object.assign(item, data.data, { fields: { ...fields } });
       } else if (data.type === 'credentials-remove') {
         const { _id } = data.data;
         this.credentials = this.credentials.filter((r) => r._id !== _id);
+      } else if (data.type === 'credentials-reload') {
+        this.load();
       }
     });
   }

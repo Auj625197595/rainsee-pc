@@ -14,9 +14,48 @@ import debug from 'debug'
 
 const d = debug('electron-chrome-extensions:tabs')
 const tabLog = (...args: any[]) => {
+  if (process.env.CRX_WEBREQUEST_DEBUG !== '1' && process.env.CRX_VERBOSE !== '1') return
   try {
     console.log('[crx-tabs]', ...args)
   } catch {}
+}
+let tabGetLogCount = 0
+
+const toPlainTab = (tab: Partial<chrome.tabs.Tab>): chrome.tabs.Tab => {
+  try {
+    // Keep present and future Chrome Tab fields while stripping prototypes,
+    // functions, and other values that cannot cross Electron IPC.
+    const plain = JSON.parse(JSON.stringify(tab)) as chrome.tabs.Tab
+    if (typeof plain.status !== 'string') delete plain.status
+    return plain
+  } catch {
+    // A host hook may attach a circular or otherwise non-JSON value. Preserve
+    // the standard Tab surface so one optional field cannot reject the API.
+    return {
+      active: !!tab.active,
+      audible: !!tab.audible,
+      autoDiscardable: !!tab.autoDiscardable,
+      discarded: !!tab.discarded,
+      favIconUrl: typeof tab.favIconUrl === 'string' ? tab.favIconUrl : undefined,
+      frozen: !!tab.frozen,
+      groupId: typeof tab.groupId === 'number' ? tab.groupId : -1,
+      height: typeof tab.height === 'number' ? tab.height : 0,
+      highlighted: !!tab.highlighted,
+      id: typeof tab.id === 'number' ? tab.id : TabsAPI.TAB_ID_NONE,
+      incognito: !!tab.incognito,
+      index: typeof tab.index === 'number' ? tab.index : 0,
+      mutedInfo: { muted: !!tab.mutedInfo?.muted },
+      pinned: !!tab.pinned,
+      selected: !!tab.selected,
+      status:
+        tab.status === 'loading' || tab.status === 'complete' ? tab.status : undefined,
+      title: typeof tab.title === 'string' ? tab.title : undefined,
+      url: typeof tab.url === 'string' ? tab.url : undefined,
+      width: typeof tab.width === 'number' ? tab.width : 0,
+      windowId:
+        typeof tab.windowId === 'number' ? tab.windowId : TabsAPI.WINDOW_ID_NONE,
+    } as chrome.tabs.Tab
+  }
 }
 
 const validateExtensionUrl = (url: string, extension: Electron.Extension) => {
@@ -40,6 +79,8 @@ export class TabsAPI {
   static WINDOW_ID_NONE = -1
   static WINDOW_ID_CURRENT = -2
 
+  private warnedUntrackedExtensionTabs = new WeakSet<Electron.WebContents>()
+
   constructor(private ctx: ExtensionContext) {
     const handle = this.ctx.router.apiHandler()
     handle('tabs.get', this.get.bind(this))
@@ -50,6 +91,7 @@ export class TabsAPI {
     handle('tabs.query', this.query.bind(this))
     handle('tabs.reload', this.reload.bind(this))
     handle('tabs.update', this.update.bind(this))
+    handle('tabs.highlight', this.highlight.bind(this))
     handle('tabs.remove', this.remove.bind(this))
     handle('tabs.goForward', this.goForward.bind(this))
     handle('tabs.goBack', this.goBack.bind(this))
@@ -73,6 +115,37 @@ export class TabsAPI {
     this.ctx.store.on('active-tab-changed', (tab: TabContents) => {
       if (!tab.isDestroyed()) this.broadcastActivated(tab.id)
     })
+
+    this.ctx.store.on(
+      'tab-window-changed',
+      (
+        tab: TabContents,
+        previousWindow: Electron.BaseWindow,
+        window: Electron.BaseWindow,
+        oldPosition: number,
+      ) => {
+        if (tab.isDestroyed()) return
+        // Moving one tab shifts indexes in both windows. Invalidate all
+        // affected descriptors before onDetached/onAttached so a synchronous
+        // tabs.get/getAllInWindow observes the new positions.
+        const affectedTabs = new Set([
+          ...this.ctx.store.getTabsInWindow(previousWindow),
+          ...this.ctx.store.getTabsInWindow(window),
+        ])
+        affectedTabs.forEach((affectedTab) => {
+          this.ctx.store.tabDetailsCache.delete(affectedTab.id)
+        })
+        const details = this.createTabDetails(tab)
+        this.ctx.router.broadcastEvent('tabs.onDetached', tab.id, {
+          oldWindowId: previousWindow.id,
+          oldPosition: Math.max(0, oldPosition),
+        })
+        this.ctx.router.broadcastEvent('tabs.onAttached', tab.id, {
+          newWindowId: window.id,
+          newPosition: Math.max(0, details.index),
+        })
+      },
+    )
   }
 
   private observeTab(tab: TabContents) {
@@ -127,26 +200,30 @@ export class TabsAPI {
   private createTabDetails(tab: TabContents) {
     const tabId = tab.id
     const activeTab = this.ctx.store.getActiveTabFromWebContents(tab)
+    const active = activeTab?.id === tabId
+    const previous = this.ctx.store.tabDetailsCache.get(tabId)
     let win = this.ctx.store.tabToWindow.get(tab)
     if (win?.isDestroyed()) win = undefined
     const [width = 0, height = 0] = win ? win.getSize() : []
 
     const details: chrome.tabs.Tab = {
-      active: activeTab?.id === tabId,
+      active,
       audible: tab.isCurrentlyAudible(),
       autoDiscardable: true,
       discarded: false,
       favIconUrl: tab.favicon || undefined,
       frozen: false,
       height,
-      highlighted: false,
+      // `selected` is Chrome's deprecated alias for `active`. Preserve an
+      // explicit multi-highlight selection until activation changes it.
+      highlighted: active || previous?.highlighted === true,
       id: tabId,
       incognito: false,
       index: this.ctx.store.getTabIndex(tab),
-      groupId: -1, // TODO(mv3): implement?
+      groupId: this.ctx.tabGroups?.getTabGroupId(tabId) ?? -1,
       mutedInfo: { muted: tab.audioMuted },
       pinned: false,
-      selected: true,
+      selected: active,
       status: tab.isLoading() ? 'loading' : 'complete',
       title: tab.getTitle(),
       url: tab.getURL(), // TODO: tab.mainFrame.url (Electron 12)
@@ -158,8 +235,9 @@ export class TabsAPI {
       this.ctx.store.impl.assignTabDetails(details, tab)
     }
 
-    this.ctx.store.tabDetailsCache.set(tab.id, details)
-    return details
+    const plainDetails = toPlainTab(details)
+    this.ctx.store.tabDetailsCache.set(tab.id, plainDetails)
+    return plainDetails
   }
 
   private getTabDetails(tab: TabContents) {
@@ -172,6 +250,10 @@ export class TabsAPI {
 
   private get(event: ExtensionEvent, tabId: number) {
     const tab = this.ctx.store.getTabById(tabId)
+    if ((process.env.CRX_WEBREQUEST_DEBUG === '1' || process.env.CRX_VERBOSE === '1') && tabGetLogCount < 120) {
+      tabGetLogCount++
+      tabLog(`get ext=${event?.extension?.id || '-'} tabId=${tabId} found=${!!tab}`)
+    }
     if (!tab) return { id: TabsAPI.TAB_ID_NONE }
     return this.getTabDetails(tab)
   }
@@ -196,21 +278,52 @@ export class TabsAPI {
   }
 
   private getCurrent(event: ExtensionEvent) {
-    // Chrome returns the tab containing the caller. Rainsee hosts popups and
-    // extension iframes outside Chromium's native tab model, while extensions
-    // often use getCurrent() as "the page tab I am acting on". Preserve the
-    // strict answer for extension pages that are themselves tracked tabs, and
-    // otherwise map the caller's current/parent app window to its active tab.
     const sender = event.type === 'frame' ? event.sender : undefined
-    const tab =
-      sender && this.ctx.store.tabs.has(sender)
-        ? sender
-        : this.ctx.store.getActiveTabOfCurrentWindow(event)
+    const tab = sender && this.ctx.store.tabs.has(sender) ? sender : undefined
+
+    // Toolbar popups and service workers are separate extension contexts, so
+    // Chrome resolves getCurrent() to undefined for them. A genuine extension
+    // page opened in a tab must be registered in store.tabs before loadURL.
+    // Surface violations of that host invariant without warning for legitimate
+    // BrowserWindow popups, side panels, or service workers.
+    if (!tab && sender && !this.warnedUntrackedExtensionTabs.has(sender)) {
+      let senderUrl = ''
+      let senderType = ''
+      try {
+        senderUrl = sender.getURL()
+        senderType = sender.getType()
+      } catch {}
+      if (
+        senderUrl.startsWith('chrome-extension://') &&
+        senderType === 'browserView' &&
+        typeof (sender as any).windowId === 'number'
+      ) {
+        this.warnedUntrackedExtensionTabs.add(sender)
+        console.warn(
+          `[crx-tabs] getCurrent sender is an untracked extension tab wcId=${sender.id} url=${senderUrl}`,
+        )
+      }
+    }
     return tab ? this.getTabDetails(tab as TabContents) : undefined
   }
 
   private async create(event: ExtensionEvent, details: chrome.tabs.CreateProperties = {}) {
     const url = details.url ? validateExtensionUrl(details.url, event.extension) : undefined
+    const active = details.active !== false
+    const createDetails = { ...details, url, active }
+
+    // Chrome resolves an omitted WINDOW_ID_CURRENT against the API caller. An
+    // action popup is a child BrowserWindow, so global focus alone can point at
+    // the popup instead of its owning browser window. Resolve it while the
+    // ExtensionEvent still carries the sender and pass the concrete host id to
+    // the embedder. Service workers naturally fall back to the last-focused
+    // browser window through getCurrentWindow().
+    if (
+      typeof createDetails.windowId !== 'number' ||
+      createDetails.windowId === TabsAPI.WINDOW_ID_CURRENT
+    ) {
+      createDetails.windowId = this.ctx.store.getCurrentWindow(event)?.id
+    }
     try {
       tabLog(
         'CREATE',
@@ -219,11 +332,10 @@ export class TabsAPI {
         'url=',
         url,
         'reqWindowId=',
-        details.windowId,
+        createDetails.windowId,
       )
     } catch {}
-    const active = details.active !== false
-    const tab = await this.ctx.store.createTab({ ...details, url, active })
+    const tab = await this.ctx.store.createTab(createDetails)
     const tabDetails = this.getTabDetails(tab)
     try {
       tabLog(
@@ -344,12 +456,6 @@ export class TabsAPI {
         // if (isSet(info.windowType) && info.windowType !== tab.windowType) return false
         // if (isSet(info.index) && info.index !== tab.index) return false
         return true
-      })
-      .map((tab, index) => {
-        if (tab) {
-          tab.index = index
-        }
-        return tab
       })
     try {
       tabLog(
@@ -481,6 +587,88 @@ export class TabsAPI {
       if (tab) this.ctx.store.removeTab(tab)
       this.onRemoved(tabId)
     })
+  }
+
+  private highlight(event: ExtensionEvent, highlightInfo: chrome.tabs.HighlightInfo) {
+    const requested = Array.isArray(highlightInfo?.tabs)
+      ? highlightInfo.tabs
+      : [highlightInfo?.tabs]
+    if (
+      requested.length === 0 ||
+      requested.some(
+        (value) => typeof value !== 'number' || !Number.isInteger(value) || value < 0,
+      )
+    ) {
+      throw new Error('Invalid highlighted tab index')
+    }
+    const indices = requested.filter(
+      (value): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0,
+    )
+
+    const window =
+      typeof highlightInfo.windowId === 'number' &&
+      highlightInfo.windowId !== TabsAPI.WINDOW_ID_CURRENT
+        ? this.ctx.store.getWindowById(highlightInfo.windowId)
+        : this.ctx.store.getCurrentWindow(event)
+    if (!window) throw new Error('No current window')
+
+    const tabs = this.ctx.store.getTabsInWindow(window)
+    const tabsByIndex = new Map<number, TabContents>()
+    for (const tab of tabs) tabsByIndex.set(this.ctx.store.getTabIndex(tab), tab)
+    const highlighted = indices
+      .map((index) => tabsByIndex.get(index))
+      .filter((tab): tab is TabContents => !!tab)
+    const selected = highlighted[0]
+    if (!selected || highlighted.length !== indices.length) {
+      throw new Error('No tab at the requested index')
+    }
+
+    // The host has a single-selection tab model. Chrome permits multiple
+    // highlighted tabs, but the active tab must be one of them; select the
+    // first requested index and expose the resulting window state.
+    this.ctx.store.setActiveTab(selected)
+    const highlightedIds = new Set(highlighted.map((tab) => tab.id))
+    for (const tab of tabs) {
+      const cached = this.ctx.store.tabDetailsCache.get(tab.id)
+      if (!cached) continue
+      const active = tab.id === selected.id
+      cached.active = active
+      cached.selected = active
+      cached.highlighted = highlightedIds.has(tab.id)
+    }
+    this.ctx.router.broadcastEvent('tabs.onHighlighted', {
+      tabIds: Array.from(highlightedIds),
+      windowId: window.id,
+    })
+    const [left, top] = window.getPosition()
+    const [width, height] = window.getSize()
+    const windowType = (window as any).__crxWindowType
+    const hostIncognito = this.ctx.store.impl.isIncognitoWindow?.(window)
+    const incognito =
+      typeof hostIncognito === 'boolean'
+        ? hostIncognito
+        : !this.ctx.session.isPersistent() ||
+          tabs.some((tab) => this.ctx.store.tabDetailsCache.get(tab.id)?.incognito === true)
+    const state: chrome.windows.Window['state'] = window.isMaximized()
+      ? 'maximized'
+      : window.isMinimized()
+        ? 'minimized'
+        : window.isFullScreen()
+          ? 'fullscreen'
+          : 'normal'
+    return {
+      alwaysOnTop: window.isAlwaysOnTop(),
+      focused: window.isFocused(),
+      height,
+      id: window.id,
+      incognito,
+      left,
+      state,
+      tabs: tabs.map((tab) => this.getTabDetails(tab)),
+      top,
+      type: windowType === 'popup' || windowType === 'panel' ? windowType : 'normal',
+      width,
+    } as chrome.windows.Window
   }
 
   private goForward(event: ExtensionEvent, arg1?: unknown) {
@@ -686,7 +874,10 @@ export class TabsAPI {
 
     // invalidate cache since 'active' has changed
     this.ctx.store.tabDetailsCache.forEach((tabInfo, cacheTabId) => {
-      tabInfo.active = tabId === cacheTabId
+      const active = tabId === cacheTabId
+      tabInfo.active = active
+      tabInfo.selected = active
+      tabInfo.highlighted = active
     })
 
     this.ctx.router.broadcastEvent('tabs.onActivated', {

@@ -6,16 +6,16 @@ import {
   SidebarTabIcon,
   SidebarTabPinBadge,
   SidebarTabTitle,
-  SidebarTabCompactTitle,
   SidebarTabClose,
   SidebarDropLine,
 } from './style';
 import { Preloader } from '~/renderer/components/Preloader';
 import { ITab } from '../../models';
 import store from '../../store';
-import { showTabContextMenu } from '../../utils/tab-context-menu';
+import { handleTabContextMenu } from '../../utils/tab-context-menu';
 import { getIconByUrlNet } from '~/utils/url';
 import { getDraggedLinkURL, isLinkDragEvent } from '../../utils/link-drop';
+import { useTabHoverActivation } from '~/renderer/utils/tab-hover-activation';
 
 const GlobeIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
@@ -73,7 +73,8 @@ const onCloseMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
 // 天然够用)。落点按指针在行内上/下半判定插到目标前/后,松手由 store 完成重排。
 const onDragStart = (tab: ITab) => (e: React.DragEvent<HTMLDivElement>) => {
   store.tabs.setSidebarDrag(tab.id);
-  e.dataTransfer.effectAllowed = 'move';
+  // 侧栏内部排序是 move，拖到书签栏收藏是 copy。
+  e.dataTransfer.effectAllowed = 'copyMove';
   // Firefox 需要 setData 才会真正启动拖拽。
   try {
     e.dataTransfer.setData('text/plain', String(tab.id));
@@ -83,6 +84,23 @@ const onDragStart = (tab: ITab) => (e: React.DragEvent<HTMLDivElement>) => {
 };
 
 const onDragOver = (tab: ITab) => (e: React.DragEvent<HTMLDivElement>) => {
+  if (store.tabs.sidebarDragGroupId !== -1) {
+    const group = store.tabGroups.getGroupById(store.tabs.sidebarDragGroupId);
+    if (
+      !group ||
+      tab.tabGroupId === group.id ||
+      group.isPinned !== store.tabs.isTabInPinnedZone(tab) ||
+      (group.isPinned && tab.isPinned)
+    ) {
+      return;
+    }
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    store.tabs.setSidebarDropTarget(tab.id, e.clientY < r.top + r.height / 2);
+    return;
+  }
+
   if (store.tabs.sidebarDragId !== -1) {
     if (store.tabs.sidebarDragId === tab.id) {
       return;
@@ -106,6 +124,15 @@ const onDragOver = (tab: ITab) => (e: React.DragEvent<HTMLDivElement>) => {
 const onDrop = (tab: ITab) => (e: React.DragEvent<HTMLDivElement>) => {
   const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
   const before = e.clientY < r.top + r.height / 2;
+
+  if (store.tabs.sidebarDragGroupId !== -1) {
+    e.preventDefault();
+    e.stopPropagation();
+    const group = store.tabGroups.getGroupById(store.tabs.sidebarDragGroupId);
+    store.tabs.clearSidebarGroupDrag();
+    if (group) store.tabs.moveGroupNextToTabInSidebar(group, tab, before);
+    return;
+  }
 
   if (store.tabs.sidebarDragId !== -1) {
     e.preventDefault();
@@ -143,87 +170,146 @@ export const SidebarTab = observer(
     collapsed?: boolean;
     pinned?: boolean;
   }) => {
-    const [iconFailed, setIconFailed] = React.useState(false);
+    const tabRef = React.useRef<HTMLDivElement>(null);
+    const [failedIconSources, setFailedIconSources] = React.useState<string[]>(
+      [],
+    );
     const prevUrlRef = React.useRef(tab.url);
     if (prevUrlRef.current !== tab.url) {
-      setIconFailed(false);
+      setFailedIconSources([]);
       prevUrlRef.current = tab.url;
     }
+
+    React.useLayoutEffect(() => {
+      if (!tab.isSelected) return;
+
+      tabRef.current?.scrollIntoView({
+        block: 'nearest',
+        inline: 'nearest',
+      });
+    }, [tab.isSelected]);
+
+    const hoverActivation = useTabHoverActivation({
+      enabled:
+        store.settings.object.tabHoverActivationBehavior !== 'off' &&
+        (tab.discarded ||
+          store.settings.object.tabHoverActivationBehavior ===
+            'activate-and-switch'),
+      delay: store.settings.object.tabHoverActivationDelay,
+      selected: tab.isSelected,
+      activate: () =>
+        tab.activateOnHover(
+          store.settings.object.tabHoverActivationBehavior ===
+            'activate-and-switch',
+        ),
+      blocked: () =>
+        store.tabs.sidebarDragId !== -1 || store.tabs.sidebarDragGroupId !== -1,
+    });
 
     // 关闭中的标签仍需先走完同一套 Hook，避免双击关闭时触发 Hook 数量不一致。
     if (tab.isClosing) return null;
 
-    const isDropTarget = store.tabs.sidebarDropTargetId === tab.id;
+    const isDragging =
+      store.tabs.sidebarDragId !== -1 && store.tabs.sidebarDragId === tab.id;
+    const isDropTarget =
+      store.tabs.sidebarDropTargetId !== -1 &&
+      store.tabs.sidebarDropTargetId === tab.id;
     const dropBefore = store.tabs.sidebarDropBefore;
-    const iconSrc =
-      tab.favicon ||
-      (!iconFailed && tab.url ? getIconByUrlNet(tab.url) : undefined);
-
-    // 缩放模式窄轨:仅图标 + 标题前两字,无关闭按钮。
-    const compactTitle = (tab.title || '').trim().slice(0, 2);
+    const fallbackIconSrc = tab.url ? getIconByUrlNet(tab.url) : undefined;
+    const iconSrc = [tab.favicon, fallbackIconSrc].find(
+      (src) => src && !failedIconSources.includes(src),
+    );
 
     return (
       <StyledSidebarTab
+        ref={tabRef}
+        data-rainsee-part="sidebar-tab"
+        data-rainsee-selected={tab.isSelected ? 'true' : 'false'}
+        data-rainsee-pinned={pinned ? 'true' : 'false'}
+        data-sidebar-drop-owner="true"
         selected={tab.isSelected}
         groupColor={groupColor}
         collapsed={collapsed}
-        dragging={store.tabs.sidebarDragId === tab.id}
+        dragging={isDragging}
         draggable
         title={collapsed ? tab.title : undefined}
-        onDragStart={onDragStart(tab)}
+        onDragStart={(e: React.DragEvent<HTMLDivElement>) => {
+          hoverActivation.cancel();
+          onDragStart(tab)(e);
+        }}
         onDragOver={onDragOver(tab)}
         onDrop={onDrop(tab)}
         onDragEnd={onDragEnd}
-        onMouseDown={onMouseDown(tab)}
+        onMouseDown={(e: React.MouseEvent<HTMLDivElement>) => {
+          hoverActivation.cancel();
+          onMouseDown(tab)(e);
+        }}
         onMouseUp={onMouseUp(tab)}
         onDoubleClick={onDoubleClick(tab)}
-        onContextMenu={() => showTabContextMenu(tab)}
-        onMouseEnter={() => (store.tabs.hoveredTabId = tab.id)}
-        onMouseLeave={() => (store.tabs.hoveredTabId = -1)}
+        onContextMenu={(e: React.MouseEvent) => handleTabContextMenu(e, tab)}
+        onMouseEnter={() => {
+          store.tabs.hoveredTabId = tab.id;
+          hoverActivation.schedule();
+        }}
+        onMouseLeave={() => {
+          store.tabs.hoveredTabId = -1;
+          hoverActivation.cancel();
+        }}
       >
-      {isDropTarget && <SidebarDropLine position={dropBefore ? 'top' : 'bottom'} />}
-      {tab.loading ? (
-        <Preloader
-          color={store.theme.accentColor}
-          thickness={6}
-          size={16}
-          indeterminate
-          style={{ minWidth: 16 }}
-        />
-      ) : (
-        <SidebarTabIcon>
-          {iconSrc ? (
-            <img
-              src={iconSrc}
-              width={16}
-              height={16}
-              draggable={false}
-              style={{ display: 'block' }}
-              onError={() => {
-                if (!tab.favicon) setIconFailed(true);
-              }}
-            />
-          ) : (
-            <GlobeIcon />
-          )}
-          {pinned && <SidebarTabPinBadge>{PinGlyph}</SidebarTabPinBadge>}
-        </SidebarTabIcon>
-      )}
-      {/* 固定与否仅由 favicon 角标钉子区分,行体与普通标签完全一致(标题 + 悬停关闭)。 */}
-      {collapsed ? (
-        <SidebarTabCompactTitle selected={tab.isSelected}>
-          {compactTitle}
-        </SidebarTabCompactTitle>
-      ) : (
-        <>
-          <SidebarTabTitle selected={tab.isSelected}>{tab.title}</SidebarTabTitle>
-          <SidebarTabClose
-            visible={tab.isHovered || tab.isSelected}
-            onMouseDown={onCloseMouseDown}
-            onClick={onClose(tab)}
+        {isDropTarget && (
+          <SidebarDropLine position={dropBefore ? 'top' : 'bottom'} />
+        )}
+        {tab.loading ? (
+          <Preloader
+            color={store.theme.accentColor}
+            thickness={6}
+            size={16}
+            indeterminate
+            style={{ minWidth: 16 }}
           />
-        </>
-      )}
-    </StyledSidebarTab>
-  );
-});
+        ) : (
+          <SidebarTabIcon data-rainsee-part="sidebar-tab-icon">
+            {iconSrc ? (
+              <img
+                src={iconSrc}
+                width={16}
+                height={16}
+                draggable={false}
+                style={{ display: 'block' }}
+                onError={() => {
+                  setFailedIconSources((sources) =>
+                    sources.includes(iconSrc) ? sources : [...sources, iconSrc],
+                  );
+                }}
+              />
+            ) : (
+              <GlobeIcon />
+            )}
+            {pinned && <SidebarTabPinBadge>{PinGlyph}</SidebarTabPinBadge>}
+          </SidebarTabIcon>
+        )}
+        {/* 固定与否仅由 favicon 角标钉子区分,行体与普通标签完全一致(标题 + 悬停关闭)。 */}
+        {!collapsed && (
+          <>
+            <SidebarTabTitle
+              data-rainsee-part="sidebar-tab-title"
+              selected={tab.isSelected}
+            >
+              {tab.title}
+            </SidebarTabTitle>
+            <SidebarTabClose
+              data-rainsee-action="close-tab"
+              visible={store.settings.object.tabCloseButtonDisplay !== 'never'}
+              hoverOnly={
+                store.settings.object.tabCloseButtonDisplay === 'hover'
+              }
+              onMouseEnter={hoverActivation.cancel}
+              onMouseDown={onCloseMouseDown}
+              onClick={onClose(tab)}
+            />
+          </>
+        )}
+      </StyledSidebarTab>
+    );
+  },
+);

@@ -1,6 +1,12 @@
 import { networkMainChannel } from '~/common/rpc/network';
-import { ISuggestion } from '~/interfaces';
+import {
+  IBookmark,
+  IHistoryItem,
+  ISearchEngine,
+  ISuggestion,
+} from '~/interfaces';
 import { BAIDU_SUGGEST_URL } from '~/constants/settings';
+import { findSearchQuery } from '~/utils/search-engine';
 
 import store from '../store';
 
@@ -12,41 +18,11 @@ const cleanUrl = (url: string) => {
   return u;
 };
 
-// 解析单个搜索引擎的 host 与查询参数名(%s 所在的参数)。
-const parseEngine = (engineUrl: string) => {
-  try {
-    const u = new URL(engineUrl.replace('%s', '__Q__'));
-    let queryKey = '';
-    u.searchParams.forEach((value, key) => {
-      if (value.indexOf('__Q__') !== -1) queryKey = key;
-    });
-    return { host: u.host.replace(/^www\./, ''), queryKey };
-  } catch (e) {
-    return null;
-  }
-};
-
-// 从一条历史 URL 中,按任意已知搜索引擎规则提取搜索词,提取不到返回 null。
-const extractSearchQuery = (rawUrl: string): string | null => {
-  let u: URL;
-  try {
-    u = new URL(rawUrl);
-  } catch (e) {
-    return null;
-  }
-  const host = u.host.replace(/^www\./, '');
-  for (const engine of store.settings.searchEngines) {
-    const info = parseEngine(engine.url || '');
-    if (!info || !info.queryKey) continue;
-    if (host !== info.host) continue;
-    const q = u.searchParams.get(info.queryKey);
-    if (q && q.trim() !== '') return q.trim();
-  }
-  return null;
-};
-
 // 历史记录建议:网址前缀匹配优先,其次标题包含匹配。canSuggest 用于自动补全。
-export const getHistorySuggestions = (filter: string): ISuggestion[] => {
+export const getHistorySuggestions = (
+  filter: string,
+  visitedItems: IHistoryItem[] = store.visitedItems,
+): ISuggestion[] => {
   filter = filter.trim().toLowerCase();
   if (filter === '') return [];
 
@@ -55,7 +31,7 @@ export const getHistorySuggestions = (filter: string): ISuggestion[] => {
   const titleMatched: ISuggestion[] = [];
   const seen = new Set<string>();
 
-  for (const item of store.visitedItems) {
+  for (const item of visitedItems) {
     const urlPart = cleanUrl(item.url);
     if (seen.has(urlPart)) continue;
 
@@ -66,7 +42,8 @@ export const getHistorySuggestions = (filter: string): ISuggestion[] => {
       seen.add(urlPart);
       urlMatched.push({
         primaryText: item.title,
-        url: urlPart,
+        displayUrl: urlPart,
+        url: item.url,
         favicon: item.favicon,
         canSuggest: true,
         type: 'history',
@@ -75,7 +52,8 @@ export const getHistorySuggestions = (filter: string): ISuggestion[] => {
       seen.add(urlPart);
       titleMatched.push({
         primaryText: item.title,
-        url: urlPart,
+        displayUrl: urlPart,
+        url: item.url,
         favicon: item.favicon,
         canSuggest: false,
         type: 'history',
@@ -87,15 +65,19 @@ export const getHistorySuggestions = (filter: string): ISuggestion[] => {
 };
 
 // 历史搜索词建议:从历史 URL 中按任意搜索引擎规则提取搜索词并去重。
-export const getSearchHistorySuggestions = (filter: string): ISuggestion[] => {
+export const getSearchHistorySuggestions = (
+  filter: string,
+  visitedItems: IHistoryItem[] = store.visitedItems,
+  searchEngines: ISearchEngine[] = store.settings.searchEngines,
+): ISuggestion[] => {
   filter = filter.trim().toLowerCase();
   // 过滤词为空时(如聚焦空地址栏),按最近访问顺序返回历史搜索词,不做前缀过滤。
 
   const result: ISuggestion[] = [];
   const seen = new Set<string>();
 
-  for (const item of store.visitedItems) {
-    const query = extractSearchQuery(item.url);
+  for (const item of visitedItems) {
+    const query = findSearchQuery(item.url, searchEngines);
     if (!query) continue;
     const key = query.toLowerCase();
     if (seen.has(key)) continue;
@@ -113,19 +95,23 @@ export const getSearchHistorySuggestions = (filter: string): ISuggestion[] => {
 };
 
 // 书签建议:标题或网址包含匹配。
-export const getBookmarkSuggestions = (filter: string): ISuggestion[] => {
+export const getBookmarkSuggestions = (
+  filter: string,
+  bookmarks: IBookmark[] = store.bookmarks,
+): ISuggestion[] => {
   filter = filter.trim().toLowerCase();
   if (filter === '') return [];
 
   const result: ISuggestion[] = [];
-  for (const item of store.bookmarks) {
+  for (const item of bookmarks) {
     if (item.isFolder || !item.url) continue;
     const title = (item.title || '').toLowerCase();
     const url = item.url.toLowerCase();
     if (title.includes(filter) || url.includes(filter)) {
       result.push({
         primaryText: item.title || item.url,
-        url: cleanUrl(item.url),
+        displayUrl: cleanUrl(item.url),
+        url: item.url,
         favicon: item.favicon,
         type: 'bookmark',
       });
@@ -137,18 +123,29 @@ export const getBookmarkSuggestions = (filter: string): ISuggestion[] => {
 };
 
 // 打开的标签页建议:标题或网址包含匹配,携带 tabId 供跳转。
-export const getTabSuggestions = (filter: string): ISuggestion[] => {
+export interface ISuggestionTab {
+  id?: number;
+  title?: string;
+  url?: string;
+  favicon?: string;
+}
+
+export const getTabSuggestions = (
+  filter: string,
+  tabs: ISuggestionTab[] = store.tabs,
+): ISuggestion[] => {
   filter = filter.trim().toLowerCase();
   if (filter === '') return [];
 
   const result: ISuggestion[] = [];
-  for (const tab of store.tabs) {
+  for (const tab of tabs) {
     const title = (tab.title || '').toLowerCase();
     const url = (tab.url || '').toLowerCase();
     if (title.includes(filter) || url.includes(filter)) {
       result.push({
         primaryText: tab.title || tab.url,
         secondaryText: cleanUrl(tab.url || ''),
+        url: tab.url || '',
         favicon: tab.favicon,
         type: 'tab',
         tabId: tab.id,
@@ -176,13 +173,16 @@ const decodeUtf8 = (binary: string): string => {
 
 // 搜索引擎联想词:优先用当前默认引擎的 keywordsUrl,缺失则回退百度。
 // 兼容两种返回:Chrome 格式 [q, [s1,s2...]] 与百度 sugrec { g:[{q},..] }。
-export const getSearchSuggestions = (filter: string): Promise<string[]> =>
+export const getSearchSuggestions = (
+  filter: string,
+  engine: ISearchEngine = store.searchEngine,
+): Promise<string[]> =>
   // eslint-disable-next-line
   new Promise(async (resolve, reject) => {
     const input = filter.trim().toLowerCase();
     if (input === '') return resolve([]);
 
-    const engineUrl = store.searchEngine && store.searchEngine.keywordsUrl;
+    const engineUrl = engine && engine.keywordsUrl;
     const url = (engineUrl && engineUrl !== '' ? engineUrl : BAIDU_SUGGEST_URL)
       .replace('%s', encodeURIComponent(input));
 

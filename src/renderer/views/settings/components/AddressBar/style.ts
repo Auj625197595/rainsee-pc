@@ -125,7 +125,7 @@ export const GroupTitle = styled.div`
 // 改用 :first/:last 给首尾行的悬浮底色补圆角,与卡片圆角吻合。
 export const Group = styled.div`
   margin-top: 6px;
-  border-radius: 16px;
+  border-radius: 18px;
 
   ${({ theme }: { theme?: ITheme }) => {
     const p = getPalette(theme);
@@ -165,12 +165,12 @@ export const GroupRow = styled.div<{ indent?: boolean; disabled?: boolean }>`
         border-bottom: 1px solid ${p.line};
       }
       &:first-child {
-        border-top-left-radius: 16px;
-        border-top-right-radius: 16px;
+        border-top-left-radius: 18px;
+        border-top-right-radius: 18px;
       }
       &:last-child {
-        border-bottom-left-radius: 16px;
-        border-bottom-right-radius: 16px;
+        border-bottom-left-radius: 18px;
+        border-bottom-right-radius: 18px;
       }
 
       &:hover {
@@ -209,7 +209,7 @@ export const HighlightRow = styled.div<{ flashing?: boolean }>`
   gap: 18px;
   margin-top: 6px;
   padding: 16px 18px;
-  border-radius: 16px;
+  border-radius: 18px;
   cursor: pointer;
   transition: box-shadow 0.18s ease, background-color 0.18s ease;
 
@@ -217,8 +217,7 @@ export const HighlightRow = styled.div<{ flashing?: boolean }>`
     const p = getPalette(theme);
     return css`
       background-color: ${p.primarySoft};
-      box-shadow: inset 0 0 0 1px ${p.primary}55,
-        0 10px 30px -24px ${p.primary};
+      box-shadow: inset 0 0 0 1px ${p.primary}55, 0 10px 30px -24px ${p.primary};
 
       &:hover {
         box-shadow: inset 0 0 0 1px ${p.primary}99,
@@ -254,4 +253,165 @@ export const HighlightBadge = styled.span`
       background: linear-gradient(135deg, ${p.primary}, #16a34a);
     `;
   }}
+`;
+
+export const EfficiencySearchCard = styled(HighlightRow)`
+  cursor: default;
+  display: block;
+  padding: 4px;
+  background: transparent;
+  box-shadow: none;
+
+  &:hover {
+    ${({ theme }: { theme?: ITheme }) => {
+      const p = getPalette(theme);
+      return css`
+        box-shadow: none;
+      `;
+    }}
+  }
+`;
+
+export const ModeSelector = styled.div`
+  display: grid;
+  grid-template-columns: repeat(3, minmax(82px, 1fr));
+  gap: 3px;
+  width: 100%;
+  padding: 3px;
+  border-radius: 8px;
+
+  ${({ theme }: { theme?: ITheme }) => {
+    const p = getPalette(theme);
+    return css`
+      background: ${p.bg};
+      box-shadow: inset 0 0 0 1px ${p.line};
+    `;
+  }}
+`;
+
+export const SuggestionGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 6px;
+
+  @media (max-width: 800px) {
+    grid-template-columns: 1fr;
+  }
+`;
+
+export const SuggestionItem = styled.div<{ disabled?: boolean }>`
+  min-height: 52px;
+  padding: 10px 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-radius: 10px;
+  cursor: pointer;
+
+  ${({ theme, disabled }: { theme?: ITheme; disabled?: boolean }) => {
+    const p = getPalette(theme);
+    return css`
+      color: ${p.textMain};
+      background: ${p.surface};
+      border: 1px solid ${p.line};
+      opacity: ${disabled ? 0.4 : 1};
+      pointer-events: ${disabled ? 'none' : 'auto'};
+    `;
+  }}
+`;
+
+export const ModeButton = styled.button<{ selected?: boolean }>`
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+
+  ${({ theme, selected }: { theme?: ITheme; selected?: boolean }) => {
+    const p = getPalette(theme);
+    return css`
+      color: ${selected ? p.primary : p.textSub};
+      background: ${selected ? p.surface : 'transparent'};
+      box-shadow: ${selected ? `0 1px 3px ${p.line}` : 'none'};
+
+      &:hover {
+        color: ${selected ? p.primary : p.text};
+      }
+    `;
+  }}
+`;
+
+export const EngineChoices = styled.div`
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+`;
+
+export const EngineChoice = styled.button<{
+  selected?: boolean;
+  disabled?: boolean;
+}>`
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 13px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: ${({ disabled }) => (disabled ? 'not-allowed' : 'pointer')};
+  opacity: ${({ disabled }) => (disabled ? 0.55 : 1)};
+
+  ${({ theme, selected }: { theme?: ITheme; selected?: boolean }) => {
+    const p = getPalette(theme);
+    return css`
+      color: ${p.text};
+      background: ${selected ? p.primarySoft : p.bg};
+      border: 1px solid ${selected ? `${p.primary}88` : p.line};
+    `;
+  }}
+`;
+
+export const ChoiceMark = styled.span<{ selected?: boolean }>`
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  margin-right: 8px;
+  border-radius: 3px;
+
+  ${({ theme, selected }: { theme?: ITheme; selected?: boolean }) => {
+    const p = getPalette(theme);
+    return css`
+      color: #fff;
+      background: ${selected ? p.primary : 'transparent'};
+      border: 1px solid ${selected ? p.primary : p.textMute};
+    `;
+  }}
+`;
+
+export const ChoiceHelp = styled.div`
+  width: 100%;
+  margin-bottom: 8px;
+  font-size: 12px;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textMute};
+  `}
 `;

@@ -10,8 +10,12 @@ interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
 
 export const MyInput = forwardRef((props: InputProps, ref: Ref<HTMLInputElement>) => {
   const el = useRef<HTMLInputElement>(null);
+  const composing = useRef(false);
+  const skipChangeValue = useRef<string | null>(null);
   const { onChange, onFocus, onBlur, value, defaultValue, ...attrs } = props;
   const _value = 'value' in props ? value : 'defaultValue' in props ? defaultValue : null;
+  const latestValue = useRef(value);
+  latestValue.current = value;
 
   const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
     if (onChange) {
@@ -20,14 +24,18 @@ export const MyInput = forwardRef((props: InputProps, ref: Ref<HTMLInputElement>
   };
 
   const forceSetValue = () => {
-    if ('value' in props && el.current) {
+    if ('value' in props && el.current && !composing.current) {
       const input = el.current;
-      input.value = value as string;
-      input.setAttribute('value', value as string);
+      const nextValue = String(latestValue.current == null ? '' : latestValue.current);
+
+      // Reassigning value also moves the caret. Only synchronize an actual
+      // external change, and never replace Chromium's active IME buffer.
+      if (input.value !== nextValue) {
+        input.value = nextValue;
+      }
+      input.setAttribute('value', nextValue);
     }
   };
-
-  let inputing = false;
 
   return (
     <Input
@@ -56,16 +64,26 @@ export const MyInput = forwardRef((props: InputProps, ref: Ref<HTMLInputElement>
         onBlur && onBlur(e);
       }}
       onCompositionStart={() => {
-        inputing = true;
+        composing.current = true;
+        skipChangeValue.current = null;
       }}
       onCompositionEnd={(e) => {
-        inputing = false;
+        composing.current = false;
+        skipChangeValue.current = e.currentTarget.value;
         handleChange(e);
       }}
       onChange={(e) => {
-        if (!inputing) {
-          handleChange(e);
+        if (composing.current) return;
+
+        // Chromium may emit the final change immediately after
+        // compositionend. The value was already forwarded above.
+        if (skipChangeValue.current === e.currentTarget.value) {
+          skipChangeValue.current = null;
+          return;
         }
+
+        skipChangeValue.current = null;
+        handleChange(e);
       }}
     />
   );

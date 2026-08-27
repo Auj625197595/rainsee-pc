@@ -91,3 +91,22 @@ export const IconClose = () => (
     <path d="M6 6l12 12M18 6L6 18"></path>
   </svg>
 );
+
+export const IconPlus = () => (
+  <svg {...S()}>
+    <path d="M12 5v14M5 12h14"></path>
+  </svg>
+);
+
+export const IconEdit = () => (
+  <svg {...S()}>
+    <path d="m4 16-.8 4.8L8 20l11.5-11.5a2.1 2.1 0 0 0-3-3z"></path>
+    <path d="m14.5 7.5 2 2"></path>
+  </svg>
+);
+
+export const IconTrash = () => (
+  <svg {...S()}>
+    <path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"></path>
+  </svg>
+);

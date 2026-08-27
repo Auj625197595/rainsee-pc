@@ -40,14 +40,14 @@ export class PasswordInput extends React.PureComponent<Props, State> {
   }
 
   public render() {
-    const { style, dark } = this.props;
+    const { style, dark, label } = this.props;
     const { visible } = this.state;
 
     return (
       <Textfield
         ref={this.ref}
         dark={dark}
-        label="Password"
+        label={label || 'Password'}
         inputType={visible ? 'text' : 'password'}
         icon={visible ? ICON_INVISIBLE : ICON_VISIBLE}
         onIconClick={this.onIconClick}

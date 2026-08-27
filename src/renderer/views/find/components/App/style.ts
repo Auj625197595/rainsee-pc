@@ -3,21 +3,25 @@ import styled, { css } from 'styled-components';
 import { centerIcon } from '~/renderer/mixins';
 import { ITheme } from '~/interfaces';
 import { ICON_SEARCH } from '~/renderer/constants';
-import {
-  DIALOG_BOX_SHADOW,
-  DIALOG_BORDER_RADIUS,
-} from '~/renderer/mixins/dialogs';
 
 export const StyledApp = styled.div`
   margin: 16px;
   margin-top: 3px;
-  box-shadow: ${DIALOG_BOX_SHADOW};
-  border-radius: ${DIALOG_BORDER_RADIUS}px;
-  background: white;
+  border-radius: 26px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
 
   ${({ theme }: { theme?: ITheme }) => css`
-    background-color: ${theme['dialog.backgroundColor']};
-    color: ${theme['dialog.lightForeground'] ? 'white' : 'black'};
+    box-shadow: ${theme.dark
+      ? 'inset 0 1px 0 rgba(255, 255, 255, 0.04)'
+      : `0 1px 4px rgba(20, 32, 72, 0.05),
+         0 4px 12px rgba(20, 32, 72, 0.06),
+         inset 0 1px 0 rgba(255, 255, 255, 0.7)`};
+    background-color: ${theme.dark
+      ? 'rgba(15, 18, 24, 0.88)'
+      : 'rgba(255, 255, 255, 0.72)'};
+    color: ${theme['dialog.textColor']};
   `}
 `;
 

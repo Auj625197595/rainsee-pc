@@ -2,8 +2,9 @@ import * as React from 'react';
 import { observer } from 'mobx-react-lite';
 
 import { ITab, ITabGroup } from '../../models';
+import { TAB_MIN_WIDTH, TAB_PINNED_WIDTH } from '../../constants';
 import store from '../../store';
-import { showTabGroupContextMenu } from '../../utils/tab-context-menu';
+import { handleTabGroupContextMenu } from '../../utils/tab-context-menu';
 import {
   StyledTabGroup,
   Chip,
@@ -12,6 +13,7 @@ import {
   ActiveTitle,
   CountBadge,
 } from './style';
+import { useTabHoverActivation } from '~/renderer/utils/tab-hover-activation';
 
 // 悬停弹窗出现延迟,贴近标签预览卡的节奏。鼠标离开交由 store 统一管理定时器,
 // 与弹窗(独立 BrowserView)的鼠标进出协调,避免在「芯片↔弹窗」之间移动时闪烁关闭。
@@ -28,21 +30,50 @@ const GlobeIcon = () => (
   </svg>
 );
 
-const ChipFav = observer(({ tab }: { tab: ITab }) => (
-  <Fav
-    selected={tab.isSelected}
-    title={tab.title}
-    onClick={(e: React.MouseEvent) => {
-      e.stopPropagation();
-      tab.select();
-    }}
-    onMouseEnter={() => {
-      if (!store.tabs.isDragging) store.tabs.hoveredTabId = tab.id;
-    }}
-  >
-    {tab.favicon !== '' ? <img src={tab.favicon} alt="" /> : <GlobeIcon />}
-  </Fav>
-));
+const ChipFav = observer(({ tab, density }: { tab: ITab; density: number }) => {
+  const hoverActivation = useTabHoverActivation({
+    enabled:
+      store.settings.object.tabHoverActivationBehavior !== 'off' &&
+      (tab.discarded ||
+        store.settings.object.tabHoverActivationBehavior ===
+          'activate-and-switch'),
+    delay: store.settings.object.tabHoverActivationDelay,
+    selected: tab.isSelected,
+    activate: () =>
+      tab.activateOnHover(
+        store.settings.object.tabHoverActivationBehavior ===
+          'activate-and-switch',
+      ),
+    blocked: () => store.tabs.isDragging,
+  });
+
+  return (
+    <Fav
+      $density={density}
+      selected={tab.isSelected}
+      title={tab.title}
+      onClick={(e: React.MouseEvent) => {
+        e.stopPropagation();
+        hoverActivation.cancel();
+        tab.select();
+      }}
+      onMouseDown={hoverActivation.cancel}
+      onMouseEnter={() => {
+        if (!store.tabs.isDragging) {
+          store.tabs.hoveredTabId = tab.id;
+          hoverActivation.schedule();
+        }
+      }}
+      onMouseLeave={hoverActivation.cancel}
+    >
+      {tab.favicon !== '' ? (
+        <img src={tab.favicon} alt="" draggable={false} />
+      ) : (
+        <GlobeIcon />
+      )}
+    </Fav>
+  );
+});
 
 export const TabGroup = observer(({ tabGroup }: { tabGroup: ITabGroup }) => {
   const openTimer = React.useRef<any>(null);
@@ -57,6 +88,12 @@ export const TabGroup = observer(({ tabGroup }: { tabGroup: ITabGroup }) => {
   // 拖拽合入的高亮态:某标签正被拖动且悬停在本组芯片上方(松手即合入)。观察
   // store.tabs.pendingGroupDropId,命中本组则加醒目的投放环,呼应 Chrome 交互。
   const isDropTarget = store.tabs.pendingGroupDropId === tabGroup.id;
+  const isDragging = store.tabs.draggingGroupId === tabGroup.id;
+  const preferredWidth = tabGroup.isPinned ? TAB_PINNED_WIDTH : TAB_MIN_WIDTH;
+  const density =
+    store.settings.object.tabOverflowBehavior === 'shrink'
+      ? Math.max(0, Math.min(1, tabGroup.width / preferredWidth))
+      : 1;
 
   // 芯片 DOM 挂载后立即 snap 到目标 left/width(无动画,早于浏览器绘制),
   // 消除新建分组时芯片从 left:0"飞入"。同步 updateTabsBounds 跑在挂载前,
@@ -71,8 +108,10 @@ export const TabGroup = observer(({ tabGroup }: { tabGroup: ITabGroup }) => {
   });
 
   const open = () => {
+    if (store.tabs.isDragging) return;
     clearTimeout(openTimer.current);
     openTimer.current = setTimeout(() => {
+      if (store.tabs.isDragging) return;
       const el = tabGroup.ref.current;
       if (!el) return;
       const r = el.getBoundingClientRect();
@@ -89,17 +128,26 @@ export const TabGroup = observer(({ tabGroup }: { tabGroup: ITabGroup }) => {
 
   return (
     <StyledTabGroup
+      data-rainsee-part="tab-group"
+      data-rainsee-selected={containsActive ? 'true' : 'false'}
+      data-rainsee-pinned={tabGroup.isPinned ? 'true' : 'false'}
+      $dragging={isDragging}
       ref={tabGroup.ref}
+      onMouseDown={(e: React.MouseEvent) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        clearTimeout(openTimer.current);
+        store.tabs.beginGroupDrag(tabGroup, e.pageX);
+      }}
       onMouseEnter={open}
       onMouseLeave={scheduleClose}
       onContextMenu={(e: React.MouseEvent) => {
-        // 右键芯片 → 整组原生右键菜单(新建/固定/取消分组/关闭分组)。命名改到
-        // 悬停弹窗内联输入框,不再打开旧的命名编辑弹窗。
-        e.preventDefault();
-        showTabGroupContextMenu(tabGroup);
+        handleTabGroupContextMenu(e, tabGroup);
       }}
     >
       <Chip
+        data-rainsee-part="tab-group-surface"
+        $density={density}
         color={tabGroup.color}
         containsActive={containsActive}
         pinned={tabGroup.isPinned}
@@ -107,15 +155,21 @@ export const TabGroup = observer(({ tabGroup }: { tabGroup: ITabGroup }) => {
       >
         <FavRow>
           {tabs.map((tab) => (
-            <ChipFav key={tab.id} tab={tab} />
+            <ChipFav key={tab.id} tab={tab} density={density} />
           ))}
         </FavRow>
         {!tabGroup.isPinned && displayLabel !== '' && (
-          <ActiveTitle onClick={() => activeTab?.select()} title={displayLabel}>
+          <ActiveTitle
+            $density={density}
+            onClick={() => activeTab?.select()}
+            title={displayLabel}
+          >
             {displayLabel}
           </ActiveTitle>
         )}
-        {!tabGroup.isPinned && <CountBadge>{tabs.length}</CountBadge>}
+        {!tabGroup.isPinned && (
+          <CountBadge $density={density}>{tabs.length}</CountBadge>
+        )}
       </Chip>
     </StyledTabGroup>
   );

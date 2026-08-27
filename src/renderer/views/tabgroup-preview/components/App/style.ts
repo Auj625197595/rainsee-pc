@@ -1,5 +1,12 @@
 import styled, { css } from 'styled-components';
 
+// 覆盖整个 BrowserView（包含卡片四周用于渲染阴影的透明边距）。鼠标从标签组
+// 移向卡片时会先进入这段边距，因此 hover 接管必须放在这里，不能只监听卡片。
+export const HoverArea = styled.div`
+  position: absolute;
+  inset: 0;
+`;
+
 export const StyledApp = styled.div`
   /* 卡片绝对定位内缩 12px:BrowserView 按「卡片 + 两侧 12px」建大小,卡片内缩后
      阴影得以在 BrowserView 内完整渲染。原先卡片=BrowserView 全填,投影被
@@ -16,10 +23,8 @@ export const StyledApp = styled.div`
   background-color: rgba(255, 255, 255, 0.78);
   backdrop-filter: blur(28px) saturate(180%);
   -webkit-backdrop-filter: blur(28px) saturate(180%);
-  box-shadow:
-    0 1px 4px rgba(20, 32, 72, 0.05),
-    0 4px 12px rgba(20, 32, 72, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  box-shadow: 0 1px 4px rgba(20, 32, 72, 0.05),
+    0 4px 12px rgba(20, 32, 72, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.7);
   display: flex;
   flex-direction: column;
   padding: 6px;
@@ -35,6 +40,30 @@ export const Header = styled.div`
   font-weight: 700;
   color: #1b2440;
   flex-shrink: 0;
+`;
+
+export const HeaderAddButton = styled.button`
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #5f6368;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+
+  &:hover {
+    color: #1b2440;
+    background-color: rgba(43, 83, 217, 0.08);
+  }
+
+  &:active {
+    transform: scale(0.92);
+  }
 `;
 
 export const ColorDot = styled.div`
@@ -75,9 +104,7 @@ export const Swatches = styled.div`
   background-color: rgba(255, 255, 255, 0.9);
   backdrop-filter: blur(28px) saturate(180%);
   -webkit-backdrop-filter: blur(28px) saturate(180%);
-  box-shadow:
-    0 1px 4px rgba(20, 32, 72, 0.08),
-    0 4px 12px rgba(20, 32, 72, 0.1),
+  box-shadow: 0 1px 4px rgba(20, 32, 72, 0.08), 0 4px 12px rgba(20, 32, 72, 0.1),
     inset 0 1px 0 rgba(255, 255, 255, 0.7);
 `;
 

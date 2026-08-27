@@ -8,7 +8,6 @@ import {
   DownloadSimple,
   ClockCounterClockwise,
   Star,
-  Sparkle,
   ArrowClockwise,
   ArrowDown,
   Tabs,
@@ -30,6 +29,12 @@ import {
   CaretRight,
   Moon,
   AppWindow,
+  UserPlus,
+  UserSwitch,
+  DotsThree,
+  Desktop,
+  Trash,
+  X,
 } from '@phosphor-icons/react';
 
 interface P {
@@ -65,7 +70,7 @@ export const IconDownload = wrap(DownloadSimple, 24, 'bold', '#4f46e5');
 export const IconHistory = wrap(ClockCounterClockwise, 24, 'bold', '#9333ea');
 
 export const IconStar = wrap(Star, 20);
-export const IconAi = wrap(Sparkle, 20);
+// 开源版：IconAi 已随 AI 功能移除。
 export const IconRefresh = wrap(ArrowClockwise, 20);
 export const IconScrollDown = wrap(ArrowDown, 20);
 export const IconTabs = wrap(Tabs, 20);
@@ -93,3 +98,9 @@ export const IconQuestion = wrap(Question, 19);
 export const IconCaretRight = wrap(CaretRight, 14);
 export const IconMoon = wrap(Moon, 19, 'fill');
 export const IconAppWindow = wrap(AppWindow, 19);
+export const IconUserPlus = wrap(UserPlus, 19);
+export const IconProfile = wrap(UserSwitch, 19);
+export const IconMore = wrap(DotsThree, 20);
+export const IconDesktop = wrap(Desktop, 17);
+export const IconTrash = wrap(Trash, 17);
+export const IconClose = wrap(X, 17);

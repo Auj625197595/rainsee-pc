@@ -55,9 +55,13 @@ export class ManagementAPI {
       optionsUrl: manifest.options_ui?.page || manifest.options_page || '',
       installType: 'normal',
       icons: manifest.icons
-        ? Object.entries(manifest.icons).map(([size, p]) => ({
+        ? Object.keys(manifest.icons).map((size) => ({
             size: Number(size),
-            url: `crx://${ext.id}/${p}`,
+            // A management page commonly displays icons belonging to other
+            // extensions. Direct chrome-extension:// URLs are blocked unless
+            // the target declares the icon as web-accessible, so serve them
+            // through the browser-owned, icon-only protocol endpoint.
+            url: `crx://extension-icon/${ext.id}/${Number(size)}/1`,
           }))
         : [],
       permissions: perms,

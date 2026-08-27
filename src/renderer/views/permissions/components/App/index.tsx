@@ -1,7 +1,10 @@
 import * as React from 'react';
 import { observer } from 'mobx-react-lite';
 import { ThemeProvider } from 'styled-components';
-import { Gear as GearIcon } from '@phosphor-icons/react';
+import {
+  ArrowSquareOut,
+  Gear as GearIcon,
+} from '@phosphor-icons/react';
 
 import {
   StyledApp,
@@ -18,9 +21,19 @@ import {
   RememberBox,
   Buttons,
   ActionButton,
+  ExternalPrompt,
+  ExternalIcon,
+  ExternalMain,
+  ExternalTitle,
+  ExternalSource,
+  ExternalActions,
+  ExternalSettingsButton,
+  ExternalOpenButton,
+  ExternalProgress,
 } from './style';
 import store, {
   sendResult,
+  isExternalNavigationRequest,
   openSettings,
   toggleRemember,
 } from '../../store';
@@ -41,22 +54,66 @@ const CheckIcon = () => (
 
 export const App = observer(() => {
   const rootRef = React.useRef<HTMLDivElement>(null);
+  const externalNavigation = isExternalNavigationRequest();
 
   React.useEffect(() => {
-    if (!rootRef.current) return undefined;
+    if (!externalNavigation) return undefined;
+    const timer = window.setTimeout(() => sendResult(false), 5000);
+    return () => window.clearTimeout(timer);
+  }, [externalNavigation, store.targetUrl]);
+
+  React.useEffect(() => {
+    const root = rootRef.current;
+    if (!root || externalNavigation) return undefined;
 
     const report = () => {
-      const h = Math.ceil(rootRef.current.scrollHeight) + 6;
+      if (!root.isConnected) return;
+      const h = Math.ceil(root.scrollHeight) + 6;
       store.send('resize-dialog', h);
     };
 
     report();
 
     const observer = new ResizeObserver(report);
-    observer.observe(rootRef.current);
+    observer.observe(root);
 
     return () => observer.disconnect();
-  }, [store.domain, store.permissions.length, store.remember]);
+  }, [externalNavigation, store.domain, store.permissions.length, store.remember]);
+
+  if (externalNavigation) {
+    return (
+      <ThemeProvider theme={{ ...store.theme }}>
+        <ExternalPrompt>
+          <UIStyle />
+          <ExternalIcon>
+            <ArrowSquareOut size={20} weight="bold" />
+          </ExternalIcon>
+          <ExternalMain>
+            <ExternalTitle title={store.targetDomain}>
+              {store.targetDomain || '外部网站'} 请求跳转
+            </ExternalTitle>
+            <ExternalSource title={store.domain}>
+              来自 {store.domain || '当前网站'}
+            </ExternalSource>
+          </ExternalMain>
+          <ExternalActions>
+            <ExternalSettingsButton
+              type="button"
+              title="打开此网站的权限设置"
+              aria-label="打开此网站的权限设置"
+              onClick={openSettings}
+            >
+              <GearIcon size={18} weight="bold" />
+            </ExternalSettingsButton>
+            <ExternalOpenButton type="button" onClick={() => sendResult(true)}>
+              打开
+            </ExternalOpenButton>
+          </ExternalActions>
+          <ExternalProgress />
+        </ExternalPrompt>
+      </ThemeProvider>
+    );
+  }
 
   return (
     <ThemeProvider theme={{ ...store.theme }}>

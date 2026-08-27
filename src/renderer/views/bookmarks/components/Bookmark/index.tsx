@@ -11,23 +11,24 @@ import {
   Site,
   RowActions,
   IconButton,
+  DeleteButton,
   FlagToggle,
 } from './style';
 import { IBookmark } from '~/interfaces';
 import store from '../../store';
-import { getBookmarkTitle } from '../../utils';
+import { getBookmarkPath, getBookmarkTitle } from '../../utils';
 import { getIconByUrlNet, parseBookmarklet } from '~/utils/url';
 import { setDraggedLinkData } from '~/renderer/views/app/utils/link-drop';
+import { ipcRenderer } from '~/common/renderer-ipc';
+import {
+  BOOKMARK_SORT_MIME,
+  hasBookmarkSortDrag,
+  getDraggedBookmarkId,
+} from '../../utils/drag';
 
 // 单击打开后,双击会再触发一次 click → 重复 window.open。按书签 _id 在短时间窗内去重,
 // 保证双击同一书签只开一个标签(不同书签不受影响)。
 let lastOpened: { id: string; at: number } | null = null;
-const BOOKMARK_SORT_MIME = 'application/x-rainsee-bookmark-sort';
-
-const hasBookmarkSortDrag = (dataTransfer: DataTransfer | null) => {
-  if (!dataTransfer) return false;
-  return Array.from(dataTransfer.types || []).includes(BOOKMARK_SORT_MIME);
-};
 
 const getDropPosition = (
   e: React.DragEvent<HTMLDivElement>,
@@ -71,12 +72,29 @@ const openBookmark = (item: IBookmark) => {
   }
 };
 
-const onClick = (item: IBookmark) => () => {
+const selectItem = (item: IBookmark) => {
   const index = store.selectedItems.indexOf(item._id);
   if (index === -1) {
     store.selectedItems.push(item._id);
   } else {
     store.selectedItems.splice(index, 1);
+  }
+};
+
+const openItem = (item: IBookmark) => {
+  if (item.isFolder) {
+    store.currentFolder = item._id;
+    store.selectedItems = [];
+    return;
+  }
+  openBookmark(item);
+};
+
+const onClick = (item: IBookmark, editing: boolean) => () => {
+  if (editing) {
+    selectItem(item);
+  } else {
+    openItem(item);
   }
 };
 
@@ -143,6 +161,18 @@ const onContextMenu = (data: IBookmark) => (e: any) => {
   // 移动设备书签只读,不弹右键菜单(编辑/删除均不可用)
   if (store.isReadOnly(data)) return;
 
+  // 与书签栏共用 Chrome 风格原生菜单，确保打开方式、剪切/复制/粘贴等
+  // 操作在书签管理器中保持一致。更多按钮仍保留本页的紧凑菜单。
+  const windowId = (window as any).windowId;
+  if (windowId != null) {
+    void ipcRenderer.invoke(
+      `show-bookmarks-bar-context-menu-${windowId}`,
+      { ...data },
+      'manager',
+    );
+    return;
+  }
+
   const { pageX, pageY } = e;
 
   store.menuVisible = true;
@@ -168,7 +198,9 @@ const onHandleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
 const onHandleDragStart = (data: IBookmark) => (
   e: React.DragEvent<HTMLButtonElement>,
 ) => {
-  if (!store.canDragSortBookmarks || !data._id) {
+  // 起拖门槛放宽到 canDragBookmarks:单文件/任意普通视图都可拖。
+  // 拖到同文件夹内另一卡片=排序(落点逻辑各自再门控),拖到文件夹/面包屑=移动。
+  if (!store.canDragBookmarks || !data._id || store.isReadOnly(data)) {
     e.preventDefault();
     return;
   }
@@ -187,6 +219,16 @@ const onCardDragOver = (data: IBookmark) => (
   e: React.DragEvent<HTMLDivElement>,
 ) => {
   if (!hasBookmarkSortDrag(e.dataTransfer) || !data._id) return;
+  // 文件夹卡片 = 移入目标(整卡高亮),不受排序条件限制。
+  if (data.isFolder) {
+    if (store.isReadOnly(data)) return; // 移动设备只读
+    if (store.draggedBookmarkId === data._id) return; // 不能拖进自身
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    store.setFolderDragInto(data._id);
+    return;
+  }
+  // 非文件夹:同文件夹内排序位置(内部已门控 canDragSortBookmarks)。
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
   store.updateBookmarkDragTarget(data._id, getDropPosition(e));
@@ -196,6 +238,15 @@ const onCardDrop = (data: IBookmark) => (e: React.DragEvent<HTMLDivElement>) => 
   if (!hasBookmarkSortDrag(e.dataTransfer) || !data._id) return;
   e.preventDefault();
   e.stopPropagation();
+  if (data.isFolder) {
+    // 拖到文件夹卡片 = 移入该文件夹(及其同组选中项)。
+    const draggedId = getDraggedBookmarkId(e.dataTransfer);
+    store.clearBookmarkDrag();
+    if (!draggedId) return;
+    const ids = store.getMoveSetFromDrag(draggedId);
+    store.moveItemsToFolder(ids, data._id);
+    return;
+  }
   store.commitBookmarkDrag(data._id, getDropPosition(e));
 };
 
@@ -234,6 +285,15 @@ const DotsGlyph = () => (
   </svg>
 );
 
+const TrashGlyph = () => (
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 7h16"></path>
+    <path d="M10 11v6M14 11v6"></path>
+    <path d="M6 7l1 13h10l1-13"></path>
+    <path d="M9 7V4h6v3"></path>
+  </svg>
+);
+
 const DragGlyph = () => (
   <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
     <circle cx="5" cy="4" r="1.2"></circle>
@@ -245,35 +305,48 @@ const DragGlyph = () => (
   </svg>
 );
 
-export const Bookmark = observer(({ data }: { data: IBookmark }) => {
-  const selected = store.selectedItems.includes(data._id);
-  const flagged = !!data._id && store.isFlagged(data._id);
-  const flash = store.flashId === data._id;
-  const sortable = store.canDragSortBookmarks;
-  const dragging = store.draggedBookmarkId === data._id;
-  const dropBefore =
-    store.dragOverBookmarkId === data._id && store.dragPosition === 'before';
-  const dropAfter =
-    store.dragOverBookmarkId === data._id && store.dragPosition === 'after';
+export const Bookmark = observer(
+  ({
+    data,
+    editing = false,
+    onRemove,
+  }: {
+    data: IBookmark;
+    editing?: boolean;
+    onRemove?: (e: React.MouseEvent) => void;
+  }) => {
+    const selected = store.selectedItems.includes(data._id);
+    const flagged = !!data._id && store.isFlagged(data._id);
+    const flash = store.flashId === data._id;
+    const sortable = store.canDragSortBookmarks;
+    // 可拖(排序或移动):普通视图且非只读项。拖拽手柄据此显示。
+    const draggable = store.canDragBookmarks && !store.isReadOnly(data);
+    const dragging = store.draggedBookmarkId === data._id;
+    const dropBefore =
+      store.dragOverBookmarkId === data._id && store.dragPosition === 'before';
+    const dropAfter =
+      store.dragOverBookmarkId === data._id && store.dragPosition === 'after';
+    const dropInto =
+      store.dragOverBookmarkId === data._id && store.dragPosition === 'into';
 
-  let faviconUrl: string | undefined;
+    let faviconUrl: string | undefined;
 
-  if (!data.isFolder) {
-    if (data.favicon) {
-      faviconUrl = data.favicon.startsWith('data:')
-        ? data.favicon
-        : store.favicons.get(data.favicon);
+    if (!data.isFolder) {
+      if (data.favicon) {
+        faviconUrl = data.favicon.startsWith('data:')
+          ? data.favicon
+          : store.favicons.get(data.favicon);
+      }
+
+      if (!faviconUrl && data.url) {
+        faviconUrl = getIconByUrlNet(data.url);
+      }
     }
 
-    if (!faviconUrl && data.url) {
-      faviconUrl = getIconByUrlNet(data.url);
-    }
-  }
-
-  return (
-    <Card
+    return (
+      <Card
       onContextMenu={onContextMenu(data)}
-      onClick={onClick(data)}
+      onClick={onClick(data, editing)}
       onDragOver={onCardDragOver(data)}
       onDrop={onCardDrop(data)}
       selected={selected}
@@ -281,7 +354,9 @@ export const Bookmark = observer(({ data }: { data: IBookmark }) => {
       dragging={dragging}
       dropBefore={dropBefore}
       dropAfter={dropAfter}
-      sortable={sortable}
+      dropInto={dropInto}
+      sortable={sortable && !editing}
+      editMode={editing && draggable}
       data-dragging={dragging ? 'true' : 'false'}
       data-bm-id={data._id}
     >
@@ -292,14 +367,15 @@ export const Bookmark = observer(({ data }: { data: IBookmark }) => {
       >
         {!flagged && <FlagCircleGlyph />}
       </FlagToggle>
-      {sortable && (
+      {draggable && (
         <DragHandle
           draggable
+          alwaysVisible={editing}
           onMouseDown={onHandleMouseDown}
           onClick={onHandleClick}
           onDragStart={onHandleDragStart(data)}
           onDragEnd={onHandleDragEnd}
-          title="拖拽排序"
+          title="拖拽排序或移动到文件夹"
         >
           <DragGlyph />
         </DragHandle>
@@ -315,15 +391,25 @@ export const Bookmark = observer(({ data }: { data: IBookmark }) => {
       </IconBox>
       <Info>
         <TitleAction
-          draggable={!data.isFolder && !!data.url}
-          onClick={onTitleClick(data)}
-          onDragStart={onTitleDragStart(data)}
+          onClick={editing ? undefined : onTitleClick(data)}
+          onDragStart={editing ? undefined : onTitleDragStart(data)}
+          draggable={!editing && !data.isFolder && !!data.url}
+          editing={editing}
         >
           {getBookmarkTitle(data)}
         </TitleAction>
-        {!data.isFolder && <Site>{data.url}</Site>}
+        {data.isFolder ? (
+          <Site title={getBookmarkPath(data)}>{getBookmarkPath(data)}</Site>
+        ) : (
+          <Site>{data.url}</Site>
+        )}
       </Info>
-      {!data.static && !store.isReadOnly(data) && (
+      {editing && !data.static && !store.isReadOnly(data) && (
+        <DeleteButton onClick={onRemove} title="删除">
+          <TrashGlyph />
+        </DeleteButton>
+      )}
+      {!editing && !data.static && !store.isReadOnly(data) && (
         <RowActions>
           <IconButton onClick={onEditClick(data)} title="编辑">
             <PencilGlyph />
@@ -333,6 +419,7 @@ export const Bookmark = observer(({ data }: { data: IBookmark }) => {
           </IconButton>
         </RowActions>
       )}
-    </Card>
-  );
-});
+      </Card>
+    );
+  },
+);

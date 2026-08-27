@@ -6,7 +6,7 @@ import { ITheme } from '~/interfaces';
 export const COL_WIDTH = 240;
 export const ROW_HEIGHT = 30;
 export const COL_GAP = 6;
-const PADDING = 8;
+export const PANEL_PADDING = 8;
 
 const fg = (theme?: ITheme) =>
   theme && theme['dialog.lightForeground'] ? '#fff' : '#161b2d';
@@ -39,7 +39,7 @@ export const Panel = styled.div`
   position: absolute;
   display: flex;
   flex-direction: column;
-  padding: ${PADDING}px;
+  padding: ${PANEL_PADDING}px;
   box-sizing: border-box;
   border-radius: 10px;
   box-shadow: 0 12px 16px rgba(0, 0, 0, 0.12), 0 8px 10px rgba(0, 0, 0, 0.16);
@@ -48,6 +48,10 @@ export const Panel = styled.div`
     background-color: ${theme && theme['dialog.backgroundColor']};
     color: ${fg(theme)};
   `}
+`;
+
+export const SubPanel = styled(Panel)`
+  min-width: ${COL_WIDTH + PANEL_PADDING * 2}px;
 `;
 
 // row-reverse:DOM 第 1 列(columns[0],书签顺序最前)落在视觉最右,紧贴更多按钮;
@@ -78,6 +82,7 @@ export const Column = styled.div<{ overflow: boolean }>`
 `;
 
 export const Row = styled.div`
+  position: relative;
   display: flex;
   align-items: center;
   height: ${ROW_HEIGHT}px;
@@ -87,9 +92,43 @@ export const Row = styled.div`
   font-size: 13px;
   white-space: nowrap;
   flex-shrink: 0;
+  user-select: none;
+
+  &[data-drag-source='true'] {
+    cursor: grabbing;
+  }
+
+  &[data-drop-position='before']::before,
+  &[data-drop-position='after']::after {
+    content: '';
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    z-index: 2;
+    height: 2px;
+    border-radius: 1px;
+    background: #1a73e8;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.7);
+  }
+
+  &[data-drop-position='before']::before {
+    top: -1px;
+  }
+
+  &[data-drop-position='after']::after {
+    bottom: -1px;
+  }
+
   ${({ theme }: { theme?: ITheme }) => css`
     &:hover {
       background-color: ${hoverBg(theme)};
+    }
+
+    &[data-drop-position='inside'] {
+      background-color: ${theme && theme['dialog.lightForeground']
+        ? 'rgba(138,180,248,0.24)'
+        : 'rgba(26,115,232,0.18)'};
+      box-shadow: inset 0 0 0 1px rgba(26, 115, 232, 0.58);
     }
   `}
 `;
@@ -111,6 +150,13 @@ export const Title = styled.div`
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
+`;
+
+export const RowTail = styled.div`
+  margin-left: 8px;
+  flex-shrink: 0;
+  opacity: 0.55;
+  font-size: 12px;
 `;
 
 // 二级「返回」按钮(仅 role==='sub' && canBack 显示)

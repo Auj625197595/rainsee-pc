@@ -100,7 +100,7 @@ export const RangeNav = styled.nav`
   gap: 2px;
 `;
 
-export const RangeButton = styled.div`
+export const RangeButton = styled.div<{selected?: boolean}>`
   display: flex;
   align-items: center;
   gap: 12px;
@@ -122,7 +122,7 @@ export const RangeButton = styled.div`
   }}
 `;
 
-export const RangeIconBox = styled.span`
+export const RangeIconBox = styled.span<{selected?: boolean}>`
   display: flex;
   align-items: center;
   justify-content: center;
@@ -142,7 +142,7 @@ export const RangeIconBox = styled.span`
   }}
 `;
 
-export const RangeLabel = styled.span`
+export const RangeLabel = styled.span<{selected?: boolean}>`
   flex: 1;
   min-width: 0;
   font-size: 14px;
@@ -159,7 +159,7 @@ export const RangeLabel = styled.span`
   }}
 `;
 
-export const RangeCount = styled.span`
+export const RangeCount = styled.span<{selected?: boolean}>`
   font-size: 12px;
 
   ${({ theme, selected }: { theme?: ITheme; selected?: boolean }) => {
@@ -180,21 +180,39 @@ export const BottomActions = styled.div`
   `}
 `;
 
-export const ClearButton = styled.div`
+export const SidebarAction = styled.button`
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 10px 12px;
+  border: 0;
   border-radius: 12px;
   cursor: pointer;
   font-size: 14px;
   font-weight: 600;
+  font-family: inherit;
+  text-align: left;
   transition: background-color 0.16s ease;
 
   svg {
     flex-shrink: 0;
   }
 
+  ${({ theme }: { theme?: ITheme }) => {
+    const p = getPalette(theme);
+    return css`
+      color: ${p.textMain};
+      background: transparent;
+
+      &:hover {
+        background-color: ${p.surface};
+      }
+    `;
+  }}
+`;
+
+export const ClearButton = styled(SidebarAction)`
   ${({ theme }: { theme?: ITheme }) => {
     const p = getPalette(theme);
     return css`
@@ -205,6 +223,16 @@ export const ClearButton = styled.div`
       }
     `;
   }}
+`;
+
+export const ActionStatus = styled.div`
+  margin: 6px 12px 4px;
+  font-size: 11px;
+  line-height: 1.45;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textSub};
+  `}
 `;
 
 // ===== 内容区 =====

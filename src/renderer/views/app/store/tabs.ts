@@ -8,7 +8,7 @@ import {
 } from 'mobx';
 import * as React from 'react';
 
-import {ITab, ITabGroup} from '../models';
+import { ITab, ITabGroup } from '../models';
 
 import {
   TAB_ANIMATION_DURATION,
@@ -26,12 +26,18 @@ import {
 } from '../constants';
 
 import store from '.';
-import {ipcRenderer} from 'electron';
-import {TOOLBAR_HEIGHT, ADD_TAB_BUTTON_WIDTH} from '~/constants/design';
-import {TabEvent} from '~/interfaces/tabs';
-import {getWebUIURL} from "~/common/webui";
-import {prefixHttp} from '~/utils';
-import {isImmersiveHeaderWindow} from '../utils/windows';
+import { ipcRenderer } from 'electron';
+import { TOOLBAR_HEIGHT, ADD_TAB_BUTTON_WIDTH } from '~/constants/design';
+import { TabEvent } from '~/interfaces/tabs';
+import { getWebUIURL } from '~/common/webui';
+import { prefixHttp } from '~/utils';
+import { isImmersiveHeaderWindow } from '../utils/windows';
+
+export interface AddTabsBehavior {
+  loadImmediately?: boolean;
+  preserveActiveTab?: boolean;
+  persist?: boolean;
+}
 
 // 最近关闭标签的快照:「最近关闭」按钮列表数据源。按窗口、仅内存。
 export interface IClosedTabSnapshot {
@@ -45,11 +51,19 @@ export interface IClosedTabSnapshot {
 export class TabsStore {
   public isDragging = false;
 
+  // 顶部标签栏正在拖动的分组。分组芯片与普通标签共用全局 mousemove/mouseup，
+  // 但移动时以整个成员块为单位重排，不能借用 selectedTab 的单标签逻辑。
+  public draggingGroupId = -1;
+  private groupOrderChanged = false;
+
   public hoveredTabId = -1;
 
   public list: ITab[] = [];
 
   public selectedTabId = -1;
+
+  // 当前窗口内的标签激活顺序，最新激活的 id 在最前面。
+  private recentlyActiveTabIds: number[] = [];
 
   public removedTabs = 0;
 
@@ -72,7 +86,11 @@ export class TabsStore {
   private closedSeq = 0;
 
   // 占位标签 id 自增序列:负数,与真实 webContents.id(正数)不冲突。
+  // -1 被各类“无选中/无拖拽目标”状态用作哨兵值,必须保留不用。
   private placeholderSeq = 0;
+
+  // 悬停恢复过程中若用户点击该标签，创建完成后仍需执行正常选中流程。
+  private discardedTabsPendingSelection = new WeakSet<ITab>();
 
   public canShowPreview = true;
 
@@ -91,6 +109,8 @@ export class TabsStore {
   public containerRef = React.createRef<HTMLDivElement>();
 
   public leftMargins = 0;
+  public slotMargin = CHIP_SLOT_MARGIN;
+  public slotPadding = TABS_PADDING;
 
   public get selectedTab() {
     return this.getTabById(this.selectedTabId);
@@ -104,15 +124,20 @@ export class TabsStore {
     makeObservable(this, {
       list: observable,
       isDragging: observable,
+      draggingGroupId: observable,
       hoveredTabId: observable,
       selectedTabId: observable,
       scrollable: observable,
       pendingGroupDropId: observable,
       linkDropLeft: observable,
       sidebarDragId: observable,
+      sidebarDragGroupId: observable,
       sidebarDropTargetId: observable,
       sidebarDropBefore: observable,
       sidebarDropGroupId: observable,
+      sidebarDropGroupTargetId: observable,
+      sidebarDropGroupBefore: observable,
+      sidebarDropOutside: observable,
       panelGroupCollapsed: observable,
       panelVisible: observable,
       recentlyClosed: observable,
@@ -136,6 +161,12 @@ export class TabsStore {
       },
     );
 
+    reaction(
+      () => this.selectedTabId,
+      (id) => this.recordTabActivation(id),
+      { fireImmediately: true },
+    );
+
     window.addEventListener('mouseup', this.onMouseUp);
     window.addEventListener('mousemove', this.onMouseMove);
     window.addEventListener('resize', this.onResize);
@@ -157,7 +188,9 @@ export class TabsStore {
       this.cancelPreviewHide();
     });
     ipcRenderer.on('tabgroup-preview-leave', () => {
-      this.schedulePreviewHide(0);
+      // 弹窗与标签组之间存在阴影留白，返回标签组时也需要给另一侧的 enter
+      // 留出接管时间，避免弹窗先被立即隐藏后又延迟重开。
+      this.schedulePreviewHide();
     });
 
     // 侧边栏缩放模式悬停浮层(独立 BrowserView)回传的交互与鼠标进出。
@@ -182,31 +215,37 @@ export class TabsStore {
         id: number,
         openerTabId?: number,
       ) => {
+        // 只有网页通过 window.open/target=_blank 新建标签时才继承明确来源标签的分组；
+        // Ctrl+T、菜单和其他用户入口没有 opener，必须创建普通的非分组标签。
+        const effectiveOpenerTabId =
+          typeof openerTabId === 'number'
+            ? openerTabId
+            : typeof options.openerTabId === 'number'
+            ? options.openerTabId
+            : undefined;
+        const opener =
+          typeof effectiveOpenerTabId === 'number'
+            ? this.getTabById(effectiveOpenerTabId)
+            : undefined;
+        const anchor = opener || this.selectedTab;
+        const tabGroupId = opener && !opener.isPinned ? opener.tabGroupId : -1;
+
         if (isNext) {
           // window.open/target=_blank 必须紧跟来源标签。异步创建期间用户可能
           // 已切换标签，多开时 selectedTab 也会变化，因此优先使用明确的来源 id。
-          const opener =
-            typeof openerTabId === 'number' ? this.getTabById(openerTabId) : undefined;
-          const anchor = opener || this.selectedTab;
           const anchorIndex = this.list.indexOf(anchor);
           options.index = anchorIndex >= 0 ? anchorIndex + 1 : this.list.length;
         }
 
-        this.createTab(options, id, -1, {skipScrollToEnd: isNext});
+        this.createTab(options, id, tabGroupId, {
+          skipScrollToEnd: isNext,
+          openerTabId: opener?.id,
+        });
       },
     );
 
     ipcRenderer.on('select-next-tab', () => {
-      const i = this.list.indexOf(this.selectedTab);
-      const nextTab = this.list[i + 1];
-
-      if (!nextTab) {
-        if (this.list[0]) {
-          this.list[0].select();
-        }
-      } else {
-        nextTab.select();
-      }
+      this.switchAdjacentTab(1);
     });
 
     ipcRenderer.on('select-tab-index', (e, i) => {
@@ -217,22 +256,49 @@ export class TabsStore {
       this.list[this.list.length - 1]?.select();
     });
 
-    ipcRenderer.on('select-previous-tab', () => {
-      const i = this.list.indexOf(this.selectedTab);
-      const prevTab = this.list[i - 1];
+    // 左键长按手势打开链接:由主进程转发到当前窗口,这里根据 renderer 的
+    // 唯一标签顺序计算当前标签左右插入点,因此与标签栏拖放完全一致。
+    ipcRenderer.on(
+      'left-gesture-open-link',
+      (
+        _e,
+        payload: { url?: string; side?: 'left' | 'right'; active?: boolean },
+      ) => {
+        const url = typeof payload?.url === 'string' ? payload.url : '';
+        if (!url) return;
+        const current = this.selectedTab;
+        const currentIndex = current
+          ? this.list.indexOf(current)
+          : this.list.length - 1;
+        const index = Math.max(
+          0,
+          currentIndex + (payload.side === 'left' ? 0 : 1),
+        );
+        this.openLinkAt(url, index, -1, payload.active !== false).catch(
+          () => undefined,
+        );
+      },
+    );
 
-      if (!prevTab) {
-        if (this.list[this.list.length - 1]) {
-          this.list[this.list.length - 1].select();
-        }
-      } else {
-        prevTab.select();
-      }
+    ipcRenderer.on('select-previous-tab', () => {
+      this.switchAdjacentTab(-1);
     });
 
     ipcRenderer.on('remove-tab', (e, id: number) => {
       this.getTabById(id)?.close();
     });
+
+    // 后台 renderer 崩溃后，主进程已释放 BrowserView；保留原标签位置和元数据，
+    // 改成与启动恢复相同的 discarded 占位标签，用户切回时才创建并加载。
+    ipcRenderer.on(
+      'discard-crashed-tab',
+      (
+        _e,
+        payload: { id: number; url: string; title?: string; favicon?: string },
+      ) => {
+        this.discardCrashedTab(payload);
+      },
+    );
 
     // 标签被迁出到其它窗口:本窗口仅移除模型,不销毁 view。
     ipcRenderer.on('tab-detached-local', (e, id: number) => {
@@ -242,7 +308,7 @@ export class TabsStore {
     // 领养来自其它窗口的标签:用已存在的 view id 构造标签模型并插入。
     // 不调用 view-create(view 已由主进程迁入本窗口)。
     ipcRenderer.on('tab-adopt', (e, tabState: any) => {
-      const {id, index} = tabState;
+      const { id, index } = tabState;
       if (this.getTabById(id)) return; // 幂等,避免重复领养
 
       const tab = this.createTab(
@@ -266,7 +332,7 @@ export class TabsStore {
 
       if (tab) {
         if (event === 'blocked-ad') {
-          tab.blockedAds.push({request: args[0], result: args[1]});
+          tab.blockedAds.push({ request: args[0], result: args[1] });
           tab.filtersCount = args[2];
         }
         if (event === 'title-updated') {
@@ -303,11 +369,6 @@ export class TabsStore {
           tab.canInstallPwa = !!args[0];
           tab.pwaManifest = args[1] || null;
           tab.pwaInstalled = !!args[2];
-          // 可安装时条件预热安装确认弹窗,使首次点击安装图标即秒开;
-          // 不可安装页面不浪费一个 React 包的加载。
-          if (tab.canInstallPwa) {
-            ipcRenderer.send(`warmup-install-app-${store.windowId}`);
-          }
         }
         if (event === 'pwa-installed') {
           tab.pwaInstalled = !!args[0];
@@ -353,19 +414,38 @@ export class TabsStore {
       this.list.forEach((tab) => tab.refreshSiteWhitelisted());
     });
 
-    ipcRenderer.on('get-search-tabs', () => {
+    ipcRenderer.on('search-tabs-request', (_event, requestId: string) => {
       // overlay 是镜像:搜索标签列表由主渲染进程权威响应,overlay 不得双响应。
       if (isImmersiveHeaderWindow()) return;
-      ipcRenderer.send(
-        'get-search-tabs',
-        this.list.map((tab) => ({
+      ipcRenderer.send('search-tabs-response', {
+        requestId,
+        tabs: this.list.map((tab) => ({
           favicon: tab.favicon,
           url: tab.url,
           title: tab.title,
           id: tab.id,
         })),
-      );
+      });
     });
+
+    ipcRenderer.on('search-select-tab', (e, tabId: number) => {
+      this.getTabById(tabId)?.select();
+    });
+  }
+
+  /** 按完整标签顺序切换相邻项，越过首尾时回绕。 */
+  public switchAdjacentTab(direction: 1 | -1): boolean {
+    if (this.list.length === 0) return false;
+
+    const currentIndex = this.list.indexOf(this.selectedTab);
+    let nextIndex = currentIndex + direction;
+    if (nextIndex < 0) nextIndex = this.list.length - 1;
+    else if (nextIndex >= this.list.length) nextIndex = 0;
+
+    const next = this.list[nextIndex];
+    if (!next) return false;
+    next.select();
+    return true;
   }
 
   @action
@@ -402,7 +482,96 @@ export class TabsStore {
   }
 
   public getTabById(id: number) {
+    if (id === -1) return undefined;
     return this.list.find((x) => x.id === id);
+  }
+
+  private recordTabActivation(id: number) {
+    if (id === -1) return;
+    this.recentlyActiveTabIds = [
+      id,
+      ...this.recentlyActiveTabIds.filter((tabId) => tabId !== id),
+    ];
+  }
+
+  public getRecentlyActiveTab(excludeId: number): ITab | undefined {
+    for (const id of this.recentlyActiveTabIds) {
+      if (id === excludeId) continue;
+      const tab = this.getTabById(id);
+      if (tab && !tab.isClosing) return tab;
+    }
+    return undefined;
+  }
+
+  public getTabToSelectAfterRemoval(
+    tab: ITab,
+    availableTabs = this.list.filter((item) => !item.isClosing),
+  ): ITab | undefined {
+    const index = availableTabs.indexOf(tab);
+    const leftTab = availableTabs[index - 1];
+    const rightTab = availableTabs[index + 1];
+    const opener = this.getTabById(tab.openerTabId);
+
+    // 与 Chrome 一致：有仍然可用的来源页时始终回到来源页。用户设置只决定
+    // 没有来源页（或来源页已经关闭）时由哪个标签接管。
+    if (opener && availableTabs.includes(opener)) return opener;
+
+    const behavior = store.settings.object.tabCloseSelectionBehavior || 'right';
+
+    if (behavior === 'left') return leftTab || rightTab;
+    if (behavior === 'recent') {
+      return this.getRecentlyActiveTab(tab.id) || rightTab || leftTab;
+    }
+
+    return rightTab || leftTab;
+  }
+
+  @action
+  public discardCrashedTab(payload: {
+    id: number;
+    url: string;
+    title?: string;
+    favicon?: string;
+  }) {
+    const tab = this.getTabById(payload.id);
+    // 主进程仅对后台标签调用；若 IPC 到达前用户已选中，保留当前模型，
+    // 随后的主进程前台恢复会接管这个标签。
+    if (!tab || this.selectedTabId === payload.id) return;
+
+    const oldId = tab.id;
+    const placeholderId = this.nextPlaceholderId();
+    store.startupTabs.beginReplacingStartupTabId(oldId, placeholderId);
+
+    tab.id = placeholderId;
+    tab.url = payload.url || tab.url;
+    if (payload.title) tab.title = payload.title;
+    if (payload.favicon) tab.favicon = payload.favicon;
+    tab.addressbarValue = null;
+    tab.loading = false;
+    tab.discarded = true;
+    tab.materializing = false;
+    tab.isPlaying = false;
+    tab.videoUrls = [];
+    tab.canTranslate = false;
+    tab.translated = false;
+    tab.canInstallPwa = false;
+
+    if (this.hoveredTabId === oldId) this.hoveredTabId = placeholderId;
+    if (process.env.ENABLE_EXTENSIONS) {
+      store.extensions.browserActions = store.extensions.browserActions.filter(
+        (action) => action.tabId !== oldId,
+      );
+    }
+
+    void store.startupTabs.replaceStartupTabId(oldId, placeholderId, {
+      url: tab.url,
+      title: tab.title,
+      favicon: tab.favicon,
+      pinned: tab.isPinned,
+      tabGroupId: tab.tabGroupId,
+      order: this.list.indexOf(tab),
+      active: false,
+    });
   }
 
   @action
@@ -410,13 +579,19 @@ export class TabsStore {
     options: chrome.tabs.CreateProperties,
     id: number,
     tabGroupId = -1,
-    openOpts: { skipScrollToEnd?: boolean } = {},
+    openOpts: { skipScrollToEnd?: boolean; openerTabId?: number } = {},
   ) {
     this.removedTabs = 0;
 
     const tab = new ITab(options, id);
 
     tab.tabGroupId = tabGroupId;
+    if (
+      typeof openOpts.openerTabId === 'number' &&
+      openOpts.openerTabId !== id
+    ) {
+      tab.openerTabId = openOpts.openerTabId;
+    }
 
     if (options.index !== undefined) {
       this.list.splice(options.index, 0, tab);
@@ -441,8 +616,11 @@ export class TabsStore {
   public createTabs(
     options: chrome.tabs.CreateProperties[],
     ids: number[],
+    persist = true,
   ) {
     this.removedTabs = 0;
+
+    if (!persist) store.startupTabs.suppressPersistence(ids);
 
     const tabs = options.map((option, i) => {
       const tab = new ITab(option, ids[i]);
@@ -450,6 +628,8 @@ export class TabsStore {
       // tabGroupId 形参,需在此显式回填,否则恢复的组内标签 tabGroupId 恒为 -1)。
       const gid = (option as any).tabGroupId;
       if (typeof gid === 'number') tab.tabGroupId = gid;
+      if ((option as any).workspaceKey)
+        tab.workspaceKey = String((option as any).workspaceKey);
       this.list.push(tab);
       return tab;
     });
@@ -461,8 +641,12 @@ export class TabsStore {
           this.containerRef.current.scrollWidth;
       }
     });
-    for (let tab of tabs) {
-      store.startupTabs.updateStartupTabItem(tab);
+    if (persist) {
+      for (const tab of tabs) {
+        void store.startupTabs.updateStartupTabItem(tab).catch((error) => {
+          console.error('[startup-tabs] failed to persist restored tab', error);
+        });
+      }
     }
 
     return tabs;
@@ -496,19 +680,32 @@ export class TabsStore {
 
   @action
   public async addTab(
-    options: { url: string, active: boolean, title?: string, favicon?: string } = {url: null, active: true},
-    tabGroupId: number = undefined,
+    options: {
+      url: string;
+      active: boolean;
+      title?: string;
+      favicon?: string;
+    } = { url: null, active: true },
+    tabGroupId: number = -1,
   ) {
     // 沉浸悬浮头部:新建标签回传主渲染进程执行(建 view + 写库都在真实 store)。
     if (isImmersiveHeaderWindow()) {
-      ipcRenderer.send(`immersive-header-cmd-${store.windowId}`, { type: 'new' });
+      ipcRenderer.send(`immersive-header-cmd-${store.windowId}`, {
+        type: 'new',
+        options,
+        tabGroupId,
+      });
       return undefined;
     }
 
+    // 普通新建默认不分组；右键菜单等需要归入指定分组时显式传入组 ID。
+    const effectiveTabGroupId = tabGroupId;
+    const anchor = this.selectedTab;
+
     const defaultTabOptions = {
-      url: getWebUIURL("newtab"),
-      active: true
-    }
+      url: getWebUIURL('newtab'),
+      active: true,
+    };
     // 是否为「空白新标签页」:调用方未指定 url(点「+」、侧栏新建等),且启动行为
     // 未配置「打开特定页面」。据此在创建后把焦点交给地址栏;打开指定网址/搜索词/
     // 恢复已关闭标签/打开特定页面则不聚焦。
@@ -526,14 +723,29 @@ export class TabsStore {
     console.log('[PDF Drag-Drop] addTab called, options.url:', options.url);
     ipcRenderer.send(`hide-window-${store.windowId}`);
 
-    const opts = {...defaultTabOptions, ...options};
+    const opts: chrome.tabs.CreateProperties = {
+      ...defaultTabOptions,
+      ...options,
+    };
+    if (effectiveTabGroupId !== -1 && opts.index === undefined) {
+      // 显式从非当前分组的右键菜单新建时，以目标组末尾成员为锚点，不能误用
+      // 当前选中标签；普通新建则仍紧跟当前组内标签。
+      const groupAnchor =
+        anchor && anchor.tabGroupId === effectiveTabGroupId
+          ? anchor
+          : [...this.list]
+              .reverse()
+              .find((tab) => tab.tabGroupId === effectiveTabGroupId);
+      const anchorIndex = this.list.indexOf(groupAnchor);
+      if (anchorIndex >= 0) opts.index = anchorIndex + 1;
+    }
     console.log('[PDF Drag-Drop] addTab opts to IPC:', opts);
 
     const id: number = await ipcRenderer.invoke(
       `view-create-${store.windowId}`,
       opts,
     );
-    const tab = this.createTab(opts, id, tabGroupId);
+    const tab = this.createTab(opts, id, effectiveTabGroupId);
     // 空白新标签页:光标自动聚焦到地址栏输入框,便于直接输入搜索词/网址。
     // ITab 构造已按 url 推断 addressbarFocused,但推断依赖两次 getWebUIURL 取值一致
     // (中间隔着 await view-create,storeNewTabTemp/ck 可能被 update-newtab-url/
@@ -555,14 +767,22 @@ export class TabsStore {
 
   // 占位标签 id(负数,与真实 webContents.id 不冲突)。
   private nextPlaceholderId(): number {
-    return -(++this.placeholderSeq);
+    return -(++this.placeholderSeq + 1);
   }
 
   @action
-  public async addTabs(options: chrome.tabs.CreateProperties[]) {
+  public async addTabs(
+    options: chrome.tabs.CreateProperties[],
+    behavior: AddTabsBehavior = {},
+  ) {
+    const {
+      loadImmediately = false,
+      preserveActiveTab = false,
+      persist = true,
+    } = behavior;
     //ipcRenderer.send(`hide-window-${store.windowId}`);
-    let activeCount = options.filter(it => it.active).length;
-    if(activeCount != 1) {
+    let activeCount = options.filter((it) => it.active).length;
+    if (activeCount !== 1 && !(activeCount === 0 && preserveActiveTab)) {
       for (let i = 0; i < options.length; i++) {
         if (i === options.length - 1) {
           options[i].active = true;
@@ -572,7 +792,7 @@ export class TabsStore {
       }
     }
 
-    if (store.settings.object.memorySaver) {
+    if (store.settings.object.memorySaver && !loadImmediately) {
       // 内存节省:恢复时仅建占位标签(标签栏 UI),不创建 BrowserView。
       // 占位标签用本地负数 id;切换到它时由 loadDiscardedTab 走标准
       // view-create 新建流程加载,得到真实 webContents.id。
@@ -581,14 +801,14 @@ export class TabsStore {
         discarded: true,
       }));
       const ids = options.map(() => this.nextPlaceholderId());
-      return this.createTabs(options, ids);
+      return this.createTabs(options, ids, persist);
     }
 
     const ids = await ipcRenderer.invoke(
       `views-create-${store.windowId}`,
       options,
     );
-    return this.createTabs(options, ids);
+    return this.createTabs(options, ids, persist);
   }
 
   // 占位标签(discarded)加载内容:走标准新建标签流程(view-create),复用与
@@ -596,8 +816,12 @@ export class TabsStore {
   // 返回真实 webContents.id。就地把占位 tab 的 id 更新为真实 id(保持标签栏
   // 位置与引用不变),并按真实 id 注册 browser action,杜绝 id 错位。
   @action
-  public async loadDiscardedTab(tab: ITab) {
-    if (!tab.discarded || tab.materializing) return;
+  public async loadDiscardedTab(tab: ITab, selectAfterLoad = true) {
+    if (!tab.discarded) return;
+    if (tab.materializing) {
+      if (selectAfterLoad) this.discardedTabsPendingSelection.add(tab);
+      return;
+    }
 
     tab.materializing = true;
     // 先切到与普通标签一致的 UI:点击后立即显示旋转进度条,
@@ -607,7 +831,7 @@ export class TabsStore {
     try {
       const realId: number = await ipcRenderer.invoke(
         `view-create-${store.windowId}`,
-        {url: tab.url},
+        { url: tab.url },
       );
 
       const oldId = tab.id;
@@ -618,7 +842,7 @@ export class TabsStore {
 
       // 占位时未注册 browser action,现按真实 id 注册(工具栏扩展按钮,如篡改猴)。
       if (process.env.ENABLE_EXTENSIONS) {
-        const {defaultBrowserActions} = store.extensions;
+        const { defaultBrowserActions } = store.extensions;
         for (const item of defaultBrowserActions) {
           store.extensions.addBrowserActionToTab(realId, item);
         }
@@ -627,11 +851,16 @@ export class TabsStore {
       // startupTabs DB 的 id 同步改写(占位 id → 真实 id)。
       await store.startupTabs.replaceStartupTabId(oldId, realId);
 
-      // 选中并显示(discarded 已 false,走正常 select → view-select)。
-      await tab.select();
+      const shouldSelect =
+        selectAfterLoad || this.discardedTabsPendingSelection.has(tab);
+      this.discardedTabsPendingSelection.delete(tab);
+
+      // 点击路径选中并显示；悬停路径只在后台创建 View。
+      if (shouldSelect) await tab.select();
     } catch (error) {
       // 创建失败时回到占位静默态,避免标签一直卡在 loading。
       tab.loading = false;
+      this.discardedTabsPendingSelection.delete(tab);
       throw error;
     } finally {
       tab.materializing = false;
@@ -640,6 +869,9 @@ export class TabsStore {
 
   public removeTab(id: number) {
     (this.list as any).remove(this.getTabById(id));
+    this.recentlyActiveTabIds = this.recentlyActiveTabIds.filter(
+      (tabId) => tabId !== id,
+    );
     store.startupTabs.removeStartupTabItem(id);
   }
 
@@ -653,16 +885,15 @@ export class TabsStore {
     const wasSelected = this.selectedTabId === id;
 
     const notClosing = this.list.filter((x) => !x.isClosing);
-    const idx = notClosing.indexOf(tab);
 
-    // 移除前先算好相邻标签,供迁出后接管选中。
-    const neighbor = notClosing[idx + 1] || notClosing[idx - 1];
+    // 移除前按用户配置算好接管标签；迁出后原标签已不在本窗口。
+    const nextTab = this.getTabToSelectAfterRemoval(tab, notClosing);
 
     this.removeTab(id);
 
     if (wasSelected) {
-      if (neighbor && !neighbor.isClosing) {
-        neighbor.select();
+      if (nextTab && !nextTab.isClosing) {
+        nextTab.select();
       } else if (this.list.length === 0) {
         // 本窗口已空,主进程会关闭它,无需处理。
         this.selectedTabId = -1;
@@ -761,6 +992,10 @@ export class TabsStore {
 
   @action
   public updateTabsBounds(animation: boolean) {
+    // 沉浸悬浮头部本身直接显隐，内部标签布局也必须瞬时落位；否则 resize / mouseleave
+    // 触发的重算会用 anime.js 改变 width/translateX，看起来像头部横向缩放。
+    if (isImmersiveHeaderWindow()) animation = false;
+
     this.calculateTabMargins();
     this.setTabsWidths(animation);
     // setTabGroupsLefts 已并入 setTabsLefts:芯片本体即 slot 元素,在那里定位。
@@ -814,36 +1049,135 @@ export class TabsStore {
   @action
   public calculateTabMargins() {
     const slots = this.getSlots();
-    // 每个 slot 之间留 CHIP_SLOT_MARGIN 间距(首个为 0)。组与标签、组与组之间
-    // 统一间距——芯片的彩色背景足以做视觉分隔,不再需要为独立 placeholder 预留偏移。
-    this.leftMargins = Math.max(0, (slots.length - 1) * CHIP_SLOT_MARGIN);
+    const gapCount = Math.max(0, slots.length - 1);
+    const shrinkTabs = store.settings.object.tabOverflowBehavior === 'shrink';
+
+    if (shrinkTabs) {
+      // 空间充足时保留完整间距，让选中标签的描边与相邻标签之间有清晰呼吸感；
+      // 标签增多后只使用不挤占 36px 图标态宽度的剩余空间，间距会自然降到 0。
+      const availableWidth = Math.max(
+        0,
+        this.containerWidth - ADD_TAB_BUTTON_WIDTH - 6,
+      );
+      const iconOnlyWidth = 36;
+      const affordableMargin =
+        gapCount > 0
+          ? (availableWidth - slots.length * iconOnlyWidth) / gapCount
+          : CHIP_SLOT_MARGIN;
+      this.slotMargin = Math.max(
+        0,
+        Math.min(CHIP_SLOT_MARGIN, affordableMargin),
+      );
+      this.slotPadding = 0;
+    } else {
+      this.slotMargin = CHIP_SLOT_MARGIN;
+      this.slotPadding = TABS_PADDING;
+    }
+
+    // 首个 slot 无间距；其余 slot 使用当前模式算出的统一间距。
+    this.leftMargins = gapCount * this.slotMargin;
   }
 
   @action
   public setTabsWidths(animation: boolean) {
     const slots = this.getSlots();
     const containerWidth = this.containerWidth;
+    const shrinkTabs = store.settings.object.tabOverflowBehavior === 'shrink';
     let scrollable = false;
 
-    // Pass A:组的芯片宽度按内容解析计算(不参与平分)。
+    // Pass A:先解析标签组的理想宽度。滚动模式保持原来的固定芯片宽度；持续
+    // 缩小模式仅在固定标签和标签组本身已经塞不下时才按比例压缩它们。
+    const chipWidths = new Map<number, number>();
     let chipWidthsTotal = 0;
     for (const slot of slots) {
       if (slot.kind === 'group') {
         const w = this.computeChipWidth(slot.group);
-        slot.group.setWidth(w, animation);
-        chipWidthsTotal += w + TABS_PADDING;
-        if (w >= CHIP_MAX_WIDTH) scrollable = true;
+        chipWidths.set(slot.group.id, w);
+        chipWidthsTotal += w + this.slotPadding;
+        if (!shrinkTabs && w >= CHIP_MAX_WIDTH) scrollable = true;
       }
     }
 
-    // Pass B:非固定、非分组标签平分剩余宽度。
+    // Pass B:普通固定项优先保留宽度；非固定标签组与普通标签作为同级槽位，
+    // 平分剩余空间。这样持续缩小时，标签组不会一直挤占固定宽度。
     const pinnedSlots = slots.filter(
       (s) => s.kind === 'tab' && s.tab.isPinned,
     ).length;
-    const pinnedWidthsTotal = pinnedSlots * (TAB_PINNED_WIDTH + TABS_PADDING);
+    const pinnedWidthsTotal =
+      pinnedSlots * (TAB_PINNED_WIDTH + this.slotPadding);
+    const pinnedGroupWidthsTotal = slots.reduce(
+      (sum, slot) =>
+        slot.kind === 'group' && slot.group.isPinned
+          ? sum + (chipWidths.get(slot.group.id) || 0)
+          : sum,
+      0,
+    );
+    const flexibleSlots =
+      slots.filter(
+        (s) =>
+          (s.kind === 'tab' && !s.tab.isPinned) ||
+          (s.kind === 'group' && !s.group.isPinned),
+      ).length + this.removedTabs;
+
+    if (shrinkTabs) {
+      this.scrollingToEnd = false;
+      if (this.containerRef.current?.scrollLeft) {
+        this.containerRef.current.scrollLeft = 0;
+      }
+
+      const fixedPreferred =
+        pinnedSlots * TAB_PINNED_WIDTH + pinnedGroupWidthsTotal;
+      const slotPadding = (slots.length + this.removedTabs) * this.slotPadding;
+      const widthCapacity = Math.max(
+        0,
+        containerWidth -
+          ADD_TAB_BUTTON_WIDTH -
+          6 -
+          this.leftMargins -
+          slotPadding,
+      );
+      const fixedScale =
+        fixedPreferred > widthCapacity && fixedPreferred > 0
+          ? widthCapacity / fixedPreferred
+          : 1;
+      const remainingWidth = Math.max(
+        0,
+        widthCapacity - fixedPreferred * fixedScale,
+      );
+      const sharedWidth =
+        flexibleSlots > 0
+          ? Math.min(TAB_MAX_WIDTH, remainingWidth / flexibleSlots)
+          : TAB_MAX_WIDTH;
+
+      for (const slot of slots) {
+        if (slot.kind === 'group') {
+          slot.group.setWidth(
+            slot.group.isPinned
+              ? (chipWidths.get(slot.group.id) || 0) * fixedScale
+              : sharedWidth,
+            animation,
+          );
+          continue;
+        }
+        slot.tab.setWidth(
+          slot.tab.isPinned ? TAB_PINNED_WIDTH * fixedScale : sharedWidth,
+          animation,
+        );
+      }
+
+      this.scrollable = false;
+      return;
+    }
+
     const shareTabs =
       slots.filter((s) => s.kind === 'tab' && !s.tab.isPinned).length +
       this.removedTabs;
+
+    for (const slot of slots) {
+      if (slot.kind === 'group') {
+        slot.group.setWidth(chipWidths.get(slot.group.id) || 0, animation);
+      }
+    }
 
     const reserved =
       ADD_TAB_BUTTON_WIDTH +
@@ -859,7 +1193,7 @@ export class TabsStore {
       if (tab.isPinned) {
         width = TAB_PINNED_WIDTH;
       } else if (shareTabs > 0) {
-        width = (containerWidth - reserved) / shareTabs - TABS_PADDING;
+        width = (containerWidth - reserved) / shareTabs - this.slotPadding;
         if (width > TAB_MAX_WIDTH) width = TAB_MAX_WIDTH;
         if (width < TAB_MIN_WIDTH) width = TAB_MIN_WIDTH;
       } else {
@@ -882,17 +1216,20 @@ export class TabsStore {
     for (let i = 0; i < slots.length; i++) {
       const slot = slots[i];
       // 首个 slot 无左间距,其余按 CHIP_SLOT_MARGIN。
-      left += i === 0 ? 0 : CHIP_SLOT_MARGIN;
+      left += i === 0 ? 0 : this.slotMargin;
 
       if (slot.kind === 'group') {
-        slot.group.setLeft(left, animation);
+        // 正在拖动的芯片由指针直接定位；这里只动画其余槽位让位。
+        if (slot.group.id !== this.draggingGroupId) {
+          slot.group.setLeft(left, animation);
+        }
       } else if (!slot.tab.isDragging) {
         slot.tab.setLeft(left, animation);
       }
 
       left +=
         (slot.kind === 'group' ? slot.group.width : slot.tab.width) +
-        TABS_PADDING;
+        this.slotPadding;
     }
 
     store.addTab.setLeft(
@@ -938,7 +1275,8 @@ export class TabsStore {
         (t) => t.isPinned && t.tabGroupId === -1,
       );
       const rest = this.list.filter(
-        (t) => t.tabGroupId !== group.id && !(t.isPinned && t.tabGroupId === -1),
+        (t) =>
+          t.tabGroupId !== group.id && !(t.isPinned && t.tabGroupId === -1),
       );
       this.list = [...pinnedTabs, ...members, ...rest];
     }
@@ -991,8 +1329,12 @@ export class TabsStore {
 
     this.list = list;
 
-    firstTab.updateData();
-    secondTab.updateData();
+    // 沉浸头部是镜像，拖动过程只做本地视觉重排；松手后统一把顺序交给
+    // 主窗口真实 Store 持久化，避免镜像直接写 startupTabs 数据库。
+    if (!isImmersiveHeaderWindow()) {
+      firstTab.updateData();
+      secondTab.updateData();
+    }
 
     this.updateTabsBounds(true);
   }
@@ -1019,27 +1361,71 @@ export class TabsStore {
   // 侧栏是完整列表(每个标签一行,组内成员缩进渲染),用 HTML5 拖放重排。
   // 拖动过程中记录当前落点(目标行 id + 落在其上/下半),由 SidebarTab 渲染插入线。
   public sidebarDragId = -1;
+  // 整组拖拽:记录被拖动的组 id,与单标签拖拽互斥。
+  public sidebarDragGroupId = -1;
   public sidebarDropTargetId = -1;
   public sidebarDropBefore = false;
   // 落在分组头上:整组高亮,松手把拖动标签并入该组头部。-1 表示未悬停任何组头。
   public sidebarDropGroupId = -1;
+  // 整组拖到另一分组头时的目标与插入方向。
+  public sidebarDropGroupTargetId = -1;
+  public sidebarDropGroupBefore = false;
+  // 落在标签行/分组头之外的列表区域:组内标签离组,或整组移到对应区域末尾。
+  public sidebarDropOutside = false;
 
   @action
   public setSidebarDrag(id: number) {
+    this.sidebarDragGroupId = -1;
     this.sidebarDragId = id;
+  }
+
+  @action
+  public setSidebarGroupDrag(groupId: number) {
+    this.sidebarDragId = -1;
+    this.sidebarDragGroupId = groupId;
+    this.clearSidebarDropTarget();
   }
 
   @action
   public setSidebarDropTarget(targetId: number, before: boolean) {
     if (this.sidebarDropGroupId !== -1) this.sidebarDropGroupId = -1;
-    if (this.sidebarDropTargetId !== targetId) this.sidebarDropTargetId = targetId;
+    if (this.sidebarDropGroupTargetId !== -1) {
+      this.sidebarDropGroupTargetId = -1;
+    }
+    if (this.sidebarDropOutside) this.sidebarDropOutside = false;
+    if (this.sidebarDropTargetId !== targetId)
+      this.sidebarDropTargetId = targetId;
     if (this.sidebarDropBefore !== before) this.sidebarDropBefore = before;
   }
 
   @action
   public setSidebarDropGroup(groupId: number) {
     if (this.sidebarDropTargetId !== -1) this.sidebarDropTargetId = -1;
+    if (this.sidebarDropGroupTargetId !== -1) {
+      this.sidebarDropGroupTargetId = -1;
+    }
+    if (this.sidebarDropOutside) this.sidebarDropOutside = false;
     if (this.sidebarDropGroupId !== groupId) this.sidebarDropGroupId = groupId;
+  }
+
+  @action
+  public setSidebarGroupDropTarget(groupId: number, before: boolean) {
+    this.sidebarDropTargetId = -1;
+    this.sidebarDropBefore = false;
+    this.sidebarDropGroupId = -1;
+    this.sidebarDropOutside = false;
+    this.sidebarDropGroupTargetId = groupId;
+    this.sidebarDropGroupBefore = before;
+  }
+
+  @action
+  public setSidebarDropOutside() {
+    this.sidebarDropTargetId = -1;
+    this.sidebarDropBefore = false;
+    this.sidebarDropGroupId = -1;
+    this.sidebarDropGroupTargetId = -1;
+    this.sidebarDropGroupBefore = false;
+    this.sidebarDropOutside = true;
   }
 
   @action
@@ -1049,10 +1435,19 @@ export class TabsStore {
   }
 
   @action
+  public clearSidebarGroupDrag() {
+    this.sidebarDragGroupId = -1;
+    this.clearSidebarDropTarget();
+  }
+
+  @action
   public clearSidebarDropTarget() {
     this.sidebarDropTargetId = -1;
     this.sidebarDropBefore = false;
     this.sidebarDropGroupId = -1;
+    this.sidebarDropGroupTargetId = -1;
+    this.sidebarDropGroupBefore = false;
+    this.sidebarDropOutside = false;
   }
 
   // 侧栏落点重排:把 tab 放到 anchor 前/后,并把它的分组归属对齐到 anchor 的组
@@ -1064,6 +1459,116 @@ export class TabsStore {
     // 固定标签不参与侧栏组重排语义(它们本就独立排在最前)。
     const targetGroupId = anchor.isPinned ? -1 : anchor.tabGroupId;
     this.applySidebarMove(tab, anchor, before, targetGroupId);
+  }
+
+  // 拖到侧栏列表空白/分组间隙:解除分组并放到普通标签区末尾。
+  @action
+  public moveTabOutOfGroupInSidebar(tab: ITab) {
+    if (!tab || tab.tabGroupId === -1 || tab.isPinned) return;
+
+    const sourceGroupId = tab.tabGroupId;
+    const list = [...this.list];
+    const from = list.indexOf(tab);
+    if (from === -1) return;
+    list.splice(from, 1);
+    list.push(tab);
+
+    tab.tabGroupId = -1;
+    this.list = list;
+
+    if (!list.some((t) => !t.isClosing && t.tabGroupId === sourceGroupId)) {
+      store.tabGroups.list = store.tabGroups.list.filter(
+        (g) => g.id !== sourceGroupId,
+      );
+      store.tabGroups.removeGroupDoc(sourceGroupId);
+    }
+
+    this.updateTabsBounds(true);
+    store.startupTabs.updateStartupTabItem(tab);
+  }
+
+  // 整组拖到另一组头:按目标组前/后移动整个成员块。
+  @action
+  public moveGroupInSidebar(
+    group: ITabGroup,
+    anchorGroup: ITabGroup,
+    before: boolean,
+  ) {
+    if (!group || !anchorGroup || group === anchorGroup) return;
+    const anchor = before
+      ? anchorGroup.tabs[0]
+      : anchorGroup.tabs[anchorGroup.tabs.length - 1];
+    if (!anchor) return;
+    this.moveGroupNextToTabInSidebar(group, anchor, before);
+  }
+
+  // 整组拖到标签行旁:若目标属于另一组,以该组整个块为边界插入。
+  @action
+  public moveGroupNextToTabInSidebar(
+    group: ITabGroup,
+    anchor: ITab,
+    before: boolean,
+  ) {
+    if (!group || !anchor || anchor.tabGroupId === group.id) return;
+
+    const anchorInPinnedZone = this.isTabInPinnedZone(anchor);
+    if (group.isPinned !== anchorInPinnedZone) return;
+    // 单独固定标签始终位于固定分组之前,不作为固定分组的换位锚点。
+    if (group.isPinned && anchor.isPinned) return;
+
+    const members = this.list.filter((t) => t.tabGroupId === group.id);
+    if (members.length === 0) return;
+    const list = this.list.filter((t) => t.tabGroupId !== group.id);
+
+    let insertAt: number;
+    if (anchor.tabGroupId !== -1) {
+      if (before) {
+        insertAt = list.findIndex((t) => t.tabGroupId === anchor.tabGroupId);
+      } else {
+        insertAt = list.length;
+        for (let i = list.length - 1; i >= 0; i--) {
+          if (list[i].tabGroupId === anchor.tabGroupId) {
+            insertAt = i + 1;
+            break;
+          }
+        }
+      }
+    } else {
+      const anchorIndex = list.indexOf(anchor);
+      if (anchorIndex === -1) return;
+      insertAt = anchorIndex + (before ? 0 : 1);
+    }
+
+    if (insertAt < 0) return;
+    list.splice(insertAt, 0, ...members);
+    this.commitSidebarGroupMove(list);
+  }
+
+  // 整组拖到列表空白:普通组移到列表末尾,固定组移到固定区末尾。
+  @action
+  public moveGroupToSidebarEnd(group: ITabGroup) {
+    if (!group) return;
+    const members = this.list.filter((t) => t.tabGroupId === group.id);
+    if (members.length === 0) return;
+    const list = this.list.filter((t) => t.tabGroupId !== group.id);
+
+    let insertAt = list.length;
+    if (group.isPinned) {
+      const firstRegular = list.findIndex((t) => !this.isTabInPinnedZone(t));
+      if (firstRegular !== -1) insertAt = firstRegular;
+    }
+
+    list.splice(insertAt, 0, ...members);
+    this.commitSidebarGroupMove(list);
+  }
+
+  private commitSidebarGroupMove(list: ITab[]) {
+    this.list = list;
+    this.updateTabsBounds(true);
+    // 整组换位会同时改变跨越区间内所有标签的 order,统一持久化避免重启乱序。
+    for (const tab of this.list) {
+      store.startupTabs.updateStartupTabItem(tab);
+    }
   }
 
   // 落在分组头:并入该组,插到组内第一个成员之前(组头部)。
@@ -1242,6 +1747,106 @@ export class TabsStore {
     }
   }
 
+  @action
+  public beginGroupDrag(group: ITabGroup, pageX: number) {
+    if (!group || group.tabs.length === 0 || !this.containerRef.current) return;
+
+    this.draggingGroupId = group.id;
+    this.groupOrderChanged = false;
+    this.lastMouseX = 0;
+    this.isDragging = true;
+    this.mouseStartX = pageX;
+    this.tabStartX = group.left;
+    this.lastScrollLeft = this.containerRef.current.scrollLeft;
+    this.pendingGroupDropId = -1;
+    this.hideGroupPreview();
+  }
+
+  // 顶部芯片换位：从 list 中取出整个成员块，再插到相邻 slot 的前/后。
+  // list 是标签顺序的权威数据源，所以该操作也会让顶部、侧栏与会话恢复顺序一致。
+  @action
+  private moveGroupNextToSlot(
+    group: ITabGroup,
+    target: { kind: 'tab'; tab: ITab } | { kind: 'group'; group: ITabGroup },
+    before: boolean,
+  ) {
+    const members = this.list.filter((tab) => tab.tabGroupId === group.id);
+    if (members.length === 0) return false;
+
+    const list = this.list.filter((tab) => tab.tabGroupId !== group.id);
+    let insertAt = -1;
+
+    if (target.kind === 'group') {
+      if (target.group.id === group.id) return false;
+      if (before) {
+        insertAt = list.findIndex((tab) => tab.tabGroupId === target.group.id);
+      } else {
+        for (let i = list.length - 1; i >= 0; i--) {
+          if (list[i].tabGroupId === target.group.id) {
+            insertAt = i + 1;
+            break;
+          }
+        }
+      }
+    } else {
+      insertAt = list.indexOf(target.tab);
+      if (insertAt !== -1 && !before) insertAt += 1;
+    }
+
+    if (insertAt < 0) return false;
+    list.splice(insertAt, 0, ...members);
+    this.list = list;
+    this.groupOrderChanged = true;
+    this.updateTabsBounds(true);
+    return true;
+  }
+
+  private canGroupCrossSlot(
+    group: ITabGroup,
+    slot: { kind: 'tab'; tab: ITab } | { kind: 'group'; group: ITabGroup },
+  ) {
+    const targetInPinnedZone =
+      slot.kind === 'group'
+        ? slot.group.isPinned
+        : this.isTabInPinnedZone(slot.tab);
+
+    if (group.isPinned !== targetInPinnedZone) return false;
+    // 单独固定标签恒位于固定分组之前，固定分组之间可以互相排序。
+    if (group.isPinned && slot.kind === 'tab') return false;
+    return true;
+  }
+
+  // 指针可能单帧跨过多个槽位，因此每次换位后重新读取 slots，直到芯片中心
+  // 尚未越过下一个相邻槽位的中心。
+  public getSlotsToReplaceGroup(group: ITabGroup, direction: string) {
+    let guard = this.getSlots().length;
+    while (guard-- > 0) {
+      const slots = this.getSlots();
+      const index = slots.findIndex(
+        (slot) => slot.kind === 'group' && slot.group.id === group.id,
+      );
+      if (index === -1) return;
+
+      const targetIndex = direction === 'left' ? index - 1 : index + 1;
+      const target = slots[targetIndex];
+      if (!target || !this.canGroupCrossSlot(group, target)) return;
+
+      const targetLeft =
+        target.kind === 'group' ? target.group.left : target.tab.left;
+      const targetWidth =
+        target.kind === 'group' ? target.group.width : target.tab.width;
+      const crossed =
+        direction === 'left'
+          ? group.left <= targetLeft + targetWidth / 2
+          : group.left + group.width >= targetLeft + targetWidth / 2;
+      if (!crossed) return;
+
+      if (!this.moveGroupNextToSlot(group, target, direction === 'left')) {
+        return;
+      }
+    }
+  }
+
   // 拖拽中判定「待合入的组」:遍历所有组芯片,若被拖标签的水平中心落在某芯片
   // 横向范围内(且该标签尚未属于任何组、非固定标签),记该组 id 高亮之。移开则清零。
   // 仅记录,不改动 list/归属——真正合入延到 onMouseUp,支持拖回原位取消。
@@ -1271,7 +1876,60 @@ export class TabsStore {
 
   @action
   public onMouseUp = (e?: any) => {
+    if (this.draggingGroupId !== -1) {
+      const changed = this.groupOrderChanged;
+      this.draggingGroupId = -1;
+      this.groupOrderChanged = false;
+      this.isDragging = false;
+      this.isTearing = false;
+      this.pendingGroupDropId = -1;
+
+      if (changed) {
+        if (isImmersiveHeaderWindow()) {
+          ipcRenderer.send(`immersive-header-cmd-${store.windowId}`, {
+            type: 'reorder',
+            order: this.list.map((tab) => tab.id),
+          });
+        } else {
+          // 整组换位会改变跨越区间内全部标签的 order，统一持久化完整顺序。
+          for (const tab of this.list) {
+            store.startupTabs.updateStartupTabItem(tab);
+          }
+        }
+      }
+
+      this.updateTabsBounds(true);
+      return;
+    }
+
     const selectedTab = this.selectedTab;
+
+    // 标签页拖到书签栏（或书签栏中的文件夹）时直接收藏。顶部标签拖拽使用
+    // mousemove/mouseup，因此要在“拖出标签栏后撕离成窗口”之前抢先处理。
+    const bookmarkDropTarget =
+      selectedTab?.isDragging && e
+        ? store.bookmarksBar.getDropTargetAtPoint(e.clientX, e.clientY)
+        : null;
+    if (selectedTab && bookmarkDropTarget) {
+      ipcRenderer.send('tab-drag-preview-hide');
+      if (this.isTearing) {
+        ipcRenderer.send('tab-drag-tearing-cancel', store.windowId);
+      }
+      this.isDragging = false;
+      this.isTearing = false;
+      selectedTab.isDragging = false;
+      this.pendingGroupDropId = -1;
+      void store.bookmarksBar.addDroppedBookmark(
+        {
+          url: selectedTab.url,
+          title: selectedTab.title,
+          favicon: selectedTab.favicon,
+        },
+        bookmarkDropTarget,
+      );
+      this.updateTabsBounds(true);
+      return;
+    }
 
     // 撕离:在标签栏外松手 → 交给主进程决定建窗 or 合并。
     if (this.isTearing && selectedTab) {
@@ -1318,25 +1976,37 @@ export class TabsStore {
       selectedTab.tabGroupId === -1 &&
       store.tabGroups.getGroupById(dropGroupId)
     ) {
+      if (isImmersiveHeaderWindow()) {
+        ipcRenderer.send(`immersive-header-cmd-${store.windowId}`, {
+          type: 'group',
+          id: selectedTab.id,
+          groupId: dropGroupId,
+        });
+        this.updateTabsBounds(false);
+        return;
+      }
       this.setTabToGroup(selectedTab, dropGroupId);
       return;
     }
 
+    if (isImmersiveHeaderWindow() && selectedTab) {
+      ipcRenderer.send(`immersive-header-cmd-${store.windowId}`, {
+        type: 'reorder',
+        order: this.list.map((tab) => tab.id),
+      });
+    }
     this.updateTabsBounds(true);
   };
 
   @action
   public onMouseMove = (e: any) => {
-    // 沉浸悬浮头部(镜像)v1 不支持拖拽重排/撕离标签:这些会向主进程发以主窗口
-    // windowId 为键的拖拽 IPC,与主渲染进程冲突。选中(mousedown→select)仍走遥控。
-    if (isImmersiveHeaderWindow()) return;
-
-    const {selectedTab} = this;
+    const { selectedTab } = this;
 
     if (this.isDragging) {
       const container = this.containerRef;
-      const {tabStartX, mouseStartX, lastMouseX, lastScrollLeft} = store.tabs;
+      const { tabStartX, mouseStartX, lastMouseX, lastScrollLeft } = store.tabs;
 
+      if (!container.current) return;
       const boundingRect = container.current.getBoundingClientRect();
 
       if (Math.abs(e.pageX - mouseStartX) < 5) {
@@ -1345,6 +2015,41 @@ export class TabsStore {
 
       store.canOpenSearch = false;
 
+      if (this.draggingGroupId !== -1) {
+        const group = store.tabGroups.getGroupById(this.draggingGroupId);
+        if (!group) {
+          this.draggingGroupId = -1;
+          this.isDragging = false;
+          return;
+        }
+
+        const newLeft =
+          tabStartX +
+          e.pageX -
+          mouseStartX -
+          (lastScrollLeft - container.current.scrollLeft);
+        const maxLeft =
+          container.current.scrollLeft +
+          container.current.offsetWidth -
+          group.width -
+          this.slotPadding +
+          20;
+        group.setLeft(Math.max(0, Math.min(newLeft, maxLeft)), false);
+
+        const direction =
+          lastMouseX === 0
+            ? e.pageX < mouseStartX
+              ? 'left'
+              : 'right'
+            : lastMouseX - e.pageX >= 1
+            ? 'left'
+            : 'right';
+        this.getSlotsToReplaceGroup(group, direction);
+        this.lastMouseX = e.pageX;
+        return;
+      }
+
+      if (!selectedTab) return;
       selectedTab.isDragging = true;
 
       // 拖出标签栏(垂直越界,或水平远离)→ 进入撕离态。不在撕离态时正常重排。
@@ -1391,15 +2096,15 @@ export class TabsStore {
       if (
         newLeft + selectedTab.width >
         container.current.scrollLeft +
-        container.current.offsetWidth -
-        TABS_PADDING +
-        20
+          container.current.offsetWidth -
+          this.slotPadding +
+          20
       ) {
         left =
           container.current.scrollLeft +
           container.current.offsetWidth -
           selectedTab.width -
-          TABS_PADDING +
+          this.slotPadding +
           20;
       }
 
@@ -1432,10 +2137,12 @@ export class TabsStore {
     const contentX = clientX - rect.left + container.scrollLeft;
 
     const slots = this.getSlots();
-    const slotLeft = (s: { kind: 'tab'; tab: ITab } | { kind: 'group'; group: ITabGroup }) =>
-      s.kind === 'group' ? s.group.left : s.tab.left;
-    const slotWidth = (s: { kind: 'tab'; tab: ITab } | { kind: 'group'; group: ITabGroup }) =>
-      s.kind === 'group' ? s.group.width : s.tab.width;
+    const slotLeft = (
+      s: { kind: 'tab'; tab: ITab } | { kind: 'group'; group: ITabGroup },
+    ) => (s.kind === 'group' ? s.group.left : s.tab.left);
+    const slotWidth = (
+      s: { kind: 'tab'; tab: ITab } | { kind: 'group'; group: ITabGroup },
+    ) => (s.kind === 'group' ? s.group.width : s.tab.width);
 
     // 第一个「中点在 contentX 右侧」的 slot —— 投放点应在它之前。
     let target = slots.length;
@@ -1448,10 +2155,7 @@ export class TabsStore {
 
     // 越过固定 slot:非固定新标签不可落在固定标签的左侧。
     let insert = target;
-    while (
-      insert < slots.length &&
-      slots[insert].kind === 'tab'
-    ) {
+    while (insert < slots.length && slots[insert].kind === 'tab') {
       const slot = slots[insert];
       if (slot.kind !== 'tab' || !slot.tab.isPinned) break;
       insert++;
@@ -1460,13 +2164,11 @@ export class TabsStore {
     if (insert < slots.length) {
       const s = slots[insert];
       const firstMember =
-        s.kind === 'group'
-          ? s.group.tabs.find((t) => !t.isClosing)
-          : s.tab;
+        s.kind === 'group' ? s.group.tabs.find((t) => !t.isClosing) : s.tab;
       const listIndex = firstMember
         ? this.list.indexOf(firstMember)
         : this.list.length;
-      return {listIndex: Math.max(0, listIndex), indicatorLeft: slotLeft(s)};
+      return { listIndex: Math.max(0, listIndex), indicatorLeft: slotLeft(s) };
     }
 
     // 落在所有 slot 之后:指示线放最后一条 slot 的右沿(无 slot 时放 0)。
@@ -1475,7 +2177,7 @@ export class TabsStore {
       const last = slots[slots.length - 1];
       endLeft = slotLeft(last) + slotWidth(last);
     }
-    return {listIndex: this.list.length, indicatorLeft: endLeft};
+    return { listIndex: this.list.length, indicatorLeft: endLeft };
   }
 
   @action
@@ -1495,29 +2197,35 @@ export class TabsStore {
     url: string,
     listIndex: number,
     tabGroupId = -1,
+    active = true,
   ) {
     const opts: chrome.tabs.CreateProperties & { index?: number } = {
       url,
-      active: true,
+      active,
       index: listIndex,
     };
     const id: number = await ipcRenderer.invoke(
       `view-create-${store.windowId}`,
       opts,
     );
-    return this.createTab(opts, id, tabGroupId, {skipScrollToEnd: true});
+    return this.createTab(opts, id, tabGroupId, { skipScrollToEnd: true });
   }
 
   public revertClosed() {
     // 优先从「最近关闭」历史弹栈(Ctrl+Shift+T / 手势 / 标签右键「撤销」共用);
     // 历史为空时回退到旧的 closedUrl 单值(兼容)。
     if (this.restoreMostRecent()) return;
-    if (this.closedUrl) this.addTab({active: true, url: this.closedUrl});
+    if (this.closedUrl) this.addTab({ active: true, url: this.closedUrl }, -1);
   }
 
   // 关闭时采集快照(由 ITab.close() 调用)。无痕标签 / 空 url 不入列。
   @action
-  public pushClosedTab(snap: { url: string; title: string; favicon: string; incognito?: boolean }) {
+  public pushClosedTab(snap: {
+    url: string;
+    title: string;
+    favicon: string;
+    incognito?: boolean;
+  }) {
     if (snap.incognito) return;
     if (!snap.url) return;
     // 去重:同 url 只保留最新一次——新快照置顶,旧的移除。
@@ -1551,7 +2259,15 @@ export class TabsStore {
   // 从列表恢复指定项:开新标签(透传标题/图标)并从历史移除。
   @action
   public restoreClosedTab(entry: IClosedTabSnapshot) {
-    this.addTab({ active: true, url: entry.url, title: entry.title, favicon: entry.favicon });
+    this.addTab(
+      {
+        active: true,
+        url: entry.url,
+        title: entry.title,
+        favicon: entry.favicon,
+      },
+      -1,
+    );
     this.recentlyClosed = this.recentlyClosed.filter((t) => t !== entry);
   }
 
@@ -1561,7 +2277,15 @@ export class TabsStore {
     if (this.recentlyClosed.length === 0) return false;
     const [first, ...rest] = this.recentlyClosed;
     this.recentlyClosed = rest;
-    this.addTab({ active: true, url: first.url, title: first.title, favicon: first.favicon });
+    this.addTab(
+      {
+        active: true,
+        url: first.url,
+        title: first.title,
+        favicon: first.favicon,
+      },
+      -1,
+    );
     return true;
   }
 
@@ -1582,6 +2306,7 @@ export class TabsStore {
       favicon: t.favicon,
       selected: t.isSelected,
       loading: t.loading,
+      discarded: t.discarded,
     }));
     // 卡片内容尺寸。
     const cardW = 280;
@@ -1596,10 +2321,7 @@ export class TabsStore {
       8,
       Math.min(rect.x, this.containerWidth - cardW - 8),
     );
-    const cardY = Math.max(
-      8,
-      Math.min(rect.y, window.innerHeight - cardH - 8),
-    );
+    const cardY = Math.max(8, Math.min(rect.y, window.innerHeight - cardH - 8));
     // BrowserView = 卡片外扩 SHADOW_M 一圈。
     const x = cardX - SHADOW_M;
     const y = cardY - SHADOW_M;
@@ -1610,6 +2332,9 @@ export class TabsStore {
       groupName: group.name,
       groupColor: group.color,
       palette: store.tabGroups.palette,
+      tabHoverActivationBehavior:
+        store.settings.object.tabHoverActivationBehavior,
+      tabHoverActivationDelay: store.settings.object.tabHoverActivationDelay,
       tabs,
       x,
       y,
@@ -1618,10 +2343,7 @@ export class TabsStore {
     };
   }
 
-  public openGroupPreview(
-    group: ITabGroup,
-    rect: { x: number; y: number },
-  ) {
+  public openGroupPreview(group: ITabGroup, rect: { x: number; y: number }) {
     if (group.tabs.length === 0) return;
     this.cancelPreviewHide();
     this.groupPreviewRect = rect;
@@ -1664,6 +2386,16 @@ export class TabsStore {
     if (!payload || payload.groupId !== this.groupPreviewGroupId) return;
     const tab = this.getTabById(payload.tabId);
     switch (payload.type) {
+      case 'activateOnHover':
+        if (tab && store.settings.object.tabHoverActivationBehavior !== 'off') {
+          void tab
+            .activateOnHover(
+              store.settings.object.tabHoverActivationBehavior ===
+                'activate-and-switch',
+            )
+            .finally(() => this.refreshGroupPreview());
+        }
+        break;
       case 'select':
         tab?.select();
         this.refreshGroupPreview();
@@ -1705,6 +2437,11 @@ export class TabsStore {
         this.refreshGroupPreview();
         break;
       }
+      case 'new': {
+        const groupId = this.groupPreviewGroupId;
+        this.addTab(undefined, groupId).then(() => this.refreshGroupPreview());
+        break;
+      }
     }
   }
 
@@ -1715,6 +2452,8 @@ export class TabsStore {
   // 与标签组悬停弹窗同构。
   public panelVisible = false;
   private panelHideTimer: any;
+  // 原生右键菜单打开时,指针会短暂离开悬浮 BrowserView;此时不能执行自动收起。
+  private sidebarPanelMenuOpen = false;
   // 浮层内分组折叠态(按组 id)。默认展开。与顶部窄轨互不影响。
   public panelGroupCollapsed: { [gid: number]: boolean } = {};
 
@@ -1731,6 +2470,7 @@ export class TabsStore {
           favicon: t.favicon,
           selected: t.isSelected,
           loading: t.loading,
+          discarded: t.discarded,
           pinned: !!t.isPinned,
           groupId: t.tabGroupId,
           groupColor: group ? group.color : undefined,
@@ -1740,6 +2480,7 @@ export class TabsStore {
           // 原始组名(可能为空),供浮层内改名输入框初始化;上面的 groupName 带
           // 「N 个标签页」兜底用于显示。
           groupNameRaw: group ? group.name : undefined,
+          groupPinned: group ? group.isPinned : undefined,
         };
       });
 
@@ -1754,6 +2495,12 @@ export class TabsStore {
       side,
       pinned: false,
       palette: store.tabGroups.palette,
+      closeTabOnRightClick: store.settings.object.closeTabOnRightClick,
+      tabCloseButtonDisplay: store.settings.object.tabCloseButtonDisplay,
+      tabWheelBehavior: store.settings.object.tabWheelBehavior,
+      tabHoverActivationBehavior:
+        store.settings.object.tabHoverActivationBehavior,
+      tabHoverActivationDelay: store.settings.object.tabHoverActivationDelay,
       groupsCollapsed: { ...this.panelGroupCollapsed },
       tabs,
       x,
@@ -1784,12 +2531,14 @@ export class TabsStore {
   }
 
   public hideSidebarPanel() {
+    if (this.sidebarPanelMenuOpen) return;
     this.panelVisible = false;
     ipcRenderer.send(`hide-sidebar-panel-${store.windowId}`);
   }
 
   public scheduleSidebarPanelHide(delay = 200) {
     clearTimeout(this.panelHideTimer);
+    if (this.sidebarPanelMenuOpen) return;
     this.panelHideTimer = setTimeout(() => this.hideSidebarPanel(), delay);
   }
 
@@ -1797,22 +2546,77 @@ export class TabsStore {
     clearTimeout(this.panelHideTimer);
   }
 
+  private startSidebarPanelMenu() {
+    this.sidebarPanelMenuOpen = true;
+    this.cancelSidebarPanelHide();
+  }
+
+  private endSidebarPanelMenu() {
+    this.sidebarPanelMenuOpen = false;
+    // 右键菜单中的建组、移出分组、固定等操作直接修改宿主 store；悬浮栏是独立
+    // BrowserView 的数据镜像，菜单关闭时统一重新推送最新结构。
+    this.refreshSidebarPanel();
+    // 菜单关闭后若指针未回到浮层,恢复原先的自动收起；已回到浮层时 enter 会取消它。
+    this.scheduleSidebarPanelHide(250);
+  }
+
   // 浮层内交互回传(经主进程转发)。
   public onSidebarPanelAction(payload: any) {
     if (!payload) return;
     const tab = this.getTabById(payload.tabId);
     switch (payload.type) {
+      case 'activateOnHover':
+        if (tab && store.settings.object.tabHoverActivationBehavior !== 'off') {
+          void tab
+            .activateOnHover(
+              store.settings.object.tabHoverActivationBehavior ===
+                'activate-and-switch',
+            )
+            .finally(() => this.refreshSidebarPanel());
+        }
+        break;
       case 'select':
         tab?.select();
         this.refreshSidebarPanel();
+        break;
+      case 'wheelSwitch':
+        if (payload.direction === 1 || payload.direction === -1) {
+          this.switchAdjacentTab(payload.direction);
+          this.refreshSidebarPanel();
+        }
         break;
       case 'close':
         tab?.close();
         this.refreshSidebarPanel();
         break;
-      case 'new':
-        this.addTab();
+      case 'moveTab': {
+        const anchor = this.getTabById(payload.anchorTabId);
+        if (tab && anchor) {
+          this.moveTabInSidebar(tab, anchor, !!payload.before);
+        }
         this.refreshSidebarPanel();
+        break;
+      }
+      case 'moveTabIntoGroup':
+        if (tab && typeof payload.groupId === 'number') {
+          this.moveTabIntoGroup(tab, payload.groupId);
+        }
+        this.refreshSidebarPanel();
+        break;
+      case 'moveGroup': {
+        const group = store.tabGroups.getGroupById(payload.groupId);
+        const anchor = store.tabGroups.getGroupById(payload.anchorGroupId);
+        if (group && anchor) {
+          this.moveGroupInSidebar(group, anchor, !!payload.before);
+        }
+        this.refreshSidebarPanel();
+        break;
+      }
+      case 'new':
+        this.addTab(
+          undefined,
+          typeof payload.groupId === 'number' ? payload.groupId : -1,
+        ).then(() => this.refreshSidebarPanel());
         break;
       case 'toggleGroup': {
         const gid = payload.groupId;
@@ -1825,9 +2629,28 @@ export class TabsStore {
       }
       case 'contextmenu': {
         if (tab) {
+          this.startSidebarPanelMenu();
           import('../utils/tab-context-menu').then((m) =>
-            m.showTabContextMenu(tab),
+            m.showTabContextMenu(tab, () => this.endSidebarPanelMenu()),
           );
+        }
+        break;
+      }
+      case 'groupcontextmenu': {
+        const group = store.tabGroups.getGroupById(payload.groupId);
+        if (group) {
+          this.startSidebarPanelMenu();
+          import('../utils/tab-context-menu').then((m) =>
+            m.showTabGroupContextMenu(group, () => this.endSidebarPanelMenu()),
+          );
+        }
+        break;
+      }
+      case 'closegroup': {
+        const group = store.tabGroups.getGroupById(payload.groupId);
+        if (group) {
+          for (const groupTab of [...group.tabs]) groupTab.close();
+          this.refreshSidebarPanel();
         }
         break;
       }

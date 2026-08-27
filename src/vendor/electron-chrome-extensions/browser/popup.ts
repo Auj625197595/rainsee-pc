@@ -1,7 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { app, BrowserWindow, Session, screen } from 'electron'
 import { join } from 'node:path'
-import { getAllWindows } from './api/common'
 import debug from 'debug'
 
 const d = debug('electron-chrome-extensions:popup')
@@ -82,7 +81,11 @@ export class PopupView extends EventEmitter {
     this.alignment = opts.alignment
     this.session = opts.session
     this.url = opts.url
-    this.tabs = opts.tabs || []
+    this.tabs = (opts.tabs || []).map((tab) => ({
+      ...tab,
+      // Chrome always exposes groupId on tabs.Tab; ungrouped tabs use -1.
+      groupId: typeof tab?.groupId === 'number' ? tab.groupId : -1,
+    }))
     this.readyPromise = this.spawn()
   }
 
@@ -199,10 +202,11 @@ export class PopupView extends EventEmitter {
     win.webContents.once('dom-ready', () => injectTabs('dom-ready'))
     win.webContents.once('did-finish-load', () => injectTabs('did-finish-load'))
 
-    // PRIMARY channel: append the snapshot to the URL hash. The hash is part of
-    // the page load itself (available before any script runs, no main→renderer
-    // IPC), so it survives the sandboxed-renderer state that can also delay
-    // executeJavaScript. The SHIM parses `crxbridge=` out of location.hash.
+    // PRIMARY channel: append a transient snapshot to the URL hash. It is
+    // available before any script runs (no main→renderer IPC), even when the
+    // sandbox delays executeJavaScript. The first injected SHIM caches a valid
+    // `crxbridge=` payload and removes only that segment with replaceState
+    // before extension hash routers initialize.
     let loadUrl = url
     if (this.tabs.length && url.indexOf('crxbridge=') === -1) {
       const sep = url.indexOf('#') === -1 ? '#' : '&'
@@ -217,20 +221,40 @@ export class PopupView extends EventEmitter {
 
     if (this.destroyed) return
 
-    // If the popup renderer was attached to a bad sandboxed host process,
-    // the registered frame preload is skipped and the page runs without the
-    // electron bridge. Rebuild the popup once to force a fresh renderer.
+    // The direct Electron bridge can be absent while the source shim still
+    // supplies a complete API through its service-worker proxy. Rebuild only
+    // when the extension identity or a required API surface is incomplete.
     try {
       const bridgeState = await win.webContents.executeJavaScript(
-        `(() => ({ electronType: typeof globalThis.electron }))()`,
+        `(() => {
+          const e = globalThis.electron;
+          const c = globalThis.chrome;
+          let manifest;
+          try { manifest = c?.runtime?.getManifest?.(); } catch {}
+          const permissions = manifest?.permissions || [];
+          const needsStorage = permissions.includes('storage');
+          const needsSessionStorage = needsStorage && manifest?.manifest_version === 3;
+          return {
+            electronInvoke: typeof e?.invokeExtensionRaw === 'function' || typeof e?.invokeExtension === 'function',
+            runtimeId: c?.runtime?.id || '',
+            tabsQuery: typeof c?.tabs?.query === 'function',
+            storageReady: !needsStorage || (
+              typeof c?.storage?.local?.get === 'function' &&
+              (!needsSessionStorage || typeof c?.storage?.session?.get === 'function')
+            ),
+          };
+        })()`,
         true,
       )
       if (
         !this.bridgeRecovered &&
-        (!bridgeState || bridgeState.electronType === 'undefined')
+        (!bridgeState ||
+          bridgeState.runtimeId !== this.extensionId ||
+          !bridgeState.tabsQuery ||
+          !bridgeState.storageReady)
       ) {
         this.bridgeRecovered = true
-        d(`popup bridge missing after load; rebuilding once (${url})`)
+        d(`popup bridge unhealthy after load; rebuilding once (${url})`)
         const dead = this.browserWindow
         this.browserWindow = undefined
         if (dead && !dead.isDestroyed()) {
@@ -337,14 +361,8 @@ export class PopupView extends EventEmitter {
       return
     }
 
-    // For extension popups with a login form, the user may need to access a
-    // program outside of the app. Closing the popup would then add
-    // inconvenience.
-    if (!getAllWindows().some((win) => win.isFocused())) {
-      d('preventing close due to focus residing outside of the app')
-      return
-    }
-
+    // Match Chrome's transient action-popup lifecycle. Focus moving outside
+    // the application must close the popup as well.
     this.destroy()
   }
 

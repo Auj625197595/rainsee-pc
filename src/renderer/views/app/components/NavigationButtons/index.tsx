@@ -73,8 +73,12 @@ export const NavigationButtons = observer(() => {
   const leftVisible = layout.left.filter((id) => !layout.hidden.includes(id));
 
   return (
-    <StyledContainer onContextMenu={showToolbarContextMenu}>
+    <StyledContainer
+      data-rainsee-part="navigation-buttons"
+      onContextMenu={showToolbarContextMenu}
+    >
       <ToolbarButton
+        rainseeAction="back"
         disabled={!store.navigationState.canGoBack}
         size={20}
         icon={ArrowLeftIcon}
@@ -85,6 +89,7 @@ export const NavigationButtons = observer(() => {
         onClick={onBackClick}
       />
       <ToolbarButton
+        rainseeAction="forward"
         disabled={!store.navigationState.canGoForward}
         size={20}
         icon={ArrowRightIcon}
@@ -94,6 +99,7 @@ export const NavigationButtons = observer(() => {
         onClick={onForwardClick}
       />
       <ToolbarButton
+        rainseeAction="reload"
         size={20}
         icon={loading ? XIcon : ArrowClockwiseIcon}
         iconColor={iconColor}

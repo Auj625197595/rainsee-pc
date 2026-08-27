@@ -15,6 +15,11 @@ type ContextItemConstructorOptions = {
   showIcon?: boolean
 }
 
+// chrome.contextMenus 的 ID 只要求在单个扩展内唯一。Electron 的菜单树及本地
+// Map 则包含所有扩展，因此必须把扩展 ID 纳入键，避免不同扩展的同名菜单/父项串联。
+const getContextMenuItemKey = (extensionId: string, menuItemId: string) =>
+  `${extensionId}:${menuItemId}`
+
 const DEFAULT_CONTEXTS = ['page']
 
 const getContextTypesFromParams = (params: Electron.ContextMenuParams): Set<ContextMenuType> => {
@@ -120,7 +125,7 @@ export class ContextMenusAPI {
     }
 
     const menuItemOptions: MenuItemConstructorOptions = {
-      id: props.id,
+      id: getContextMenuItemKey(extension.id, props.id),
       type: props.type as any,
       label: params ? formatTitle(props.title || '', params) : props.title || '',
       icon,
@@ -139,14 +144,21 @@ export class ContextMenusAPI {
     // Group by ID
     for (const item of menuItemTemplates) {
       const menuItem = this.buildMenuItem(item)
-      itemMap.set(item.props.id, menuItem)
+      itemMap.set(
+        getContextMenuItemKey(item.extension.id, item.props.id),
+        menuItem,
+      )
     }
 
     // Organize in tree
     for (const item of menuItemTemplates) {
-      const menuItem = itemMap.get(item.props.id)
+      const menuItem = itemMap.get(
+        getContextMenuItemKey(item.extension.id, item.props.id),
+      )
       if (item.props.parentId) {
-        const parentMenuItem = itemMap.get(`${item.props.parentId}`)
+        const parentMenuItem = itemMap.get(
+          getContextMenuItemKey(item.extension.id, `${item.props.parentId}`),
+        )
         if (parentMenuItem) {
           const submenu = (parentMenuItem.submenu || []) as Electron.MenuItemConstructorOptions[]
           submenu.push(menuItem!)
@@ -175,7 +187,9 @@ export class ContextMenusAPI {
       // Items with parents will be handled recursively
       if (item.props.parentId) continue
 
-      const menuItem = itemMap.get(item.props.id)!
+      const menuItem = itemMap.get(
+        getContextMenuItemKey(item.extension.id, item.props.id),
+      )!
       menuItems.push(buildFromTemplate(menuItem))
     }
 

@@ -23,6 +23,7 @@ import store from '../../store';
 import {ToolbarButton} from '../ToolbarButton';
 import {UpdatePill, NewTabSearchPill} from './style';
 import {getAddressBarSearchAnchor} from '../../utils/dialogs';
+import {useDelayedHover} from '../../utils/delayed-hover';
 
 // 完整按钮至少为网址输入区保留这些空间；不足时按钮收起为图标。
 const MIN_ADDRESSBAR_INPUT_WIDTH = 240;
@@ -106,9 +107,6 @@ const showZoomDialog = async () => {
 const onStarClick = (e: React.MouseEvent<HTMLDivElement>) => {
   showAddBookmarkDialog();
 };
-const onStarHover = () => {
-  ipcRenderer.send(`preload-dialog-on-hover-${store.windowId}`, 'add-bookmark');
-};
 const onBlockClick = async (e: React.MouseEvent<HTMLDivElement>) => {
   const btn = document.getElementById('blocker-btn');
   const {right, bottom} = btn.getBoundingClientRect();
@@ -139,9 +137,6 @@ const onBlockClick = async (e: React.MouseEvent<HTMLDivElement>) => {
       filter: it.result
     })), count, domain, siteEnabled
   });
-};
-const onBlockHover = () => {
-  ipcRenderer.send(`preload-dialog-on-hover-${store.windowId}`, 'show-block');
 };
 const onVideoContextClick = (e: React.MouseEvent<HTMLDivElement>) => {
   const menu = remote.Menu.buildFromTemplate([
@@ -178,17 +173,33 @@ const onZoomClick = (e: React.MouseEvent<HTMLDivElement>) => {
   showZoomDialog();
 };
 
-const onKeyClick = () => {
-  ipcRenderer.send(`check-form-autofill-${store.windowId}`);
+const openAutofillDialog = () => {
+  const btn = document.getElementById('autofill-btn');
+  if (!btn) return;
+  const {right, bottom} = btn.getBoundingClientRect();
+  ipcRenderer.send(`autofill-open-${store.windowId}`, right, bottom);
 };
 
-// 翻译图标点击:未翻译则主进程自动开启翻译,并打开语言选择弹窗。
-// (主进程 translate-open 同时负责 startTranslation,并把 active/target 传给弹窗。)
+const onAutofillLeave = () => {
+  ipcRenderer.send(`autofill-hover-leave-${store.windowId}`);
+};
+
+// 翻译图标点击:在译文和原文之间切换,不打开语言选择弹窗。
 const onTranslateClick = () => {
+  ipcRenderer.send(`translate-toggle-${store.windowId}`);
+};
+
+// 翻译图标悬停:显示语言选择弹窗。点击图标时由 onTranslateClick 直接翻译。
+const onTranslateHover = () => {
   const btn = document.getElementById('translate-btn');
   if (!btn) return;
   const {right, bottom} = btn.getBoundingClientRect();
   ipcRenderer.send(`translate-open-${store.windowId}`, right, bottom);
+};
+
+// 给指针从地址栏图标移动到独立 BrowserView 弹窗留出接管时间。
+const onTranslateLeave = () => {
+  ipcRenderer.send(`translate-hover-leave-${store.windowId}`);
 };
 
 // PWA 安装图标点击:打开安装确认弹窗(主进程下发 manifest 快照 + 图标 + 发布者)。
@@ -253,13 +264,23 @@ const onUpdatePillClick = (e: React.MouseEvent<HTMLDivElement>) => {
 
 // "新标签页搜索"气泡:复用地址栏搜索框, 但搜索结果在新标签页打开。
 // 以地址栏的左边界/宽度定位搜索弹窗(与点地址栏时一致), 并透传 openInNewTab 标志。
+const resetCompactNewTabSearch = () => {
+  store.addressbarOpenInNewTab = false;
+  store.addressbarShowSuggestionsOnFocus = false;
+  store.addressbarTextVisible = true;
+  store.addressbarFocused = false;
+  store.addressbarEditing = false;
+
+  if (store.tabs.selectedTab) {
+    store.tabs.selectedTab.addressbarFocused = false;
+  }
+};
+
 const openCompactNewTabSearch = () => {
   const {selectedTab} = store.tabs;
-  const input = store.inputRef;
   const text = store.addressbarValue || '';
 
   store.addressbarOpenInNewTab = true;
-  store.addressbarShowSuggestionsOnFocus = true;
   store.addressbarTextVisible = false;
   store.addressbarFocused = true;
   store.addressbarEditing = false;
@@ -269,12 +290,18 @@ const openCompactNewTabSearch = () => {
     selectedTab.addressbarFocused = true;
   }
 
-  if (!input) return false;
-
-  // 输入框已在焦点上时,onFocus 不会再次触发,这里直接沿用紧凑地址栏的联想弹窗。
-  if (document.activeElement === input) {
+  // 紧凑地址栏刚从隐藏状态切为可见时，input ref 虽然存在但尚未完成布局。
+  // 下一帧统一取锚点并直接发起搜索，避免依赖 onFocus 的时序而重复发送或丢失状态。
+  requestAnimationFrame(() => {
+    const input = store.inputRef;
     const anchor = getAddressBarSearchAnchor();
-    if (!anchor) return false;
+    if (!input || !anchor) {
+      resetCompactNewTabSearch();
+      return;
+    }
+
+    // 直接发送前先清除一次性 onFocus 标志，防止 focus 事件重复打开搜索面板。
+    store.addressbarShowSuggestionsOnFocus = false;
     input.focus();
     input.select();
     ipcRenderer.send(`search-show-${store.windowId}`, {
@@ -285,13 +312,6 @@ const openCompactNewTabSearch = () => {
       openInNewTab: true,
     });
     store.addressbarEditing = true;
-    return true;
-  }
-
-  requestAnimationFrame(() => {
-    if (!store.inputRef) return;
-    store.inputRef.focus();
-    store.inputRef.select();
   });
 
   return true;
@@ -321,6 +341,8 @@ export const SiteButtons = observer(() => {
   const [searchIconOnly, setSearchIconOnly] = React.useState(false);
   const searchPillRef = React.useRef<HTMLDivElement>(null);
   const expandedSearchPillWidth = React.useRef(0);
+  const autofillHover = useDelayedHover(openAutofillDialog);
+  const translateHover = useDelayedHover(onTranslateHover);
   const {selectedTab} = store.tabs;
   const lightToolbar = store.theme['toolbar.lightForeground'];
   const defaultIconColor = lightToolbar ? '#fff' : 'rgb(38, 43, 51)';
@@ -413,6 +435,8 @@ export const SiteButtons = observer(() => {
   return (
     <>
       <NewTabSearchPill
+        data-rainsee-part="brand-action"
+        data-rainsee-action="new-tab-search"
         className="addressbar-action addressbar-action--new-tab-search"
         ref={searchPillRef}
         $iconOnly={searchIconOnly}
@@ -424,6 +448,8 @@ export const SiteButtons = observer(() => {
       </NewTabSearchPill>
       {store.updateAvailable && (
         <UpdatePill
+          data-rainsee-part="brand-action"
+          data-rainsee-action="update"
           id="update-pill"
           className="addressbar-action addressbar-action--update"
           onClick={onUpdatePillClick}
@@ -433,15 +459,27 @@ export const SiteButtons = observer(() => {
       )}
       {process.env.ENABLE_AUTOFILL && hasCredentials && (
         <ToolbarButton
+          rainseeAction="autofill"
           className="addressbar-action addressbar-action--autofill"
+          id="autofill-btn"
           dense={dense}
           icon={ICON_KEY}
           size={16}
-          onClick={onKeyClick}
+          onClick={() => {
+            autofillHover.cancel();
+            openAutofillDialog();
+          }}
+          onMouseEnter={autofillHover.schedule}
+          onMouseLeave={() => {
+            autofillHover.cancel();
+            onAutofillLeave();
+          }}
+          title="可填充的密码"
         />
       )}
       {(store.dialogsVisibility['zoom'] || store.zoomFactor !== 1) && (
         <ToolbarButton
+          rainseeAction="zoom"
           className="addressbar-action addressbar-action--zoom"
           id="zoom"
           toggled={store.dialogsVisibility['zoom']}
@@ -453,10 +491,9 @@ export const SiteButtons = observer(() => {
       )}
       {selectedTab &&
         !hidden.includes('translate') &&
-        (selectedTab.canTranslate ||
-          selectedTab.translated ||
-          isAutoTranslateSite(selectedTab.url)) && (
+        /^(https?|file):/i.test(selectedTab.url || '') && (
         <ToolbarButton
+          rainseeAction="translate"
           className="addressbar-action addressbar-action--translate"
           id="translate-btn"
           toggled={!!selectedTab?.translated}
@@ -467,18 +504,27 @@ export const SiteButtons = observer(() => {
           dense={dense}
           opacity={0.87}
           autoInvert={false}
-          onMouseDown={onTranslateClick}
+          onMouseDown={() => {
+            translateHover.cancel();
+            onTranslateClick();
+          }}
+          onMouseEnter={translateHover.schedule}
+          onMouseLeave={() => {
+            translateHover.cancel();
+            onTranslateLeave();
+          }}
           title={
             selectedTab?.translated
-              ? `已翻译为 ${selectedTab.translateTarget?.toUpperCase()}（点击切换语言 / 显示原文）`
+              ? `已翻译为 ${selectedTab.translateTarget?.toUpperCase()}（点击显示原文，悬停选择语言）`
               : selectedTab?.detectedLanguage
-                ? `翻译此页（检测：${selectedTab.detectedLanguage.toUpperCase()}）`
-                : '翻译此页'
+                ? `翻译此页（检测：${selectedTab.detectedLanguage.toUpperCase()}；悬停选择语言）`
+                : '翻译此页（悬停选择语言）'
           }
         />
       )}
       {selectedTab?.canInstallPwa && (
         <ToolbarButton
+          rainseeAction="install-app"
           className="addressbar-action addressbar-action--pwa"
           id="pwa-btn"
           icon={PwaSiteIcon}
@@ -501,6 +547,7 @@ export const SiteButtons = observer(() => {
       )}
       {!hidden.includes('star') && (
         <ToolbarButton
+          rainseeAction="bookmark-page"
           className="addressbar-action addressbar-action--star"
           id="star"
           toggled={store.dialogsVisibility['add-bookmark']}
@@ -508,11 +555,11 @@ export const SiteButtons = observer(() => {
           size={18}
           dense={dense}
           onMouseDown={onStarClick}
-          onMouseEnter={onStarHover}
         />
       )}
       {shieldActive && !hidden.includes('shield') && (
         <ToolbarButton
+          rainseeAction="shield"
           className="addressbar-action addressbar-action--shield"
           id="blocker-btn"
           size={18}
@@ -526,11 +573,11 @@ export const SiteButtons = observer(() => {
           autoInvert={false}
           onContextMenu={onShieldContextMenu}
           onClick={onBlockClick}
-          onMouseEnter={onBlockHover}
         />
       )}
       {videoUrls.length > 0 && !hidden.includes('video') && (
         <ToolbarButton
+          rainseeAction="video"
           className="addressbar-action addressbar-action--video"
           id="video-btn"
           size={16}

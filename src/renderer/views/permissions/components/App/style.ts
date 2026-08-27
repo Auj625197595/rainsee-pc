@@ -223,3 +223,122 @@ export const ActionButton = styled.button<{
             inset 0 1px 0 rgba(255, 255, 255, 0.8);
         `}
 `;
+
+export const ExternalPrompt = styled(DialogStyle)`
+  height: 76px;
+  margin: 8px 16px 16px;
+  padding: 0 12px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  overflow: hidden;
+  position: relative;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei',
+    sans-serif;
+  background: rgba(32, 35, 42, 0.96);
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.3);
+`;
+
+export const ExternalIcon = styled.div`
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #a9c7ff;
+  background: rgba(92, 139, 230, 0.2);
+`;
+
+export const ExternalMain = styled.div`
+  min-width: 0;
+  flex: 1;
+`;
+
+export const ExternalTitle = styled.div`
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: 0;
+`;
+
+export const ExternalSource = styled.div`
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.62);
+`;
+
+export const ExternalActions = styled.div`
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+`;
+
+export const ExternalSettingsButton = styled.button`
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.72);
+  background: transparent;
+  cursor: pointer;
+
+  &:hover {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.1);
+  }
+`;
+
+export const ExternalOpenButton = styled.button`
+  height: 36px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 14px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0;
+  color: #a9c7ff;
+  background: transparent;
+  cursor: pointer;
+
+  &:hover {
+    color: #c8dbff;
+    background: rgba(92, 139, 230, 0.14);
+  }
+`;
+
+export const ExternalProgress = styled.div`
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  transform-origin: left center;
+  background: #6f9df2;
+  animation: external-navigation-timeout 5s linear forwards;
+
+  @keyframes external-navigation-timeout {
+    from {
+      transform: scaleX(1);
+    }
+    to {
+      transform: scaleX(0);
+    }
+  }
+`;

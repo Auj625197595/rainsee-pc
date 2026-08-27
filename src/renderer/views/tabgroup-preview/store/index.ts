@@ -1,6 +1,8 @@
 import { ipcRenderer } from 'electron';
 import { observable, makeObservable } from 'mobx';
 import { DialogStore } from '~/models/dialog-store';
+import { TabHoverActivationBehavior } from '~/interfaces';
+import { normalizeTabHoverActivationDelay } from '~/constants';
 
 export interface IPreviewTab {
   id: number;
@@ -8,6 +10,7 @@ export interface IPreviewTab {
   favicon: string;
   selected: boolean;
   loading?: boolean;
+  discarded?: boolean;
 }
 
 // 标签组悬停列表弹窗的渲染端 store。payload 由宿主(app.html)经主进程透传:
@@ -20,6 +23,9 @@ export class Store extends DialogStore {
   public groupColor = '#3b82f6';
   public palette: string[] = [];
   public tabs: IPreviewTab[] = [];
+  public tabHoverActivationBehavior: TabHoverActivationBehavior =
+    'activate-and-switch';
+  public tabHoverActivationDelay = 500;
 
   public constructor() {
     // persistent + 不用 visibilityWrapper(自己监听 'visible') + 不在失焦时自动隐藏
@@ -32,6 +38,8 @@ export class Store extends DialogStore {
       groupColor: observable,
       palette: observable,
       tabs: observable,
+      tabHoverActivationBehavior: observable,
+      tabHoverActivationDelay: observable,
     });
 
     ipcRenderer.on('visible', (e, flag: boolean, payload: any) => {
@@ -41,6 +49,14 @@ export class Store extends DialogStore {
         this.groupColor = payload.groupColor || '#3b82f6';
         this.palette = payload.palette || [];
         this.tabs = payload.tabs || [];
+        this.tabHoverActivationBehavior =
+          payload.tabHoverActivationBehavior === 'off' ||
+          payload.tabHoverActivationBehavior === 'activate'
+            ? payload.tabHoverActivationBehavior
+            : 'activate-and-switch';
+        this.tabHoverActivationDelay = normalizeTabHoverActivationDelay(
+          payload.tabHoverActivationDelay,
+        );
         this.visible = true;
       } else {
         this.visible = false;

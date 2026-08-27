@@ -11,6 +11,9 @@ export class ExtensionStore extends EventEmitter {
   /** Windows observed by the extensions system. */
   windows = new Set<Electron.BaseWindow>()
 
+  /** Native windows already announced during their lifetime. */
+  private observedWindows = new WeakSet<Electron.BaseWindow>()
+
   lastFocusedWindowId?: number
 
   /**
@@ -98,6 +101,18 @@ export class ExtensionStore extends EventEmitter {
 
     this.windows.add(window)
 
+    // A live window can temporarily leave `windows` when its final tab is
+    // detached, then be re-added if a tab is restored/adopted. It is still the
+    // same Chrome window, so do not attach focus listeners or emit onCreated a
+    // second time for the same native object.
+    if (this.observedWindows.has(window)) {
+      if (typeof this.lastFocusedWindowId !== 'number') {
+        this.lastFocusedWindowId = window.id
+      }
+      return
+    }
+    this.observedWindows.add(window)
+
     // Track focus so chrome.tabs.query({lastFocusedWindow:true}) /
     // chrome.windows.getLastFocused() return the actually-focused browser
     // window, matching Chrome's semantics. Without this, lastFocusedWindowId
@@ -137,7 +152,12 @@ export class ExtensionStore extends EventEmitter {
   async removeWindow(window: Electron.BaseWindow) {
     if (!this.windows.has(window)) return
 
+    // Mark the host window before its views are destroyed. Consumers of the
+    // tab-removed event can then emit Chrome's isWindowClosing flag even when
+    // the last tab disappears before Electron emits "closed".
+    ;(window as any).__crxWindowClosing = true
     this.windows.delete(window)
+    this.emit('window-removed', window.id)
 
     // If the removed window was the last-focused one, re-elect a surviving
     // window so getLastFocusedWindow() never returns a stale/destroyed id
@@ -208,7 +228,30 @@ export class ExtensionStore extends EventEmitter {
       this.impl.removeTab(tab, win)
     }
 
-    this.emit('tab-removed', tabId)
+    this.emit('tab-removed', tabId, !!(win as any).__crxWindowClosing || win.isDestroyed())
+  }
+
+  /** Reassign a live tab to another native window without recreating its WebContents. */
+  moveTabToWindow(tab: Electron.WebContents, window: Electron.BaseWindow) {
+    if (!this.tabs.has(tab) || window.isDestroyed()) return
+
+    const previousWindow = this.tabToWindow.get(tab)
+    if (!previousWindow || previousWindow === window) return
+
+    const oldPosition = this.getTabIndex(tab)
+    const wasActive = this.windowToActiveTab.get(previousWindow) === tab
+    if (wasActive) this.windowToActiveTab.delete(previousWindow)
+
+    this.tabToWindow.set(tab, window)
+    this.addWindow(window)
+    this.setActiveTab(tab)
+
+    if (wasActive) {
+      const next = this.getActiveTabFromWindow(previousWindow)
+      if (next) this.emit('active-tab-changed', next, previousWindow)
+    }
+
+    this.emit('tab-window-changed', tab, previousWindow, window, oldPosition)
   }
 
   async createTab(details: chrome.tabs.CreateProperties) {
@@ -216,12 +259,18 @@ export class ExtensionStore extends EventEmitter {
       throw new Error('createTab is not implemented')
     }
 
-    // Fallback to current window
-    if (!details.windowId) {
-      details.windowId = this.lastFocusedWindowId
+    // Do not mutate the extension's CreateProperties object. Direct framework
+    // callers (runtime.openOptionsPage, sessions.restore, etc.) have no
+    // ExtensionEvent, so retain a last-focused fallback for them.
+    const createDetails = { ...details }
+    if (
+      typeof createDetails.windowId !== 'number' ||
+      createDetails.windowId === -2
+    ) {
+      createDetails.windowId = this.lastFocusedWindowId
     }
 
-    const result = await this.impl.createTab(details)
+    const result = await this.impl.createTab(createDetails)
 
     if (!Array.isArray(result)) {
       throw new Error('createTab must return an array of [tab, window]')

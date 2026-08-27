@@ -20,6 +20,77 @@ interface Rec {
   bound: boolean
 }
 const registry = new Map<string, Rec>()
+let mediaEventLogCount = 0
+const isMediaEvent = (name: string, args: any[]) =>
+  name.startsWith('webRequest.') &&
+  (args[0]?.type === 'media' ||
+    args[0]?.type === 'object' ||
+    /\.(?:m3u8|mpd|mp4|webm|ts)(?:$|[?#])/i.test(args[0]?.url || ''))
+const mediaEventVerbose =
+  typeof process !== 'undefined' &&
+  (process?.env?.CRX_WEBREQUEST_DEBUG === '1' || process?.env?.CRX_VERBOSE === '1')
+const CRX_PERF =
+  typeof process !== 'undefined' &&
+  (process?.env?.CRX_PERF === '1' || process?.env?.CRX_VERBOSE === '1')
+const perfNow = () =>
+  typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now()
+
+interface EventPerf {
+  dispatches: number
+  callbacks: number
+  totalMs: number
+  maxMs: number
+  maxCallbackMs: number
+}
+
+let perfStartedAt = Date.now()
+const perfByEvent = new Map<string, EventPerf>()
+
+const recordEventPerf = (
+  extensionId: string,
+  name: string,
+  callbacks: number,
+  elapsedMs: number,
+  maxCallbackMs: number,
+) => {
+  if (!CRX_PERF) return
+  const value = perfByEvent.get(name) || {
+    dispatches: 0,
+    callbacks: 0,
+    totalMs: 0,
+    maxMs: 0,
+    maxCallbackMs: 0,
+  }
+  value.dispatches++
+  value.callbacks += callbacks
+  value.totalMs += elapsedMs
+  if (elapsedMs > value.maxMs) value.maxMs = elapsedMs
+  if (maxCallbackMs > value.maxCallbackMs) value.maxCallbackMs = maxCallbackMs
+  perfByEvent.set(name, value)
+
+  const now = Date.now()
+  if (now - perfStartedAt < 10000) return
+  try {
+    ipcRenderer.send('crx-perf-renderer', {
+      extensionId,
+      windowMs: now - perfStartedAt,
+      events: Array.from(perfByEvent, ([eventName, stats]) => ({
+        eventName,
+        ...stats,
+      })),
+    })
+  } catch {}
+  perfByEvent.clear()
+  perfStartedAt = now
+}
+
+const webRequestRegistrations = (rec: Rec) =>
+  rec.entries.map((entry) => ({
+    filter: entry.filter,
+    extraInfoSpec: entry.extraInfoSpec,
+  }))
 
 const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
@@ -97,10 +168,19 @@ export const addExtensionListener = (
     registry.set(name, rec)
   }
   // 记录该 listener 及其 URL filter,dispatch 时按 filter 决定是否调用。
-  rec.entries.push({ cb: callback, filter: filter || null, extraInfoSpec: extraInfoSpec || [] })
+  rec.entries.push({
+    cb: callback,
+    filter: filter || null,
+    extraInfoSpec: extraInfoSpec || [],
+  })
 
-  if (rec.count === 0) {
-    ipcRenderer.send('crx-add-listener', extensionId, name)
+  if (rec.count === 0 || name.startsWith('webRequest.')) {
+    ipcRenderer.send(
+      'crx-add-listener',
+      extensionId,
+      name,
+      name.startsWith('webRequest.') ? webRequestRegistrations(rec) : undefined,
+    )
   }
   rec.count++
 
@@ -110,6 +190,9 @@ export const addExtensionListener = (
   rec.bound = true
 
   ipcRenderer.addListener(formatIpcName(name), function (event, ...args: any[]) {
+    const dispatchStartedAt = CRX_PERF ? perfNow() : 0
+    let callbackCount = 0
+    let maxCallbackMs = 0
     const isWr = name.startsWith('webRequest.')
     const isBlockingEvent = [
       'webRequest.onBeforeRequest',
@@ -117,16 +200,32 @@ export const addExtensionListener = (
       'webRequest.onHeadersReceived',
       'webRequest.onAuthRequired',
     ].includes(name)
+    const mediaEvent = isMediaEvent(name, args)
     // webRequest 阻塞响应合并:任一匹配的 listener 返回 cancel 即 cancel(取消胜出);
     // 否则取第一个 redirectUrl;都没有则 undefined(放行)。
     let blockResult: any
     for (const ent of rec.entries) {
       if (isWr && !filterMatches(args[0], ent.filter)) continue
       let ret: any
+      const callbackStartedAt = CRX_PERF ? perfNow() : 0
+      callbackCount++
       try {
         ret = ent.cb(...args)
-      } catch {
+      } catch (error: any) {
+        if (mediaEvent) {
+          try {
+            console.error(
+              `[crx-evt] callback-error event=${name} ext=${extensionId} ` +
+                `${error?.stack || error?.message || error}`,
+            )
+          } catch {}
+        }
         continue
+      } finally {
+        if (CRX_PERF) {
+          const callbackMs = perfNow() - callbackStartedAt
+          if (callbackMs > maxCallbackMs) maxCallbackMs = callbackMs
+        }
       }
       if (isBlockingEvent && ent.extraInfoSpec.some((item) => item === 'blocking' || item === 'asyncBlocking')) {
         if (ret && (ret as any).cancel === true) {
@@ -137,12 +236,7 @@ export const addExtensionListener = (
           blockResult = { responseHeaders: ret.responseHeaders }
         } else if (name === 'webRequest.onAuthRequired' && ret?.authCredentials) {
           blockResult = { authCredentials: ret.authCredentials }
-        } else if (
-          !blockResult &&
-          ret &&
-          typeof (ret as any).redirectUrl === 'string' &&
-          (ret as any).redirectUrl
-        ) {
+        } else if (!blockResult && ret && typeof (ret as any).redirectUrl === 'string' && (ret as any).redirectUrl) {
           blockResult = { redirectUrl: (ret as any).redirectUrl }
         }
       }
@@ -162,9 +256,26 @@ export const addExtensionListener = (
         } catch {}
       }
     }
-    // webRequest 阻塞响应:每条 IPC(每请求)只回主进程一次,避免主进程等待。
-    // 即便没有任何 callback 命中 filter 也要回一个 undefined(放行),否则主进程会卡到安全超时。
-    if (isBlockingEvent) {
+    if (CRX_PERF) {
+      recordEventPerf(extensionId, name, callbackCount, perfNow() - dispatchStartedAt, maxCallbackMs)
+    }
+    if (mediaEventVerbose && mediaEvent && mediaEventLogCount < 200) {
+      mediaEventLogCount++
+      try {
+        console.log(
+            `[crx-evt] received event=${name} callbacks=${callbackCount} ` +
+              `ext=${extensionId} ` +
+            `tab=${args[0]?.tabId ?? -1} type=${args[0]?.type || ''} ` +
+            `contentType=${(args[0]?.responseHeaders || []).find?.((h: any) => String(h?.name || '').toLowerCase() === 'content-type')?.value || ''} ` +
+            `requestId=${args[0]?.requestId ?? ''} ` +
+            `url=${String(args[0]?.url || '').slice(0, 180)}`,
+        )
+      } catch {}
+    }
+    // 当前主进程仅消费 onAuthRequired 的异步响应。其它 webRequest 回调由
+    // Electron 的同步宿主拦截器处理，回传结果不会被应用；uBlock 会在每个请求的
+    // onBeforeRequest/onHeadersReceived 各回一条无效 IPC，造成明显的主进程压力。
+    if (name === 'webRequest.onAuthRequired') {
       try {
         const reqId = args[0] && (args[0] as any).requestId
         ipcRenderer.send('crx-webrequest-response', reqId, name, blockResult)
@@ -177,10 +288,14 @@ export const removeExtensionListener = (extensionId: string, name: string, callb
   const rec = registry.get(name)
   if (rec) {
     const idx = rec.entries.findIndex((e) => e.cb === callback)
-    if (idx >= 0) rec.entries.splice(idx, 1)
+    if (idx < 0) return
+    rec.entries.splice(idx, 1)
     if (rec.count > 0) rec.count--
     if (rec.count === 0) {
       ipcRenderer.send('crx-remove-listener', extensionId, name)
+    } else if (name.startsWith('webRequest.')) {
+      // 同一事件还有 callback 时只更新主进程的 aggregate filter，保留 IPC 绑定。
+      ipcRenderer.send('crx-add-listener', extensionId, name, webRequestRegistrations(rec))
     }
   }
 }

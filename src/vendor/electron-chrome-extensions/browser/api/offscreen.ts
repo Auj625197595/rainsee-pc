@@ -2,12 +2,10 @@ import { BrowserWindow } from 'electron'
 import { existsSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import * as path from 'node:path'
-import debug from 'debug'
 
 import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
 
-const d = debug('electron-chrome-extensions:offscreen')
 const log = (...args: any[]) => console.log('[crx-offscreen]', ...args)
 const warn = (...args: any[]) => console.warn('[crx-offscreen]', ...args)
 
@@ -20,6 +18,8 @@ const HIDDEN_WIDTH = 1
 const HIDDEN_HEIGHT = 1
 const OFFSCREEN_CONTEXT_TYPE = 'OFFSCREEN_DOCUMENT'
 const LEGACY_OFFSCREEN_CONTEXT_TYPE = 'OFFSCREEN'
+const CRASH_STREAK_RESET_MS = 5 * 60 * 1000
+const CRASH_RETRY_DELAYS_MS = [250, 1000, 5000, 15000, 30000]
 
 /**
  * The documented `chrome.offscreen.Reason` enum. `createDocument` validates each
@@ -50,6 +50,14 @@ interface OffscreenDocument {
   url: string
   /** The hidden window hosting the document's renderer. */
   window: BrowserWindow
+}
+
+interface OffscreenCrashRecovery {
+  retryAt: number
+  crashCount: number
+  lastCrashAt: number
+  reason: string
+  exitCode?: number
 }
 
 interface ContextFilter {
@@ -99,8 +107,14 @@ interface OffscreenContext {
 export class OffscreenAPI {
   /** extensionId -> document. Chrome allows at most one per extension. */
   private docs = new Map<string, OffscreenDocument>()
-  /** Deduplicates concurrent lazy fallbacks for the same extension. */
-  private opening = new Map<string, Promise<boolean>>()
+  /** Deduplicates createDocument and lazy-message opens for the same extension. */
+  private opening = new Map<string, Promise<OffscreenDocument>>()
+  /**
+   * Recreating inside Electron's crash callback can re-enter Chromium teardown.
+   * Delay the next requested open with a bounded backoff, but never turn a
+   * transient renderer crash into a long-lived extension outage.
+   */
+  private crashRecovery = new Map<string, OffscreenCrashRecovery>()
 
   constructor(private ctx: ExtensionContext) {
     const handle = this.ctx.router.apiHandler()
@@ -114,6 +128,7 @@ export class OffscreenAPI {
     // Drop any offscreen document whose extension is unloaded/reloaded.
     const sessionExtensions = this.ctx.session.extensions || this.ctx.session
     sessionExtensions.on('extension-unloaded', (_event: any, extension: Electron.Extension) => {
+      this.crashRecovery.delete(extension.id)
       this.destroyFor(extension.id, 'extension-unloaded')
     })
 
@@ -137,21 +152,72 @@ export class OffscreenAPI {
    */
   private ensureDocument = async (extensionId: string): Promise<boolean> => {
     if (this.docs.has(extensionId)) return true
+    const sessionExtensions = this.ctx.session.extensions || this.ctx.session
+    const extension = sessionExtensions.getExtension?.(extensionId)
+    if (!extension || !extension.manifest?.permissions?.includes('offscreen')) return false
+    if (!existsSync(path.join(extension.path, 'offscreen.html'))) return false
+    try {
+      await this.openDocument(extensionId, this.resolveUrl(extensionId, 'offscreen.html'))
+      return true
+    } catch (err: any) {
+      warn('lazy message-triggered load failed ext=', extensionId, err && err.message)
+      return false
+    }
+  }
+
+  private resolveUrl(extensionId: string, url: string): string {
+    const clean = String(url || '').replace(/^\/+/, '')
+    return `chrome-extension://${extensionId}/${clean}`
+  }
+
+  private async waitForCrashBackoff(extensionId: string): Promise<void> {
+    while (true) {
+      const crash = this.crashRecovery.get(extensionId)
+      if (!crash) return
+      const remainingMs = crash.retryAt - Date.now()
+      if (remainingMs <= 0) return
+      log(
+        'waiting before renderer recovery ext=',
+        extensionId,
+        'remainingMs=',
+        remainingMs,
+        'crashCount=',
+        crash.crashCount,
+      )
+      await new Promise((resolve) => setTimeout(resolve, remainingMs))
+    }
+  }
+
+  private recordCrash(extensionId: string, reason: string, exitCode?: number) {
+    const now = Date.now()
+    const prior = this.crashRecovery.get(extensionId)
+    const crashCount =
+      prior && now - prior.lastCrashAt < CRASH_STREAK_RESET_MS ? prior.crashCount + 1 : 1
+    const delayMs = CRASH_RETRY_DELAYS_MS[Math.min(crashCount - 1, CRASH_RETRY_DELAYS_MS.length - 1)]
+    const crash: OffscreenCrashRecovery = {
+      retryAt: now + delayMs,
+      crashCount,
+      lastCrashAt: now,
+      reason,
+      exitCode,
+    }
+    this.crashRecovery.set(extensionId, crash)
+    return { crash, delayMs }
+  }
+
+  /** Deduplicate explicit createDocument calls and lazy crash recovery. */
+  private async openDocument(extensionId: string, url: string): Promise<OffscreenDocument> {
+    if (this.docs.has(extensionId)) return this.docs.get(extensionId)!
     const pending = this.opening.get(extensionId)
     if (pending) return pending
 
     const task = (async () => {
+      await this.waitForCrashBackoff(extensionId)
       const sessionExtensions = this.ctx.session.extensions || this.ctx.session
-      const extension = sessionExtensions.getExtension?.(extensionId)
-      if (!extension || !extension.manifest?.permissions?.includes('offscreen')) return false
-      if (!existsSync(path.join(extension.path, 'offscreen.html'))) return false
-      try {
-        await this.openDocument(extensionId, this.resolveUrl(extensionId, 'offscreen.html'))
-        return true
-      } catch (err: any) {
-        warn('lazy message-triggered load failed ext=', extensionId, err && err.message)
-        return false
+      if (!sessionExtensions.getExtension?.(extensionId)) {
+        throw new Error('chrome.offscreen extension was unloaded during recovery')
       }
+      return this.openDocumentWindow(extensionId, url)
     })()
     this.opening.set(extensionId, task)
     try {
@@ -161,19 +227,12 @@ export class OffscreenAPI {
     }
   }
 
-  private resolveUrl(extensionId: string, url: string): string {
-    const clean = String(url || '').replace(/^\/+/, '')
-    return `chrome-extension://${extensionId}/${clean}`
-  }
-
   /** Core: open the hidden window for a given resolved URL and track it. */
-  private async openDocument(extensionId: string, url: string): Promise<OffscreenDocument> {
-    if (this.docs.has(extensionId)) return this.docs.get(extensionId)!
-
+  private async openDocumentWindow(extensionId: string, url: string): Promise<OffscreenDocument> {
     const documentId = randomUUID()
     log('openDocument ext=', extensionId, 'url=', url, 'documentId=', documentId)
 
-    const preloadPath = (this.ctx as any).preloadPath as string | undefined
+    const preloadPath = this.ctx.preloadPath
     const win = new BrowserWindow({
       show: false,
       skipTaskbar: true,
@@ -188,10 +247,11 @@ export class OffscreenAPI {
         // already injects crx-preload for frames, but co-sited/sandboxed
         // renderers can skip it (see popup.ts). Setting it explicitly mirrors
         // PopupView / SidePanelView and guarantees the page gets chrome.*.
-        ...(preloadPath ? { preload: preloadPath } : {}),
+        preload: preloadPath,
         sandbox: false,
         contextIsolation: false,
         nodeIntegration: false,
+        nodeIntegrationInWorker: false,
         backgroundThrottling: false,
         javascript: true,
       },
@@ -207,13 +267,130 @@ export class OffscreenAPI {
       return { action: 'deny' }
     })
 
-    // Auto-cleanup if the window dies on its own (crash, extension reload, etc).
-    const handleClose = () => this.destroyFor(extensionId, 'window-closed')
-    win.once('closed', handleClose)
-    win.webContents.once('render-process-gone', () => handleClose())
-
     const doc: OffscreenDocument = { documentId, extensionId, url, window: win }
     this.docs.set(extensionId, doc)
+    try {
+      const preferences = (win.webContents as any).getLastWebPreferences?.()
+      log(
+        'offscreen webContents created ext=',
+        extensionId,
+        'documentId=',
+        documentId,
+        'webContentsId=',
+        win.webContents.id,
+        'sandbox=',
+        preferences?.sandbox,
+        'contextIsolation=',
+        preferences?.contextIsolation,
+        'hasPreload=',
+        Boolean(preferences?.preload),
+      )
+    } catch {
+      // Diagnostics must not affect document creation.
+    }
+
+    win.webContents.on('did-start-loading', () => {
+      log('offscreen did-start-loading ext=', extensionId, 'documentId=', documentId)
+    })
+    win.webContents.on('dom-ready', () => {
+      log('offscreen dom-ready ext=', extensionId, 'documentId=', documentId)
+    })
+    win.webContents.on('did-finish-load', () => {
+      log('offscreen did-finish-load ext=', extensionId, 'documentId=', documentId)
+    })
+    win.webContents.on(
+      'did-fail-load',
+      (_event, errorCode: number, errorDescription: string, validatedURL: string, isMainFrame: boolean) => {
+        warn(
+          'offscreen did-fail-load ext=',
+          extensionId,
+          'documentId=',
+          documentId,
+          'isMainFrame=',
+          isMainFrame,
+          'code=',
+          errorCode,
+          'description=',
+          errorDescription,
+          'url=',
+          validatedURL,
+        )
+      },
+    )
+    win.webContents.on('console-message', (_event, ...args: any[]) => {
+      const details =
+        args.length > 0 && typeof args[0] === 'object' && args[0] !== null
+          ? {
+              level: args[0].level,
+              message: args[0].message,
+              line: args[0].lineNumber,
+              sourceId: args[0].sourceId,
+            }
+          : { level: args[0], message: args[1], line: args[2], sourceId: args[3] }
+      const { level, message, line, sourceId } = details
+      if (level < 2) return
+      warn(
+        'offscreen console ext=',
+        extensionId,
+        'documentId=',
+        documentId,
+        'level=',
+        level,
+        'message=',
+        message,
+        'source=',
+        sourceId,
+        'line=',
+        line,
+      )
+    })
+
+    // Auto-cleanup if the window dies on its own. Do not call BrowserWindow
+    // destroy from the render-process-gone callback: Chromium is still tearing
+    // down the renderer there, and synchronous destruction can re-enter that
+    // native teardown path. Forget the document immediately, then destroy the
+    // window on the next task.
+    const handleWindowClosed = () => {
+      if (this.docs.get(extensionId) === doc) {
+        this.docs.delete(extensionId)
+        log('offscreen window closed ext=', extensionId, 'documentId=', documentId)
+      }
+    }
+    win.once('closed', handleWindowClosed)
+    win.webContents.once('render-process-gone', (_event, details: any) => {
+      if (details?.reason === 'clean-exit') {
+        handleWindowClosed()
+        return
+      }
+      const { crash, delayMs } = this.recordCrash(
+        extensionId,
+        details?.reason || 'unknown',
+        details?.exitCode,
+      )
+      if (this.docs.get(extensionId) === doc) this.docs.delete(extensionId)
+      win.removeListener('closed', handleWindowClosed)
+      warn(
+        'offscreen renderer gone ext=',
+        extensionId,
+        'documentId=',
+        documentId,
+        'reason=',
+        crash.reason,
+        'exitCode=',
+        crash.exitCode,
+        'retryDelayMs=',
+        delayMs,
+        'crashCount=',
+        crash.crashCount,
+      )
+      setTimeout(() => {
+        try {
+          if (!win.isDestroyed()) win.destroy()
+        } catch (err: any) {
+          warn('deferred destroy failed ext=', extensionId, err && err.message)
+        }
+      }, 0)
+    })
 
     try {
       await win.webContents.loadURL(url)
@@ -221,6 +398,10 @@ export class OffscreenAPI {
       warn('openDocument load failed ext=', extensionId, 'url=', url, err && err.message)
       this.destroyFor(extensionId, 'load-failed')
       throw err
+    }
+
+    if (this.docs.get(extensionId) !== doc || win.isDestroyed() || win.webContents.isDestroyed()) {
+      throw new Error('chrome.offscreen renderer exited during startup')
     }
 
     // Give the page a tick to register its runtime.onMessage listener. The SW's
@@ -396,7 +577,7 @@ export class OffscreenAPI {
     const doc = this.docs.get(extensionId)
     if (!doc) return
     this.docs.delete(extensionId)
-    d('destroy offscreen ext=', extensionId, 'reason=', reason)
+    log('destroy offscreen ext=', extensionId, 'documentId=', doc.documentId, 'reason=', reason)
     try {
       if (!doc.window.isDestroyed()) {
         doc.window.removeAllListeners('closed')

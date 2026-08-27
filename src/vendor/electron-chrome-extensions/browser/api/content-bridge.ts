@@ -78,9 +78,22 @@ export function buildContentScriptBridge(
 
       let sequence = 0;
       const listeners: Record<string, Function[]> = Object.create(null);
-      const pendingMessages: Record<string, { resolve: Function; timer: any }> =
+      const pendingMessages: Record<
+        string,
+        { resolve: Function; timer: any; retryTimer: any }
+      > =
         Object.create(null);
-      const outboundPorts: Record<string, boolean> = Object.create(null);
+      const outboundPorts: Record<string, { retryTimer: any; stopTimer: any }> =
+        Object.create(null);
+
+      const stopPortRetry = (connId: string) => {
+        const port = outboundPorts[connId];
+        if (!port || !port.retryTimer) return;
+        clearInterval(port.retryTimer);
+        clearTimeout(port.stopTimer);
+        port.retryTimer = null;
+        port.stopTimer = null;
+      };
 
       const emit = (channel: string, ...args: any[]) => {
         const callbacks = (listeners[channel] || []).slice();
@@ -102,7 +115,13 @@ export function buildContentScriptBridge(
           if (!pending) return;
           delete pendingMessages[data.mid];
           clearTimeout(pending.timer);
+          clearInterval(pending.retryTimer);
           pending.resolve(data.response);
+          return;
+        }
+        if (data.__crxCSPortAck && data.connId) {
+          if (data.extId && data.extId !== EXT_ID) return;
+          stopPortRetry(data.connId);
           return;
         }
         if (data.__crxCSPortIn && data.connId) {
@@ -110,6 +129,7 @@ export function buildContentScriptBridge(
           return;
         }
         if (data.__crxCSPortDisIn && data.connId) {
+          stopPortRetry(data.connId);
           delete outboundPorts[data.connId];
           emit('crx-port-disconnect:' + data.connId);
           return;
@@ -152,38 +172,52 @@ export function buildContentScriptBridge(
                 const pending = pendingMessages[mid];
                 if (!pending) return;
                 delete pendingMessages[mid];
+                clearInterval(pending.retryTimer);
                 resolve(undefined);
               }, 30000);
-              pendingMessages[mid] = { resolve, timer };
-              try {
-                w.postMessage(
-                  {
-                    __crxCsSend: true,
-                    mid,
-                    extId: args[0] || EXT_ID,
-                    message: args[1],
-                  },
-                  '*',
-                );
-              } catch {
-                clearTimeout(timer);
-                delete pendingMessages[mid];
-                resolve(undefined);
-              }
+              const post = () => {
+                if (!pendingMessages[mid]) return;
+                try {
+                  w.postMessage(
+                    {
+                      __crxCsSend: true,
+                      mid,
+                      extId: args[0] || EXT_ID,
+                      message: args[1],
+                    },
+                    '*',
+                  );
+                } catch {
+                  // The preload relay may not exist yet. Keep retrying until
+                  // it responds or the normal runtime timeout expires.
+                }
+              };
+              const retryTimer = setInterval(post, 100);
+              pendingMessages[mid] = { resolve, timer, retryTimer };
+              post();
             });
           }
           if (channel === 'crx-port-connect') {
             const connId = EXT_ID + '-port-' + ++sequence;
-            outboundPorts[connId] = true;
-            w.postMessage(
-              {
-                __crxCSConnect: true,
-                connId,
-                extId: args[0] || EXT_ID,
-                name: (args[1] && args[1].name) || '',
-              },
-              '*',
-            );
+            const message = {
+              __crxCSConnect: true,
+              connId,
+              extId: args[0] || EXT_ID,
+              name: (args[1] && args[1].name) || '',
+            };
+            const post = () => {
+              if (!outboundPorts[connId]) return;
+              try {
+                w.postMessage(message, '*');
+              } catch {
+                // The receiving preload can be installed after document_start.
+              }
+            };
+            outboundPorts[connId] = {
+              retryTimer: setInterval(post, 100),
+              stopTimer: setTimeout(() => stopPortRetry(connId), 30000),
+            };
+            post();
             return Promise.resolve(connId);
           }
           return Promise.resolve(undefined);
@@ -199,6 +233,7 @@ export function buildContentScriptBridge(
             );
           } else if (channel === 'crx-port-disconnect') {
             const portId = args[0];
+            stopPortRetry(portId);
             w.postMessage(
               outboundPorts[portId]
                 ? { __crxCSPortDisOut: true, connId: portId }
@@ -320,8 +355,9 @@ export function buildContentScriptBridge(
 
       postMessage(message: any) {
         if (this._closed) return;
-        if (this._id) ipc.send('crx-port-post', this._id, message);
-        else this._pending.push(message);
+        const serialized = serializeMessage(message);
+        if (this._id) ipc.send('crx-port-post', this._id, serialized);
+        else this._pending.push(serialized);
       }
 
       disconnect() {
@@ -349,6 +385,11 @@ export function buildContentScriptBridge(
     const onMessage = new Evt();
     const onConnect = new Evt();
 
+    const serializeMessage = (value: any) => {
+      const serialized = JSON.stringify(value);
+      return serialized === undefined ? undefined : JSON.parse(serialized);
+    };
+
     // chrome.runtime.lastError: Chrome exposes this as a getter that is set
     // during the callback following a failed message/disconnect, then cleared.
     // Backed by a mutable slot; sendMessage sets it on a no-response and clears
@@ -363,7 +404,13 @@ export function buildContentScriptBridge(
         const sendResponse = (response: any) => {
           if (responded) return;
           responded = true;
-          ipc.send('crx-cs-message-response', messageId, response);
+          let serialized = response;
+          try {
+            if (response !== undefined) serialized = serializeMessage(response);
+          } catch {
+            serialized = undefined;
+          }
+          ipc.send('crx-cs-message-response', messageId, serialized);
         };
         const results = onMessage._emit(message, sender || {}, sendResponse);
         let asyncPending = false;
@@ -432,20 +479,27 @@ export function buildContentScriptBridge(
         return new Port(name);
       },
       sendMessage: (...args: any[]) => {
-        // Signatures: (message), (message, cb), (extId, message), (extId, message, cb)
+        // Chrome signatures also allow an options object before the callback.
+        // runtime.sendMessage currently has no routing options in this bridge;
+        // preserve the argument for signature compatibility and intentionally
+        // ignore it (tabs.sendMessage handles frameId separately).
+        const cb =
+          typeof args[args.length - 1] === 'function' ? args.pop() : undefined;
         let message = args[0];
-        let cb: any;
         if (
           typeof args[0] === 'string' &&
           args.length >= 2 &&
           typeof args[1] !== 'function'
         ) {
           message = args[1];
-          cb = typeof args[2] === 'function' ? args[2] : undefined;
-        } else {
-          cb = typeof args[1] === 'function' ? args[1] : undefined;
         }
-        const p = ipc.invoke('crx-runtime-message', EXT_ID, message);
+        let serialized: any;
+        try {
+          serialized = serializeMessage(message);
+        } catch {
+          serialized = undefined;
+        }
+        const p = ipc.invoke('crx-runtime-message', EXT_ID, serialized);
         if (cb) {
           const noReceiver = () => {
             _lastError = {

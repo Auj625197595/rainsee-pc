@@ -52,6 +52,24 @@ export class CommandsAPI {
     sessionExtensions.on('extension-unloaded', (_event, extension) => {
       this.removeCommands(extension)
     })
+
+    // Own the tab wiring at the store boundary. Some host paths register tabs
+    // through ExtensionStore directly, so relying only on the public
+    // ElectronChromeExtensions.addTab wrapper can leave command shortcuts
+    // detached even though chrome.tabs already sees the page.
+    this.ctx.store.on('tab-added', (tab: Electron.WebContents) => {
+      this.attachWebContents(tab)
+    })
+
+    // The API can be constructed after extensions or tabs have already been
+    // registered (session restore and extension-host reload both do this).
+    // Hydrate both sides so commands work without requiring another reload.
+    sessionExtensions.getAllExtensions().forEach((extension) => {
+      this.processExtension(extension)
+    })
+    this.ctx.store.tabs.forEach((tab) => {
+      this.attachWebContents(tab)
+    })
   }
 
   /** Inject the host's action activator (opens popup / fires onClicked). */

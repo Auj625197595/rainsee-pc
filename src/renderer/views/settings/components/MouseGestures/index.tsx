@@ -1,155 +1,204 @@
 import * as React from 'react';
+import * as ReactDOM from 'react-dom';
 import { observer } from 'mobx-react-lite';
 import styled, { css } from 'styled-components';
+import {
+  ArrowsOutCardinal,
+  CursorClick,
+  GearSix,
+  HandPalm,
+  Mouse,
+  PaintBrush,
+  Path,
+  SlidersHorizontal,
+  SquaresFour,
+  X,
+} from '@phosphor-icons/react';
 
 import { ipcRenderer } from '~/common/renderer-ipc';
-import store from '../../store';
-import { Header, Title, SecondaryText } from '../App/style';
-import { NormalButton } from '../App';
+import { ITheme, TabWheelBehavior } from '~/interfaces';
 import { Switch } from '~/renderer/components/Switch';
+import store from '../../store';
 import { getPalette } from '../../utils/palette';
-import { ITheme } from '~/interfaces';
+import { onSwitchChange } from '../../utils/settings';
 
-// 主进程 get-gesture-actions 下发的数据结构(不 import 主进程注册表,避免把
-// src/main 模块拖进 renderer bundle)。
 interface GestureActionDTO {
   id: string;
   label: string;
   category: string;
 }
+
 interface GestureCategoryDTO {
   id: string;
   label: string;
 }
+
 interface PresetShapeDTO {
   code: string;
   label: string;
 }
-interface BindingDTO {
+
+interface LeftActionDTO {
   id: string;
-  shape: string | null;
-  defaultShape: string | null;
+  label: string;
 }
 
-// ===========================================================================
-// 形状 → 迷你 SVG 字形(下拉项/当前值旁边显示手势形状)
-// ===========================================================================
+type GestureModal = 'left-drag' | 'side-buttons' | 'mappings' | null;
+type IconTone = 'purple' | 'cyan' | 'orange' | 'blue' | 'pink' | 'green';
 
-// 方向 → 单位向量(SVG 坐标,y 向下为正)。只有 4 个基向:形状由基向序列组成,
-// 如 "DR"=先下再右的折角,"UD"=先上再下。
-const DIR_VEC: { [k: string]: [number, number] } = {
-  R: [1, 0],
-  L: [-1, 0],
-  U: [0, -1],
-  D: [0, 1],
-};
-
-// 把 code 串按字符拆成基向 token(每个字符都是 L/R/U/D)。
-const tokenize = (code: string): string[] => {
-  const out: string[] = [];
-  for (const ch of code || '') {
-    if (DIR_VEC[ch]) out.push(ch);
-  }
-  return out;
-};
-
-const ShapeGlyph = ({
-  code,
-  size = 18,
-  color = 'currentColor',
-}: {
-  code: string;
-  size?: number;
-  color?: string;
-}) => {
-  const tokens = tokenize(code || '');
-  if (tokens.length === 0) return null;
-  const step = size * 0.34;
-  let x = size / 2;
-  let y = size / 2;
-  const pts: [number, number][] = [[x, y]];
-  for (const t of tokens) {
-    const v = DIR_VEC[t];
-    if (!v) continue;
-    x += v[0] * step;
-    y += v[1] * step;
-    pts.push([x, y]);
-  }
-  const xs = pts.map((p) => p[0]);
-  const ys = pts.map((p) => p[1]);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-  const ox = (size - (maxX + minX)) / 2;
-  const oy = (size - (maxY + minY)) / 2;
-  const d = pts
-    .map((p, i) => `${i === 0 ? 'M' : 'L'}${(p[0] + ox).toFixed(1)} ${(p[1] + oy).toFixed(1)}`)
-    .join(' ');
-  const start = pts[0];
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox={`0 0 ${size} ${size}`}
-      fill="none"
-      stroke={color}
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d={d} />
-      <circle
-        cx={(start[0] + ox).toFixed(1)}
-        cy={(start[1] + oy).toFixed(1)}
-        r="1.4"
-        fill={color}
-        stroke="none"
-      />
-    </svg>
-  );
-};
-
-// ===========================================================================
-// styled(克隆 Shortcuts/index.tsx 的原子,改下拉)
-// ===========================================================================
-
-const TopRow = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  margin-bottom: 6px;
-
-  & > button {
-    margin-left: auto;
-    flex-shrink: 0;
-  }
+const Group = styled.section`
+  margin-top: 26px;
 `;
 
-const OptionsRow = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  margin-top: 6px;
-  margin-bottom: 8px;
-  padding: 14px 18px;
-  border-radius: 16px;
-  flex-wrap: wrap;
+const GroupLabel = styled.h3`
+  margin: 0 0 9px;
+  padding: 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textSub};
+  `}
+`;
+
+const Note = styled.p`
+  margin: 5px 4px 12px;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.55;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textSub};
+  `}
+`;
+
+const Card = styled.div`
+  overflow: hidden;
+  border-radius: 12px;
 
   ${({ theme }: { theme?: ITheme }) => {
     const p = getPalette(theme);
     return css`
       background-color: ${p.surface};
-      box-shadow: inset 0 0 0 1px ${p.line}, 0 1px 2px rgba(20, 27, 45, 0.04);
+      border: 1px solid ${p.line};
     `;
   }}
 `;
 
-const OptionItem = styled.div`
+const SettingRow = styled.div`
   display: flex;
   align-items: center;
+  gap: 12px;
+  min-height: 70px;
+  padding: 12px 14px;
+
+  & + & {
+    ${({ theme }: { theme?: ITheme }) => css`
+      border-top: 1px solid ${getPalette(theme).line};
+    `}
+  }
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    &:hover {
+      background-color: ${getPalette(theme).hover};
+    }
+  `}
+`;
+
+const IconBox = styled.span<{ $tone: IconTone }>`
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+
+  ${({ $tone, theme }: { $tone: IconTone; theme?: ITheme }) => {
+    const p = getPalette(theme);
+    const tones: Record<IconTone, [string, string]> = {
+      purple: ['#7c5ce5', '#eeeaff'],
+      cyan: ['#0891b2', '#e3f8fb'],
+      orange: ['#d97706', '#fff2dd'],
+      blue: [p.primary, p.primarySoft],
+      pink: ['#db2777', '#fce7f3'],
+      green: ['#16a34a', '#e7f8ed'],
+    };
+    return css`
+      color: ${tones[$tone][0]};
+      background-color: ${tones[$tone][1]};
+    `;
+  }}
+`;
+
+const RowCopy = styled.div`
+  flex: 1;
+  min-width: 0;
+`;
+
+const RowTitle = styled.div`
+  font-size: 14px;
+  font-weight: 600;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textMain};
+  `}
+`;
+
+const RowDescription = styled.div`
+  margin-top: 3px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textSub};
+  `}
+`;
+
+const ActionButton = styled.button<{ $primary?: boolean }>`
+  min-height: 34px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.16s ease, border-color 0.16s ease,
+    color 0.16s ease;
+
+  ${({ $primary, theme }: { $primary?: boolean; theme?: ITheme }) => {
+    const p = getPalette(theme);
+    return css`
+      color: ${$primary ? '#fff' : p.textMain};
+      background-color: ${$primary ? p.primary : p.surface};
+      border: 1px solid ${$primary ? p.primary : p.line};
+
+      &:hover {
+        color: ${$primary ? '#fff' : p.primary};
+        background-color: ${$primary ? p.primary : p.primarySoft};
+        border-color: ${p.primary};
+      }
+    `;
+  }}
+`;
+
+const ColorControl = styled.label`
+  display: inline-flex;
+  align-items: center;
   gap: 8px;
-  font-size: 13.5px;
+  flex-shrink: 0;
+  font-family: 'SF Mono', 'Roboto Mono', ui-monospace, monospace;
+  font-size: 12px;
 
   ${({ theme }: { theme?: ITheme }) => css`
     color: ${getPalette(theme).textSub};
@@ -157,87 +206,184 @@ const OptionItem = styled.div`
 `;
 
 const ColorInput = styled.input`
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
+  width: 32px;
+  height: 32px;
+  padding: 3px;
+  border-radius: 9px;
   cursor: pointer;
-  &::-webkit-color-swatch-wrapper {
-    padding: 0;
-  }
-  &::-webkit-color-swatch {
-    border: 1px solid rgba(0, 0, 0, 0.12);
-    border-radius: 8px;
-  }
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    background-color: ${getPalette(theme).surface};
+    border: 1px solid ${getPalette(theme).line};
+  `}
 `;
 
-const CategoryTitle = styled.div`
-  margin: 18px 0 2px;
-  padding: 0 4px;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
+const ModalLayer = styled.div`
+  position: absolute;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 22px;
+  background: rgba(24, 27, 42, 0.28);
+  backdrop-filter: blur(2px);
+`;
+
+const Modal = styled.section`
+  width: min(790px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 14px;
+
+  ${({ theme }: { theme?: ITheme }) => {
+    const p = getPalette(theme);
+    return css`
+      color: ${p.textMain};
+      background-color: ${p.surface};
+      border: 1px solid ${p.line};
+      box-shadow: 0 24px 60px -28px rgba(26, 34, 76, 0.42);
+    `;
+  }}
+`;
+
+const ModalHead = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 17px 20px;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    border-bottom: 1px solid ${getPalette(theme).line};
+  `}
+`;
+
+const ModalTitle = styled.h3`
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+`;
+
+const CloseButton = styled.button`
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+
+  ${({ theme }: { theme?: ITheme }) => {
+    const p = getPalette(theme);
+    return css`
+      color: ${p.textMain};
+      background-color: ${p.bg};
+      &:hover {
+        color: ${p.primary};
+        background-color: ${p.primarySoft};
+      }
+    `;
+  }}
+`;
+
+const ModalBody = styled.div`
+  overflow-y: auto;
+  padding: 0 20px 22px;
+`;
+
+const ModalIntro = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 2px;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.5;
 
   ${({ theme }: { theme?: ITheme }) => css`
     color: ${getPalette(theme).textSub};
   `}
 `;
 
-const ActionRow = styled.div`
-  width: 100%;
+const SliderRow = styled.div`
   display: flex;
   align-items: center;
-  gap: 18px;
-  margin-top: 10px;
-  padding: 14px 18px;
-  border-radius: 16px;
-  transition: box-shadow 0.18s ease;
+  gap: 12px;
+  padding: 4px 2px 16px;
 
-  ${({ theme }: { theme?: ITheme }) => {
-    const p = getPalette(theme);
-    return css`
-      background-color: ${p.surface};
-      box-shadow: inset 0 0 0 1px ${p.line}, 0 1px 2px rgba(20, 27, 45, 0.04);
-    `;
-  }}
+  label {
+    min-width: 72px;
+    font-size: 13.5px;
+    font-weight: 600;
+  }
+
+  input {
+    flex: 1;
+    accent-color: ${({ theme }: { theme?: ITheme }) =>
+      getPalette(theme).primary};
+  }
 `;
 
-const CurrentShape = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 96px;
+const SliderValue = styled.output`
+  min-width: 43px;
+  text-align: right;
+  font-family: 'SF Mono', 'Roboto Mono', ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 700;
 
   ${({ theme }: { theme?: ITheme }) => css`
     color: ${getPalette(theme).primary};
   `}
 `;
 
-const ControlColumn = styled.div`
-  margin-left: auto;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 6px;
+const DirectionList = styled.div`
+  overflow: hidden;
+  border-radius: 12px;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    border: 1px solid ${getPalette(theme).line};
+  `}
 `;
 
-const BtnRow = styled.div`
+const DirectionRow = styled.div`
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
+  min-height: 58px;
+  padding: 10px 14px;
+
+  & + & {
+    ${({ theme }: { theme?: ITheme }) => css`
+      border-top: 1px solid ${getPalette(theme).line};
+    `}
+  }
 `;
 
-const ShapeSelect = styled.select`
-  height: 36px;
-  padding: 0 12px;
-  border-radius: 10px;
-  font-family: inherit;
-  font-size: 13px;
-  cursor: pointer;
+const Direction = styled.span`
+  width: 66px;
+  flex-shrink: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textSub};
+  `}
+`;
+
+const Select = styled.select`
+  min-width: 0;
+  height: 34px;
+  padding: 0 8px;
+  border-radius: 8px;
   outline: none;
-  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
 
   ${({ theme }: { theme?: ITheme }) => {
     const p = getPalette(theme);
@@ -245,11 +391,6 @@ const ShapeSelect = styled.select`
       color: ${p.textMain};
       background-color: ${p.bg};
       border: 1px solid ${p.line};
-
-      &:hover {
-        border-color: ${p.primary}66;
-      }
-
       &:focus {
         border-color: ${p.primary};
         box-shadow: 0 0 0 3px ${p.primary}1f;
@@ -258,62 +399,319 @@ const ShapeSelect = styled.select`
   }}
 `;
 
-const ActionButton = styled.button`
-  height: 32px;
-  padding: 0 12px;
-  border-radius: 9px;
-  font-size: 12.5px;
-  font-family: inherit;
-  cursor: pointer;
-  transition: background-color 0.16s ease, opacity 0.16s ease;
+const SegmentedControl = styled.div`
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, auto));
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  flex-shrink: 0;
 
   ${({ theme }: { theme?: ITheme }) => {
     const p = getPalette(theme);
     return css`
-      color: ${p.textSub};
-      background-color: transparent;
+      background-color: ${p.bg};
       border: 1px solid ${p.line};
+    `;
+  }}
+`;
+
+const SegmentButton = styled.button<{ $active: boolean }>`
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  white-space: nowrap;
+  cursor: pointer;
+
+  ${({ $active, theme }: { $active: boolean; theme?: ITheme }) => {
+    const p = getPalette(theme);
+    return css`
+      color: ${$active ? p.primary : p.textSub};
+      background-color: ${$active ? p.surface : 'transparent'};
+      box-shadow: ${$active ? `0 1px 3px ${p.line}` : 'none'};
 
       &:hover {
-        background-color: ${p.bg};
+        color: ${$active ? p.primary : p.textMain};
       }
     `;
   }}
 `;
 
-const DisabledHint = styled.div`
-  padding: 40px 0;
-  text-align: center;
+const Workspace = styled.div`
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 164px;
+  gap: 14px;
+  margin-top: 2px;
+`;
+
+const WorkspaceTitle = styled.span`
+  display: block;
   font-size: 14px;
+  font-weight: 600;
+`;
+
+const WorkspaceDescription = styled.span`
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textSub};
+  `}
+`;
+
+const Stats = styled.div`
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+`;
+
+const Stat = styled.div`
+  min-height: 69px;
+  padding: 11px;
+  border-radius: 10px;
+
+  b {
+    display: block;
+    font-size: 18px;
+    font-weight: 600;
+  }
+  span {
+    display: block;
+    margin-top: 2px;
+    font-size: 11px;
+    font-weight: 500;
+  }
+
+  ${({ theme }: { theme?: ITheme }) => {
+    const p = getPalette(theme);
+    return css`
+      background-color: ${p.bg};
+      border: 1px solid ${p.line};
+      b {
+        color: ${p.primary};
+      }
+      span {
+        color: ${p.textSub};
+      }
+    `;
+  }}
+`;
+
+const Editor = styled.div`
+  margin-top: 16px;
+  overflow: hidden;
+  border-radius: 12px;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    border: 1px solid ${getPalette(theme).line};
+  `}
+`;
+
+const EditorTools = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 13px;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    background-color: ${getPalette(theme).bg};
+    border-bottom: 1px solid ${getPalette(theme).line};
+  `}
+`;
+
+const FilterInput = styled.input`
+  flex: 1;
+  min-width: 0;
+  height: 33px;
+  padding: 0 10px;
+  border-radius: 8px;
+  outline: none;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+
+  ${({ theme }: { theme?: ITheme }) => {
+    const p = getPalette(theme);
+    return css`
+      color: ${p.textMain};
+      background-color: ${p.surface};
+      border: 1px solid ${p.line};
+      &:focus {
+        border-color: ${p.primary};
+        box-shadow: 0 0 0 3px ${p.primary}1f;
+      }
+    `;
+  }}
+`;
+
+const Tabs = styled.div`
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 8px;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    background-color: ${getPalette(theme).hover};
+  `}
+`;
+
+const Tab = styled.button<{ $active: boolean }>`
+  min-height: 27px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+
+  ${({ $active, theme }: { $active: boolean; theme?: ITheme }) => {
+    const p = getPalette(theme);
+    return css`
+      color: ${$active ? p.primary : p.textSub};
+      background-color: ${$active ? p.surface : 'transparent'};
+      box-shadow: ${$active ? '0 1px 3px rgba(40, 50, 120, 0.1)' : 'none'};
+    `;
+  }}
+`;
+
+const CategoryName = styled.div`
+  padding: 15px 15px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textSub};
+  `}
+`;
+
+const MappingRow = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-height: 58px;
+  padding: 9px 14px;
+
+  & + & {
+    ${({ theme }: { theme?: ITheme }) => css`
+      border-top: 1px solid ${getPalette(theme).line};
+    `}
+  }
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    &:hover {
+      background-color: ${getPalette(theme).hover};
+    }
+  `}
+`;
+
+const MappingName = styled.span`
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+`;
+
+const ShapeToken = styled.span<{ $active?: boolean }>`
+  min-width: 31px;
+  height: 26px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 7px;
+  border-radius: 7px;
+  font-family: Consolas, 'SF Mono', monospace;
+  font-size: 12px;
+  font-weight: 700;
+
+  ${({ $active, theme }: { $active?: boolean; theme?: ITheme }) => {
+    const p = getPalette(theme);
+    return css`
+      color: ${$active ? p.primary : p.textMain};
+      background-color: ${$active ? p.primarySoft : p.bg};
+    `;
+  }}
+`;
+
+const MapSelect = styled(Select)`
+  width: 172px;
+  max-width: 42%;
+`;
+
+const ModalFooter = styled.div`
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 15px;
+`;
+
+const Empty = styled.div`
+  padding: 38px 0;
+  text-align: center;
+  font-size: 13px;
 
   ${({ theme }: { theme?: ITheme }) => css`
     color: ${getPalette(theme).textMute};
   `}
 `;
 
-// ===========================================================================
-// 组件
-// ===========================================================================
+const directionLabels: Record<string, string> = {
+  U: '向上',
+  D: '向下',
+  L: '向左',
+  R: '向右',
+};
 
 export const MouseGestures = observer(() => {
   const [actions, setActions] = React.useState<GestureActionDTO[]>([]);
   const [categories, setCategories] = React.useState<GestureCategoryDTO[]>([]);
   const [presets, setPresets] = React.useState<PresetShapeDTO[]>([]);
-  const [defaults, setDefaults] = React.useState<{ [id: string]: string | null }>({});
+  const [defaults, setDefaults] = React.useState<Record<string, string | null>>(
+    {},
+  );
+  const [leftActions, setLeftActions] = React.useState<LeftActionDTO[]>([]);
   const [loaded, setLoaded] = React.useState(false);
+  const [modal, setModal] = React.useState<GestureModal>(null);
+  const [filter, setFilter] = React.useState('');
+  const [filterTab, setFilterTab] = React.useState<'all' | 'bound' | 'empty'>(
+    'all',
+  );
 
   React.useEffect(() => {
     let alive = true;
     ipcRenderer
       .invoke('get-gesture-actions')
-      .then((res: any) => {
-        if (!alive || !res) return;
-        setCategories(res.categories || []);
-        setActions(res.actions || []);
-        setPresets(res.presets || []);
-        const d: { [id: string]: string | null } = {};
-        for (const b of res.bindings || []) d[b.id] = b.defaultShape;
-        setDefaults(d);
+      .then((result: any) => {
+        if (!alive) return;
+        if (!result) {
+          setLoaded(true);
+          return;
+        }
+        setActions(result.actions || []);
+        setCategories(result.categories || []);
+        setPresets(result.presets || []);
+        setLeftActions(result.leftActions || []);
+        setDefaults(
+          (result.bindings || []).reduce(
+            (
+              value: Record<string, string | null>,
+              binding: { id: string; defaultShape: string | null },
+            ) => {
+              value[binding.id] = binding.defaultShape;
+              return value;
+            },
+            {},
+          ),
+        );
         setLoaded(true);
       })
       .catch(() => setLoaded(true));
@@ -322,131 +720,522 @@ export const MouseGestures = observer(() => {
     };
   }, []);
 
-  // 用户覆盖(mobx observable)。主进程 update-settings 广播后自动刷新。
+  React.useEffect(() => {
+    if (!modal) return undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setModal(null);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [modal]);
+
   const overrides = store.settings.mouseGestures || {};
+  const effective = (id: string): string | null =>
+    Object.prototype.hasOwnProperty.call(overrides, id)
+      ? overrides[id] ?? null
+      : defaults[id] ?? null;
+  const usedByOther = (id: string, shape: string | null) =>
+    !!shape &&
+    actions.some(
+      (action) => action.id !== id && effective(action.id) === shape,
+    );
+  const setOption = (
+    key: 'enabled' | 'leftEnabled' | 'color' | 'leftOpenInBackground',
+    value: unknown,
+  ) => ipcRenderer.invoke('set-gesture-option', key, value);
+  const setLeftGesture = (direction: string, actionId: string) =>
+    ipcRenderer.invoke('set-gesture-option', 'leftGesture', {
+      direction,
+      actionId: actionId || null,
+    });
+  const setSideButton = (button: string, actionId: string) =>
+    ipcRenderer.invoke('set-gesture-option', 'sideButton', {
+      button,
+      actionId: actionId || null,
+    });
 
-  // 某动作当前生效的 shape:覆盖优先(含 null=解绑),否则默认。
-  const effective = (id: string): string | null => {
-    if (Object.prototype.hasOwnProperty.call(overrides, id)) {
-      return overrides[id] ?? null;
+  const leftEnabled = store.settings.mouseLeftGesturesEnabled !== false;
+  const rightEnabled = store.settings.mouseGesturesEnabled !== false;
+  const threshold = store.settings.mouseLeftGestureThreshold || 24;
+  const leftOpenInBackground =
+    store.settings.mouseLeftGestureOpenInBackground !== false;
+  const color = store.settings.mouseGestureColor || '#3b82f6';
+  const left = store.settings.mouseLeftGestures || {};
+  const side = store.settings.mouseSideButtons || {};
+  const tabWheelBehavior = store.settings.tabWheelBehavior || 'auto';
+  const leftSummary = `阈值 ${threshold}px · 上${
+    leftActions.find((item) => item.id === left.U)?.label || '置空'
+  } · 下${leftActions.find((item) => item.id === left.D)?.label || '置空'}`;
+  const sideActionName = (id: string | null | undefined) =>
+    actions.find((action) => action.id === id)?.label || '置空（不响应）';
+  const boundCount = actions.filter((action) => effective(action.id)).length;
+
+  const filteredActions = (categoryId: string) =>
+    actions.filter((action) => {
+      const bound = !!effective(action.id);
+      return (
+        action.category === categoryId &&
+        action.label.toLowerCase().includes(filter.trim().toLowerCase()) &&
+        (filterTab === 'all' ||
+          (filterTab === 'bound' && bound) ||
+          (filterTab === 'empty' && !bound))
+      );
+    });
+
+  const modalTitle =
+    modal === 'left-drag'
+      ? '左键拖拽设置'
+      : modal === 'side-buttons'
+      ? '侧边键动作'
+      : '管理右键手势';
+
+  const renderModalContent = () => {
+    if (modal === 'left-drag') {
+      return (
+        <>
+          <ModalIntro>
+            <IconBox $tone="purple">
+              <CursorClick size={18} weight="fill" />
+            </IconBox>
+            在链接或图片上按住左键并拖动，达到设定距离后显示可执行的方向动作。
+          </ModalIntro>
+          <SliderRow>
+            <label htmlFor="left-gesture-threshold">滑动距离</label>
+            <input
+              id="left-gesture-threshold"
+              type="range"
+              min="8"
+              max="200"
+              step="1"
+              value={threshold}
+              onChange={(event) =>
+                ipcRenderer.invoke(
+                  'set-gesture-option',
+                  'leftThreshold',
+                  Number(event.target.value),
+                )
+              }
+            />
+            <SliderValue>{threshold}px</SliderValue>
+          </SliderRow>
+          <SettingRow>
+            <IconBox $tone="cyan">
+              <CursorClick size={17} weight="fill" />
+            </IconBox>
+            <RowCopy>
+              <RowTitle>拖到标签栏的打开方式</RowTitle>
+              <RowDescription>
+                后台打开会创建标签页，但保持当前标签不变。
+              </RowDescription>
+            </RowCopy>
+            <SegmentedControl role="group" aria-label="拖到标签栏的打开方式">
+              <SegmentButton
+                type="button"
+                $active={!leftOpenInBackground}
+                aria-pressed={!leftOpenInBackground}
+                onClick={() => setOption('leftOpenInBackground', false)}
+              >
+                前台打开
+              </SegmentButton>
+              <SegmentButton
+                type="button"
+                $active={leftOpenInBackground}
+                aria-pressed={leftOpenInBackground}
+                onClick={() => setOption('leftOpenInBackground', true)}
+              >
+                后台打开
+              </SegmentButton>
+            </SegmentedControl>
+          </SettingRow>
+          <DirectionList>
+            {(['U', 'D', 'L', 'R'] as const).map((direction) => (
+              <DirectionRow key={direction}>
+                <Direction>{directionLabels[direction]}</Direction>
+                <Select
+                  value={left[direction] || ''}
+                  onChange={(event) =>
+                    setLeftGesture(direction, event.target.value)
+                  }
+                >
+                  <option value="">置空（不响应）</option>
+                  {leftActions.map((action) => (
+                    <option key={action.id} value={action.id}>
+                      {action.label}
+                    </option>
+                  ))}
+                </Select>
+              </DirectionRow>
+            ))}
+          </DirectionList>
+        </>
+      );
     }
-    return defaults[id] ?? null;
-  };
-
-  // 每个动作的当前 shape(用于冲突检测:某形状是否被「别的」动作占用)。
-  const usedByOther = (id: string, shape: string | null): boolean => {
-    if (!shape) return false;
-    return actions.some((a) => a.id !== id && effective(a.id) === shape);
-  };
-
-  const isCustom = (id: string): boolean => effective(id) !== (defaults[id] ?? null);
-
-  const hasCustom = actions.some((a) => isCustom(a.id));
-
-  const setShape = (id: string, shape: string | null) => {
-    ipcRenderer.invoke('set-gesture', id, shape);
-  };
-
-  const resetOne = (id: string) => ipcRenderer.invoke('reset-gesture', id);
-  const resetAll = () => ipcRenderer.invoke('reset-gesture');
-
-  const setOption = (key: 'enabled' | 'color', value: any) =>
-    ipcRenderer.invoke('set-gesture-option', key, value);
-
-  const enabled = store.settings.mouseGesturesEnabled !== false;
-
-  if (!loaded) {
+    if (modal === 'side-buttons') {
+      return (
+        <>
+          <ModalIntro>
+            <IconBox $tone="orange">
+              <Mouse size={18} weight="fill" />
+            </IconBox>
+            为具有前进、后退侧键的鼠标指定动作。未设置时将不响应。
+          </ModalIntro>
+          <DirectionList>
+            {[
+              { button: '3', label: '后退侧键', fallback: 'back' },
+              { button: '4', label: '前进侧键', fallback: 'forward' },
+            ].map((item) => (
+              <DirectionRow key={item.button}>
+                <Direction>{item.label}</Direction>
+                <Select
+                  value={
+                    Object.prototype.hasOwnProperty.call(side, item.button)
+                      ? side[item.button] || ''
+                      : item.fallback
+                  }
+                  onChange={(event) =>
+                    setSideButton(item.button, event.target.value)
+                  }
+                >
+                  <option value="">置空（不响应）</option>
+                  {categories.map((category) => (
+                    <optgroup key={category.id} label={category.label}>
+                      {actions
+                        .filter((action) => action.category === category.id)
+                        .map((action) => (
+                          <option key={action.id} value={action.id}>
+                            {action.label}
+                          </option>
+                        ))}
+                    </optgroup>
+                  ))}
+                </Select>
+              </DirectionRow>
+            ))}
+          </DirectionList>
+        </>
+      );
+    }
     return (
       <>
-        <Header>鼠标手势</Header>
-        <DisabledHint>加载中…</DisabledHint>
+        <ModalIntro>
+          <IconBox $tone="blue">
+            <HandPalm size={18} weight="fill" />
+          </IconBox>
+          每个形状只能分配给一个动作，已被占用的形状会自动从其他选项中隐藏。
+        </ModalIntro>
+        <Workspace>
+          <div>
+            <WorkspaceTitle>右键手势映射</WorkspaceTitle>
+            <WorkspaceDescription>
+              按住右键拖动，沿指定方向移动后松开即可触发动作。
+            </WorkspaceDescription>
+          </div>
+          <Stats>
+            <Stat>
+              <b>{boundCount}</b>
+              <span>已绑定</span>
+            </Stat>
+            <Stat>
+              <b>{Math.max(0, presets.length - boundCount)}</b>
+              <span>可用形状</span>
+            </Stat>
+          </Stats>
+        </Workspace>
+        <Editor>
+          <EditorTools>
+            <FilterInput
+              type="search"
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+              placeholder="筛选动作"
+              aria-label="筛选动作"
+            />
+            <Tabs role="tablist">
+              {(
+                [
+                  ['all', '全部'],
+                  ['bound', '已绑定'],
+                  ['empty', '未绑定'],
+                ] as const
+              ).map(([id, label]) => (
+                <Tab
+                  key={id}
+                  type="button"
+                  $active={filterTab === id}
+                  onClick={() => setFilterTab(id)}
+                >
+                  {label}
+                </Tab>
+              ))}
+            </Tabs>
+          </EditorTools>
+          {categories.map((category, index) => {
+            const entries = filteredActions(category.id);
+            if (!entries.length) return null;
+            const tones: IconTone[] = ['blue', 'purple', 'green', 'orange'];
+            return (
+              <div key={category.id}>
+                <CategoryName>{category.label}</CategoryName>
+                {entries.map((action, actionIndex) => {
+                  const current = effective(action.id);
+                  return (
+                    <MappingRow key={action.id}>
+                      <IconBox
+                        $tone={tones[(index + actionIndex) % tones.length]}
+                      >
+                        <Path size={16} weight="fill" />
+                      </IconBox>
+                      <MappingName>{action.label}</MappingName>
+                      <ShapeToken $active={!!current}>
+                        {current || '—'}
+                      </ShapeToken>
+                      <MapSelect
+                        value={current || ''}
+                        onChange={(event) =>
+                          ipcRenderer.invoke(
+                            'set-gesture',
+                            action.id,
+                            event.target.value || null,
+                          )
+                        }
+                        aria-label={`${action.label}的手势`}
+                      >
+                        <option value="">未绑定</option>
+                        {presets
+                          .filter(
+                            (preset) =>
+                              preset.code === current ||
+                              !usedByOther(action.id, preset.code),
+                          )
+                          .map((preset) => (
+                            <option key={preset.code} value={preset.code}>
+                              {preset.label}
+                            </option>
+                          ))}
+                      </MapSelect>
+                    </MappingRow>
+                  );
+                })}
+              </div>
+            );
+          })}
+          {!categories.some(
+            (category) => filteredActions(category.id).length,
+          ) && <Empty>没有匹配的动作</Empty>}
+        </Editor>
+        <ModalFooter>
+          <ActionButton
+            type="button"
+            onClick={() => ipcRenderer.invoke('reset-gesture')}
+          >
+            恢复推荐
+          </ActionButton>
+        </ModalFooter>
       </>
     );
-  }
+  };
+
+  if (!loaded) return <Empty>加载中...</Empty>;
+
+  const setTabWheelBehavior = (value: TabWheelBehavior) => {
+    store.settings.tabWheelBehavior = value;
+    store.save();
+  };
 
   return (
     <>
-      <Header>鼠标手势</Header>
-      <TopRow>
-        <SecondaryText>
-          按住鼠标右键拖动绘制手势。在每项右侧选择手势形状,松开后触发对应动作。
-          普通右键(不拖动)仍会弹出菜单。已被其他动作占用的形状不会出现在下拉里。
-        </SecondaryText>
-        {hasCustom && <NormalButton variant="soft" onClick={resetAll}>恢复全部默认</NormalButton>}
-      </TopRow>
-
-      <OptionsRow>
-        <OptionItem>
-          <Switch
-            clickable
-            value={enabled}
-            onClick={() => setOption('enabled', !enabled)}
-          />
-          <span>启用手势</span>
-        </OptionItem>
-        <OptionItem>
-          <ColorInput
-            type="color"
-            value={store.settings.mouseGestureColor || '#3b82f6'}
-            onChange={(e) => setOption('color', e.target.value)}
-          />
-          <span>轨迹颜色</span>
-        </OptionItem>
-      </OptionsRow>
-
-      <div style={{ opacity: enabled ? 1 : 0.45, pointerEvents: enabled ? 'auto' : 'none' }}>
-        {categories.map((cat) => {
-          const items = actions.filter((a) => a.category === cat.id);
-          if (items.length === 0) return null;
-          return (
-            <React.Fragment key={cat.id}>
-              <CategoryTitle>{cat.label}</CategoryTitle>
-              {items.map((a) => {
-                const cur = effective(a.id);
-                // 可选项:未绑定 + 当前值 + 未被别人占用的预设。
-                const available = presets.filter(
-                  (p) => p.code === cur || !usedByOther(a.id, p.code),
-                );
-                return (
-                  <ActionRow key={a.id}>
-                    <Title>{a.label}</Title>
-                    <CurrentShape>
-                      {cur ? (
-                        <>
-                          <ShapeGlyph code={cur} />
-                          <span>{cur}</span>
-                        </>
-                      ) : (
-                        <span style={{ opacity: 0.6 }}>未绑定</span>
-                      )}
-                    </CurrentShape>
-                    <ControlColumn>
-                      <BtnRow>
-                        <ShapeSelect
-                          value={cur || ''}
-                          onChange={(e) =>
-                            setShape(a.id, e.target.value === '' ? null : e.target.value)
-                          }
-                        >
-                          <option value="">未绑定</option>
-                          {available.map((p) => (
-                            <option key={p.code} value={p.code}>
-                              {p.label}
-                            </option>
-                          ))}
-                        </ShapeSelect>
-                        {isCustom(a.id) && (
-                          <ActionButton onClick={() => resetOne(a.id)}>恢复默认</ActionButton>
-                        )}
-                      </BtnRow>
-                    </ControlColumn>
-                  </ActionRow>
-                );
-              })}
-            </React.Fragment>
-          );
-        })}
-      </div>
+      <Note>
+        按住鼠标右键拖动绘制手势，松开后执行动作。普通右键不拖动时仍会打开菜单。
+      </Note>
+      <Group>
+        <GroupLabel>标签栏滚轮</GroupLabel>
+        <Card>
+          <SettingRow>
+            <IconBox $tone="blue">
+              <Mouse size={17} weight="fill" />
+            </IconBox>
+            <RowCopy>
+              <RowTitle>标签栏滚轮事件</RowTitle>
+              <RowDescription>
+                默认优先滚动溢出内容，到达边界后切换标签；也可始终切换标签。
+              </RowDescription>
+            </RowCopy>
+            <SegmentedControl role="group" aria-label="标签栏滚轮事件">
+              <SegmentButton
+                type="button"
+                $active={tabWheelBehavior === 'auto'}
+                aria-pressed={tabWheelBehavior === 'auto'}
+                onClick={() => setTabWheelBehavior('auto')}
+              >
+                默认
+              </SegmentButton>
+              <SegmentButton
+                type="button"
+                $active={tabWheelBehavior === 'always-switch'}
+                aria-pressed={tabWheelBehavior === 'always-switch'}
+                onClick={() => setTabWheelBehavior('always-switch')}
+              >
+                始终切换标签页
+              </SegmentButton>
+            </SegmentedControl>
+          </SettingRow>
+        </Card>
+      </Group>
+      <Group>
+        <GroupLabel>左键拖拽</GroupLabel>
+        <Card>
+          <SettingRow>
+            <IconBox $tone="purple">
+              <CursorClick size={17} weight="fill" />
+            </IconBox>
+            <RowCopy>
+              <RowTitle>启用左键拖拽手势</RowTitle>
+              <RowDescription>
+                在链接或图片上拖动，松开时执行方向对应的动作。
+              </RowDescription>
+            </RowCopy>
+            <Switch
+              clickable
+              value={leftEnabled}
+              onClick={() => setOption('leftEnabled', !leftEnabled)}
+            />
+          </SettingRow>
+          <SettingRow>
+            <IconBox $tone="cyan">
+              <ArrowsOutCardinal size={17} weight="fill" />
+            </IconBox>
+            <RowCopy>
+              <RowTitle>方向动作</RowTitle>
+              <RowDescription>{leftSummary}</RowDescription>
+            </RowCopy>
+            <ActionButton type="button" onClick={() => setModal('left-drag')}>
+              <SlidersHorizontal size={15} />
+              配置
+            </ActionButton>
+          </SettingRow>
+        </Card>
+      </Group>
+      <Group>
+        <GroupLabel>侧边键</GroupLabel>
+        <Card>
+          <SettingRow>
+            <IconBox $tone="orange">
+              <Mouse size={17} weight="fill" />
+            </IconBox>
+            <RowCopy>
+              <RowTitle>鼠标侧边键</RowTitle>
+              <RowDescription>
+                后退侧键：
+                {sideActionName(
+                  Object.prototype.hasOwnProperty.call(side, '3')
+                    ? side['3']
+                    : 'back',
+                )}{' '}
+                · 前进侧键：
+                {sideActionName(
+                  Object.prototype.hasOwnProperty.call(side, '4')
+                    ? side['4']
+                    : 'forward',
+                )}
+              </RowDescription>
+            </RowCopy>
+            <ActionButton
+              type="button"
+              onClick={() => setModal('side-buttons')}
+            >
+              <GearSix size={15} />
+              配置
+            </ActionButton>
+          </SettingRow>
+        </Card>
+      </Group>
+      <Group>
+        <GroupLabel>右键手势</GroupLabel>
+        <Card>
+          <SettingRow>
+            <IconBox $tone="blue">
+              <HandPalm size={17} weight="fill" />
+            </IconBox>
+            <RowCopy>
+              <RowTitle>启用右键手势</RowTitle>
+              <RowDescription>
+                拖动轨迹只在本次手势中显示，不影响普通右键菜单。
+              </RowDescription>
+            </RowCopy>
+            <Switch
+              clickable
+              value={rightEnabled}
+              onClick={() => setOption('enabled', !rightEnabled)}
+            />
+          </SettingRow>
+          <SettingRow>
+            <IconBox $tone="pink">
+              <PaintBrush size={17} weight="fill" />
+            </IconBox>
+            <RowCopy>
+              <RowTitle>轨迹颜色</RowTitle>
+              <RowDescription>用于绘制手势轨迹与识别反馈。</RowDescription>
+            </RowCopy>
+            <ColorControl>
+              <ColorInput
+                type="color"
+                value={color}
+                onChange={(event) => setOption('color', event.target.value)}
+                aria-label="轨迹颜色"
+              />
+              <span>{color.toUpperCase()}</span>
+            </ColorControl>
+          </SettingRow>
+          <SettingRow>
+            <IconBox $tone="green">
+              <Path size={17} weight="fill" />
+            </IconBox>
+            <RowCopy>
+              <RowTitle>动作映射</RowTitle>
+              <RowDescription>
+                {boundCount} 个动作已绑定 · 轨迹 {color.toUpperCase()}
+              </RowDescription>
+            </RowCopy>
+            <ActionButton
+              type="button"
+              $primary
+              onClick={() => setModal('mappings')}
+            >
+              <SquaresFour size={15} />
+              管理映射
+            </ActionButton>
+          </SettingRow>
+        </Card>
+      </Group>
+      {modal &&
+        ReactDOM.createPortal(
+          <ModalLayer
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setModal(null);
+            }}
+          >
+            <Modal
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="gesture-modal-title"
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              <ModalHead>
+                <ModalTitle id="gesture-modal-title">{modalTitle}</ModalTitle>
+                <CloseButton
+                  type="button"
+                  onClick={() => setModal(null)}
+                  title="关闭"
+                  aria-label="关闭"
+                >
+                  <X size={18} />
+                </CloseButton>
+              </ModalHead>
+              <ModalBody>{renderModalContent()}</ModalBody>
+            </Modal>
+          </ModalLayer>,
+          document.querySelector('[data-settings-main]') || document.body,
+        )}
     </>
   );
 });

@@ -4,6 +4,7 @@ import { DialogStore } from '~/models/dialog-store';
 
 // 浮层模式:idle=待框选, fullpage=长截图结果预览
 export type Mode = 'idle' | 'fullpage';
+export type CaptureSource = 'page' | 'desktop';
 
 export class Store extends DialogStore {
   // 当前页快照(dataURL),铺满浮层做 1:1 背景
@@ -15,6 +16,7 @@ export class Store extends DialogStore {
   public capturing = false;
   // 操作提示(已保存/已复制/失败)
   public hint = '';
+  public source: CaptureSource = 'page';
 
   public constructor() {
     // hideOnBlur=false:保存时原生对话框会让窗口失焦,不能因此关闭浮层
@@ -26,6 +28,7 @@ export class Store extends DialogStore {
       mode: observable,
       capturing: observable,
       hint: observable,
+      source: observable,
     });
 
     ipcRenderer.on('visible', (e, flag, data) => {
@@ -38,7 +41,10 @@ export class Store extends DialogStore {
       );
       if (!flag) return;
       this.reset();
-      if (data) this.snapshot = data.snapshot || '';
+      if (data) {
+        this.snapshot = data.snapshot || '';
+        this.source = data.source === 'desktop' ? 'desktop' : 'page';
+      }
     });
 
     ipcRenderer.on('screenshot-save-result', (e, data) => {
@@ -75,6 +81,7 @@ export class Store extends DialogStore {
     this.mode = 'idle';
     this.capturing = false;
     this.hint = '';
+    this.source = 'page';
   }
 
   private hintTimer: any = null;
@@ -95,10 +102,27 @@ export class Store extends DialogStore {
     this.send('screenshot-copy', dataURL);
   }
 
+  public searchImage(dataURL: string) {
+    this.send('screenshot-search', dataURL);
+  }
+
+  // 开源版：截图「问 AI」通道已移除。
+
   public longCapture() {
     if (this.capturing) return;
     this.capturing = true;
     this.send('screenshot-longshot');
+  }
+
+  public activateDesktopDisplay() {
+    if (this.source === 'desktop') this.send('screenshot-activate');
+  }
+
+  public desktopSnapshotPainted() {
+    if (this.source !== 'desktop') return;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => this.send('screenshot-render-ready'));
+    });
   }
 }
 

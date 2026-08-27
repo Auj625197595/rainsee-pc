@@ -12,6 +12,9 @@ export interface ChromeExtensionImpl {
    */
   assignTabDetails?(details: chrome.tabs.Tab, tab: Electron.WebContents): void
 
+  /** Resolve an internal/overlay WebContents to its stable Chrome tab id. */
+  resolveTabId?(webContentsId: number): number | undefined
+
   createWindow?(details: chrome.windows.CreateData): Promise<Electron.BaseWindow>
   removeWindow?(window: Electron.BaseWindow): void
   /** Return the host window's intrinsic incognito mode when known. */
@@ -53,6 +56,13 @@ export interface ChromeExtensionImpl {
    */
   openSidePanel?(extensionId: string, tabId: number, path: string, windowId?: number): void
   closeSidePanel?(extensionId?: string): void
+  /**
+   * Host hook for Chrome-owned extension resources such as
+   * `chrome-extension://<id>/_favicon/?pageUrl=...`.
+   * Return a replacement URL (typically a data URL) to keep the request
+   * Chrome-compatible without requiring the vendor layer to know app details.
+   */
+  resolveChromeExtensionResourceUrl?(url: string): string | undefined
 }
 
 export interface ManagementImpl {

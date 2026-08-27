@@ -1,14 +1,32 @@
 import * as React from 'react';
 import { observer } from 'mobx-react-lite';
+import {
+  Browsers,
+  DownloadSimple,
+  GearSix,
+  GlobeHemisphereWest,
+  HandPalm,
+  Info,
+  Key,
+  Keyboard,
+  LockKey,
+  MagnifyingGlass,
+  Power,
+  ShieldCheck,
+  Sun,
+  TextAa,
+  X,
+} from '@phosphor-icons/react';
 
 import { SettingsSection } from '../../store';
 import { Appearance } from '../Appearance';
 import { AddressBar, ManageSearchEngines } from '../AddressBar';
 import { Privacy } from '../Privacy';
+import { WebBrowsing } from '../WebBrowsing';
 import store from '../../store';
-import styled, {ThemeProvider, css} from 'styled-components';
-import {ITheme} from '~/interfaces';
-import {getPalette} from '../../utils/palette';
+import styled, { ThemeProvider, css } from 'styled-components';
+import { ITheme } from '~/interfaces';
+import { getPalette } from '../../utils/palette';
 import { Autofill } from '../Autofill';
 import { OnStartup } from '../Startup';
 import { Container } from '~/renderer/components/Pages';
@@ -21,10 +39,14 @@ import {
 } from '~/renderer/components/ContextMenu';
 import {
   Nav,
+  NavBrand,
+  NavLogo,
   NavTitle,
   NavSearch,
   NavSearchInput,
   NavSearchClear,
+  NavKeyboardShortcut,
+  NavSectionLabel,
   NavList,
   NavItem,
   NavIcon,
@@ -35,7 +57,11 @@ import {
   NavResultSection,
   NavResultEmpty,
   Main,
+  MainTopbar,
+  Breadcrumb,
+  MainContent,
   MainInner,
+  PageHeading,
   SeDialog,
   SeDialogHeader,
   SeDialogIcon,
@@ -47,6 +73,7 @@ import {
   SeField,
   SeFieldLabel,
   SeInput,
+  SettingsTone,
 } from './style';
 import { WebUIStyle } from '~/renderer/mixins/default-styles';
 import { About } from '~/renderer/views/settings/components/About';
@@ -56,7 +83,8 @@ import { Permissions } from '../Permissions';
 import { Shortcuts } from '../Shortcuts';
 import { MouseGestures } from '../MouseGestures';
 import { SelectionTranslate } from '../SelectionTranslate';
-import { CustomizeToolbar } from '../CustomizeToolbar';
+
+// 开源版：账号卡片与登录入口已移除。
 
 // 设置页统一按钮:蓝底白字(主操作,默认)/ 浅蓝底蓝字(variant="soft",用于取消、
 // 次要操作,与主按钮并排时保留视觉层级)。theme 由设置页外层 ThemeProvider 注入,
@@ -95,10 +123,10 @@ const ModernButton = styled.button<{
   }
 
   &:focus-visible {
-    box-shadow: 0 0 0 3px ${({theme}) => getPalette(theme).primary}33;
+    box-shadow: 0 0 0 3px ${({ theme }) => getPalette(theme).primary}33;
   }
 
-  ${({variant, theme}) => {
+  ${({ variant, theme }) => {
     const p = getPalette(theme);
     if (variant === 'soft') {
       return css`
@@ -163,154 +191,25 @@ export const NormalButton = ({
   );
 };
 
-// ===== 导航图标（内联 SVG，跟随 currentColor）=====
-
-const IconSearch = ({ size = 17 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="11" cy="11" r="7"></circle>
-    <path d="m20 20-3.5-3.5"></path>
-  </svg>
-);
-
-const IconClose = ({ size = 14 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M18 6 6 18"></path>
-    <path d="m6 6 12 12"></path>
-  </svg>
-);
-
-const IconPersonalize = () => (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="12" r="3"></circle>
-    <path d="M12 2v2"></path>
-    <path d="M12 20v2"></path>
-    <path d="m4.93 4.93 1.41 1.41"></path>
-    <path d="m17.66 17.66 1.41 1.41"></path>
-    <path d="M2 12h2"></path>
-    <path d="M20 12h2"></path>
-    <path d="m6.34 17.66-1.41 1.41"></path>
-    <path d="m19.07 4.93-1.41 1.41"></path>
-  </svg>
-);
-
-const IconAutofill = () => (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="5" y="3" width="14" height="18" rx="2"></rect>
-    <path d="M9 7h6"></path>
-    <path d="M9 11h6"></path>
-  </svg>
-);
-
-const IconStartup = () => (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="12" r="9"></circle>
-    <path d="M12 16v-4"></path>
-    <path d="M12 8h.01"></path>
-  </svg>
-);
-
-const IconDownload = () => (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12 3v12"></path>
-    <path d="m7 10 5 5 5-5"></path>
-    <path d="M5 21h14"></path>
-  </svg>
-);
-
-const IconShield = () => (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-  </svg>
-);
-
-const IconPermission = () => (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="4" y="11" width="16" height="9" rx="2"></rect>
-    <path d="M8 11V8a4 4 0 0 1 8 0v3"></path>
-    <circle cx="12" cy="15.5" r="1"></circle>
-  </svg>
-);
-
-const IconAbout = () => (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="12" r="9"></circle>
-    <path d="M12 16v-4"></path>
-    <path d="M12 8h.01"></path>
-  </svg>
-);
-
-const IconDefaultBrowser = () => (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="12" r="9"></circle>
-    <path d="M3 12h18"></path>
-    <path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18z"></path>
-  </svg>
-);
-
-const IconSystem = () => (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="4" width="18" height="12" rx="2"></rect>
-    <path d="M8 20h8"></path>
-    <path d="M12 16v4"></path>
-  </svg>
-);
-
-const IconShortcuts = () => (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="2" y="6" width="20" height="12" rx="2"></rect>
-    <path d="M6 10h.01"></path>
-    <path d="M10 10h.01"></path>
-    <path d="M14 10h.01"></path>
-    <path d="M18 10h.01"></path>
-    <path d="M7 14h10"></path>
-  </svg>
-);
-
-const IconMouseGestures = () => (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M9 11V6a2 2 0 0 1 4 0v5"></path>
-    <path d="M13 11V5a2 2 0 1 1 4 0v9a7 7 0 0 1-7 7h-1a6 6 0 0 1-6-6v-2a2 2 0 0 1 4 0v1"></path>
-    <path d="m9 11 .5-2"></path>
-  </svg>
-);
-
-const IconSelectionTranslate = () => (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="m5 8 6 6"></path>
-    <path d="m4 14 6-6 2-3"></path>
-    <path d="M2 5h12"></path>
-    <path d="M7 2h1"></path>
-    <path d="m22 22-5-10-5 10"></path>
-    <path d="M14 18h6"></path>
-  </svg>
-);
-
-const IconCustomizeToolbar = () => (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <line x1="4" y1="7" x2="20" y2="7"></line>
-    <circle cx="9" cy="7" r="2.2" fill="currentColor" stroke="none"></circle>
-    <line x1="4" y1="17" x2="20" y2="17"></line>
-    <circle cx="15" cy="17" r="2.2" fill="currentColor" stroke="none"></circle>
-  </svg>
-);
-
 // ===== 设置项搜索索引 =====
+// 注意:搜索只匹配本数组里的 label/keywords。新增/改动设置项(UI 里的 Title/Header)
+// 务必同步在此登记(写 label + 中文同义词/英文别名/拼音首字母),否则设置搜索搜不到。
 
 const SECTION_LABELS: { [key in SettingsSection]?: string } = {
-  appearance: '个性化',
-  autofill: '密码填充',
+  appearance: '外观设置',
+  autofill: '自动填充和密码',
   startup: '启动时',
-  'address-bar': '地址栏',
+  'address-bar': '搜索设置',
   'search-engines': '管理搜索引擎',
   downloads: '下载',
   privacy: '拦截保护',
+  'web-browsing': '网站浏览',
   permissions: '权限管理',
   'default-browser': '默认浏览器',
   system: '系统',
   shortcuts: '快捷键',
   'mouse-gestures': '鼠标手势',
-  'selection-translate': '划词翻译',
-  'customize-toolbar': '自定义工具栏',
+  'selection-translate': '文字选择',
   about: '关于',
 };
 
@@ -322,68 +221,405 @@ interface ISettingsSearchEntry {
 }
 
 const SETTINGS_SEARCH_INDEX: ISettingsSearchEntry[] = [
-  // 个性化
-  { label: '个性化', section: 'appearance', keywords: 'appearance personalize wgh 外观 主题' },
-  { label: '沉浸浏览', section: 'appearance', keywords: 'immersive browsing cjll 沉浸 浏览 顶边 顶部 自动隐藏 头部 全屏' },
-  { label: '显示书签栏', section: 'appearance', keywords: 'bookmarks bar sql 书签' },
-  { label: '关闭多个标签时显示警告', section: 'appearance', keywords: 'warn quit close 关闭 警告 标签' },
-  { label: '主题颜色', section: 'appearance', keywords: 'theme color zt 浅色 深色 暗色 夜间 自动 light dark' },
-  { label: '顶部标题栏', section: 'appearance', keywords: 'top bar title 标题栏 分离 融合' },
-  { label: '标签栏位置', section: 'appearance', keywords: 'tabs layout bqw 标签 顶部 左侧 右侧 侧边栏' },
-  { label: '双击关闭标签页', section: 'appearance', keywords: 'double click dblclick sj 双击 关闭 标签' },
-  // 密码填充
-  { label: '密码填充', section: 'autofill', keywords: 'autofill password mm 密码 填充' },
-  { label: '密码自动记忆和填充', section: 'autofill', keywords: 'autofill password remember 密码 记忆 填充' },
+  // 外观设置
+  {
+    label: '外观设置',
+    section: 'appearance',
+    keywords: 'appearance personalize wgh 个性化 外观 主题',
+  },
+  {
+    label: '沉浸浏览',
+    section: 'appearance',
+    keywords: 'immersive browsing cjll 沉浸 浏览 顶边 顶部 自动隐藏 头部 全屏',
+  },
+  {
+    label: '显示书签栏',
+    section: 'appearance',
+    keywords: 'bookmarks bar sql 书签',
+  },
+  {
+    label: '关闭多个标签时显示警告',
+    section: 'appearance',
+    keywords: 'warn quit close 关闭 警告 弹窗 标签',
+  },
+  {
+    label: '主题颜色',
+    section: 'appearance',
+    keywords: 'theme color zt 浅色 深色 暗色 夜间 自动 light dark',
+  },
+  {
+    label: '顶部标题栏',
+    section: 'appearance',
+    keywords: 'top bar title 标题栏 分离 融合',
+  },
+  {
+    label: '标签栏位置',
+    section: 'appearance',
+    keywords: 'tabs layout bqw 标签 顶部 左侧 右侧 侧边栏',
+  },
+  {
+    label: '鼠标悬停标签自动激活',
+    section: 'appearance',
+    keywords:
+      'tab hover activate delay 鼠标 悬停 标签 自动 激活 延迟 毫秒 回收',
+  },
+  {
+    label: '双击关闭标签页',
+    section: 'appearance',
+    keywords: 'double click dblclick sj 双击 关闭 标签',
+  },
+  {
+    label: '书签栏行数',
+    section: 'appearance',
+    keywords: 'bookmarks bar rows sql 行数 书签栏 多行 显示',
+  },
+  {
+    label: '书签栏展示目录',
+    section: 'appearance',
+    keywords: 'bookmarks bar folder directory sql 书签栏 展示 目录 移动端 子目录',
+  },
+  {
+    label: '浏览器框架 CSS',
+    section: 'appearance',
+    keywords: 'custom css zdyys 自定义 样式 顶部栏 侧边栏 红框',
+  },
+  {
+    label: '自定义工具栏',
+    section: 'appearance',
+    keywords:
+      'customize toolbar zdygjl 工具栏 自定义 按钮 位置 拖拽 排序 主页 下载 订阅 雨见AI 截图 翻译 清理缓存 显示 隐藏',
+  },
+  // 自动填充和密码
+  {
+    label: '自动填充和密码',
+    section: 'autofill',
+    keywords: 'autofill password mm 密码 填充 密码填充',
+  },
+  {
+    label: '密码自动记忆和填充',
+    section: 'autofill',
+    keywords: 'autofill password remember 密码 记忆 填充',
+  },
   // 启动时
   { label: '启动时', section: 'startup', keywords: 'startup qd 启动 开机' },
-  { label: '打开新标签页', section: 'startup', keywords: 'new tab 新标签 空白' },
-  { label: '恢复标签页', section: 'startup', keywords: 'continue restore 恢复 上次' },
-  { label: '打开特定页面', section: 'startup', keywords: 'urls specific 特定 指定 页面' },
-  // 地址栏
-  { label: '地址栏', section: 'address-bar', keywords: 'address bar dzl 地址 搜索' },
-  { label: '展示搜索和网站建议', section: 'address-bar', keywords: 'suggestions 建议 搜索 网站 提示' },
-  { label: '默认搜索引擎', section: 'address-bar', keywords: 'search engine ssyq 搜索引擎' },
-  { label: '双引擎搜索', section: 'address-bar', keywords: 'dual engine syq 双引擎 副引擎 侧边栏 移动' },
-  { label: '副搜索引擎', section: 'address-bar', keywords: 'secondary engine fyq 副引擎 搜索引擎' },
-  { label: '管理搜索引擎', section: 'search-engines', keywords: 'manage search engines 添加 编辑 搜索引擎' },
+  {
+    label: '打开新标签页',
+    section: 'startup',
+    keywords: 'new tab 新标签 空白',
+  },
+  {
+    label: '恢复标签页',
+    section: 'startup',
+    keywords: 'continue restore 恢复 上次',
+  },
+  {
+    label: '打开特定页面',
+    section: 'startup',
+    keywords: 'urls specific 特定 指定 页面',
+  },
+  // 搜索设置
+  {
+    label: '搜索设置',
+    section: 'address-bar',
+    keywords: 'address bar dzl 地址栏 地址 搜索',
+  },
+  {
+    label: '展示搜索和网站建议',
+    section: 'address-bar',
+    keywords:
+      'suggestions 建议 搜索 网站 提示 联想 标签页 历史 搜索词 书签 剪贴板 来源',
+  },
+  {
+    label: '搜索引擎 AI 建议面板',
+    section: 'address-bar',
+    keywords:
+      'search annotator AI ssyq AI 建议 标注 气泡 答案 相关性 角标 智能',
+  },
+  {
+    label: '默认搜索引擎',
+    section: 'address-bar',
+    keywords: 'search engine ssyq 搜索引擎',
+  },
+  {
+    label: '双引擎搜索',
+    section: 'address-bar',
+    keywords: 'dual engine syq 双引擎 副引擎 侧边栏 移动',
+  },
+  {
+    label: '副搜索引擎',
+    section: 'address-bar',
+    keywords: 'secondary engine fyq 副引擎 搜索引擎',
+  },
+  {
+    label: '管理搜索引擎',
+    section: 'search-engines',
+    keywords: 'manage search engines 添加 编辑 搜索引擎',
+  },
   // 下载
   { label: '下载', section: 'downloads', keywords: 'downloads xz 下载' },
-  { label: '下载位置', section: 'downloads', keywords: 'download location path 位置 路径 目录' },
-  { label: '下载前询问', section: 'downloads', keywords: 'ask before download 询问 提示' },
+  {
+    label: '下载位置',
+    section: 'downloads',
+    keywords: 'download location path 位置 路径 目录',
+  },
+  {
+    label: '下载前询问',
+    section: 'downloads',
+    keywords: 'ask before download 询问 提示',
+  },
+  {
+    label: '使用外部下载器',
+    section: 'downloads',
+    keywords:
+      'external downloader idm thunder aria2 迅雷 外部 下载器 自定义 路径 参数 命令行 可执行文件',
+  },
+  {
+    label: '下载器类型',
+    section: 'downloads',
+    keywords: 'downloader type xlql 下载器 类型 idm 迅雷 aria2 自定义',
+  },
+  {
+    label: '自动接管所有下载',
+    section: 'downloads',
+    keywords: 'auto intercept zdjg 自动 接管 下载 全部',
+  },
   // 默认浏览器
-  { label: '默认浏览器', section: 'default-browser', keywords: 'default browser mrllq 默认 浏览器 设为默认 default' },
-  { label: '设为默认浏览器', section: 'default-browser', keywords: 'set default browser 设为默认 默认浏览器' },
+  {
+    label: '默认浏览器',
+    section: 'default-browser',
+    keywords: 'default browser mrllq 默认 浏览器 设为默认 default',
+  },
+  {
+    label: '设为默认浏览器',
+    section: 'default-browser',
+    keywords: 'set default browser 设为默认 默认浏览器',
+  },
   // 系统
-  { label: '系统', section: 'system', keywords: 'system xt 数据 存储位置 目录 迁移 data location migrate cclw 路径' },
-  { label: '数据存储位置', section: 'system', keywords: 'data location 存储目录 迁移 数据 路径 自定义' },
-  { label: '硬件加速', section: 'system', keywords: 'hardware acceleration gpu yjjs 硬件 加速 gpu 显卡 渲染 花屏 黑屏' },
-  { label: 'Flash 支持', section: 'system', keywords: 'flash ruffle swf 插件 兼容 动画 游戏' },
+  {
+    label: '系统',
+    section: 'system',
+    keywords:
+      'system xt 数据 存储位置 目录 迁移 data location migrate cclw 路径',
+  },
+  {
+    label: '数据存储位置',
+    section: 'system',
+    keywords: 'data location 存储目录 迁移 数据 路径 自定义',
+  },
+  {
+    label: '数据备份',
+    section: 'system',
+    keywords:
+      'backup restore beifen huanyuan 数据 备份 还原 zip 压缩包 书签 历史 密码 cookie 扩展',
+  },
+  {
+    label: '硬件加速',
+    section: 'system',
+    keywords:
+      'hardware acceleration gpu yjjs 硬件 加速 gpu 显卡 渲染 花屏 黑屏',
+  },
+  {
+    label: '内存节省',
+    section: 'system',
+    keywords: 'memory saver ncjs 内存 节省 省内存 冻结 释放 休眠',
+  },
+  {
+    label: 'Flash 支持',
+    section: 'system',
+    keywords: 'flash ruffle swf 插件 兼容 动画 游戏',
+  },
+  {
+    label: '独立浏览器指纹',
+    section: 'system',
+    keywords:
+      'fingerprint fingerprinting zhiwen 指纹 小号 canvas webgl 设备 隔离',
+  },
+  {
+    label: '独立 IP 代理',
+    section: 'system',
+    keywords: 'proxy ip dl 代理 小号 http socks5 出口 网络',
+  },
   // 拦截保护
-  { label: '拦截保护', section: 'privacy', keywords: 'privacy ljbh 隐私 拦截 保护 广告' },
-  { label: '广告拦截订阅', section: 'privacy', keywords: 'adblock ublock adguard 广告 拦截 订阅 规则' },
-  { label: '清除浏览数据', section: 'privacy', keywords: 'browsing data clear 清除 缓存 历史 cookie' },
-  { label: 'Do Not Track 请求', section: 'privacy', keywords: 'do not track dnt 追踪 隐私' },
-  { label: '权限管理', section: 'permissions', keywords: 'permissions qxgl 权限 站点 网站 记住 允许 拒绝 传感器 麦克风 摄像头 定位 通知 新页面 打开 链接 window open' },
-  { label: '已记忆权限', section: 'permissions', keywords: 'remember saved permission 已记忆 已保存 权限规则 新页面打开 链接新开' },
+  {
+    label: '拦截保护',
+    section: 'privacy',
+    keywords: 'privacy ljbh 隐私 拦截 保护 广告',
+  },
+  {
+    label: '广告拦截订阅',
+    section: 'privacy',
+    keywords: 'adblock ublock adguard 广告 拦截 订阅 规则',
+  },
+  // 网站浏览
+  {
+    label: '网站浏览',
+    section: 'web-browsing',
+    keywords: 'web browsing wzll 网站 浏览 数据 cookie 登录',
+  },
+  {
+    label: '清除浏览数据',
+    section: 'web-browsing',
+    keywords: 'browsing data clear 清除 缓存 历史 cookie',
+  },
+  {
+    label: '退出时自动清理',
+    section: 'web-browsing',
+    keywords:
+      'clear on exit tczdql 退出 清理 自动 缓存 cookie 历史 搜索历史 关闭时',
+  },
+  {
+    label: 'Do Not Track 请求',
+    section: 'web-browsing',
+    keywords: 'do not track dnt 追踪 隐私',
+  },
+  {
+    label: '无痕模式下阻止第三方 Cookie',
+    section: 'web-browsing',
+    keywords:
+      'incognito third party cookie whms 阻止 第三方 cookie 无痕 隐私 拦截',
+  },
+  {
+    label: '重启后保持登录',
+    section: 'web-browsing',
+    keywords: 'persist session cookie cjbcdl 重启 登录 保持 会话 cookie 落盘 域名 主域名 host 白名单',
+  },
+  {
+    label: '权限管理',
+    section: 'permissions',
+    keywords:
+      'permissions qxgl 权限 站点 网站 记住 允许 询问 拒绝 外链 跳转 传感器 麦克风 摄像头 定位 通知 新页面 打开 链接 window open',
+  },
+  {
+    label: '弹窗在新标签页打开',
+    section: 'permissions',
+    keywords:
+      'popup window tab tczxbqydk 弹窗 新标签页 独立窗口 全局设置 网站设置',
+  },
+  {
+    label: '网站权限',
+    section: 'permissions',
+    keywords: 'site override dlwzsz 独立 网站 设置 覆盖 弹窗 权限',
+  },
+  {
+    label: '所有跳转在新页面打开',
+    section: 'permissions',
+    keywords: 'all links new page 所有 跳转 链接 新页面 打开 网站设置',
+  },
+  {
+    label: '网站权限配置',
+    section: 'permissions',
+    keywords:
+      'remember saved permission 已记忆 已保存 权限规则 新页面打开 链接新开 全局 所有链接 站点',
+  },
   // 快捷键
-  { label: '快捷键', section: 'shortcuts', keywords: 'shortcuts hotkey kjj 快捷键 热键 键盘 keyboard 加速键' },
-  { label: '修改快捷键', section: 'shortcuts', keywords: 'rebind change kjj 修改 自定义 快捷键 改键 绑定' },
-  { label: '打开新标签页', section: 'shortcuts', keywords: 'new tab ctrl t 新标签 快捷键' },
-  { label: '关闭标签页', section: 'shortcuts', keywords: 'close tab ctrl w 关闭标签 快捷键' },
+  {
+    label: '快捷键',
+    section: 'shortcuts',
+    keywords: 'shortcuts hotkey kjj 快捷键 热键 键盘 keyboard 加速键',
+  },
+  {
+    label: '修改快捷键',
+    section: 'shortcuts',
+    keywords: 'rebind change kjj 修改 自定义 快捷键 改键 绑定',
+  },
+  {
+    label: '打开新标签页',
+    section: 'shortcuts',
+    keywords: 'new tab ctrl t 新标签 快捷键',
+  },
+  {
+    label: '关闭标签页',
+    section: 'shortcuts',
+    keywords: 'close tab ctrl w 关闭标签 快捷键',
+  },
   // 鼠标手势
-  { label: '鼠标手势', section: 'mouse-gestures', keywords: 'mouse gesture sbss 鼠标 手势 右键 拖动 mouse gesture' },
-  { label: '手势轨迹颜色', section: 'mouse-gestures', keywords: 'trail color gjys 轨迹 颜色 手势' },
-  { label: '自定义手势', section: 'mouse-gestures', keywords: 'custom gesture zdy 自定义 手势 后退 前进 刷新 形状' },
-  // 划词翻译
-  { label: '划词翻译', section: 'selection-translate', keywords: 'selection translate hcfy 划词 翻译 选中 选词 悬浮 卡片' },
-  { label: '划词翻译目标语言', section: 'selection-translate', keywords: 'target language mbyy 目标 语言 划词 翻译 中文 英文 日文' },
-  // 自定义工具栏
-  { label: '自定义工具栏', section: 'customize-toolbar', keywords: 'customize toolbar zdygjl 工具栏 自定义 按钮 位置 拖拽 排序 主页 下载 订阅 雨见AI 显示 隐藏' },
+  {
+    label: '鼠标手势',
+    section: 'mouse-gestures',
+    keywords: 'mouse gesture sbss 鼠标 手势 右键 左键 长按 拖动 mouse gesture',
+  },
+  {
+    label: '标签栏滚轮事件',
+    section: 'mouse-gestures',
+    keywords:
+      'tab wheel 标签栏 标签页 滚轮 滚动 切换 默认 始终切换 水平 垂直',
+  },
+  {
+    label: '启用右键手势',
+    section: 'mouse-gestures',
+    keywords: 'enable right gesture yq右键手势 启用 右键 手势 开关 分开',
+  },
+  {
+    label: '手势轨迹颜色',
+    section: 'mouse-gestures',
+    keywords: 'trail color gjys 轨迹 颜色 手势',
+  },
+  {
+    label: '启用左键拖拽手势',
+    section: 'mouse-gestures',
+    keywords:
+      'enable left drag yq左键拖拽 启用 左键 拖拽 手势 面板 链接 图片 拖动',
+  },
+  {
+    label: '滑动距离',
+    section: 'mouse-gestures',
+    keywords: 'drag threshold hdjl 滑动 距离 阈值 像素 px 触发',
+  },
+  {
+    label: '侧边键设置',
+    section: 'mouse-gestures',
+    keywords: 'side button cbj 侧键 侧边键 后退 前进 mouse button 3 4',
+  },
+  {
+    label: '自定义手势',
+    section: 'mouse-gestures',
+    keywords: 'custom gesture zdy 自定义 手势 后退 前进 刷新 形状',
+  },
+  // 文字选择
+  {
+    label: '文字选择',
+    section: 'selection-translate',
+    keywords: 'text selection wzxz 文字 选择 选中 菜单 划词',
+  },
+  {
+    label: '文字菜单',
+    section: 'selection-translate',
+    keywords: 'text menu wzcd 文字 菜单 复制 搜索 更多 隐藏',
+  },
+  {
+    label: '划词翻译',
+    section: 'selection-translate',
+    keywords: 'selection translate hcfy 划词 翻译 选中 选词 悬浮 卡片',
+  },
+  {
+    label: '显示字数',
+    section: 'selection-translate',
+    keywords: 'word count xszs 字数 计数 选中 文字 菜单',
+  },
+  {
+    label: '划词翻译目标语言',
+    section: 'selection-translate',
+    keywords: 'target language mbyy 目标 语言 划词 翻译 中文 英文 日文',
+  },
+  {
+    label: '翻译引擎',
+    section: 'selection-translate',
+    keywords:
+      'translate engine fyyq 引擎 微软 microsoft 翻译 免费 共用 雨见 大模型 llm gpt 自定义 openai chat completions responses',
+  },
   // 关于
   { label: '关于', section: 'about', keywords: 'about gy 版本 version 博客' },
   { label: '官方博客', section: 'about', keywords: 'blog 博客 官方' },
-  { label: '检查新版本', section: 'about', keywords: 'new version update 更新 版本 下载' },
-  { label: '当前版本', section: 'about', keywords: 'current version 版本 chromium 内核' },
+  {
+    label: '检查新版本',
+    section: 'about',
+    keywords: 'new version update 更新 版本 下载',
+  },
+  {
+    label: '当前版本',
+    section: 'about',
+    keywords: 'current version 版本 chromium 内核',
+  },
 ];
 
 const searchSettings = (query: string): ISettingsSearchEntry[] => {
@@ -401,17 +637,31 @@ const searchSettings = (query: string): ISettingsSearchEntry[] => {
   });
 };
 
+// Settings sections are addressable so users can bookmark/share a specific tab.
+// Keep the query-string entry point for existing deep links, but use the hash for
+// navigation so changing tabs does not reload the page or discard other params.
+const selectSettingsSection = (section: SettingsSection) => {
+  store.selectedSection = section;
+  if (typeof window !== 'undefined') {
+    const url = new URL(window.location.href);
+    url.hash = section;
+    window.history.pushState({section}, '', url.toString());
+  }
+};
+
 const NavMenuItem = observer(
   ({
     section,
     subSections,
     children,
     icon,
+    tone,
   }: {
     section: SettingsSection;
     subSections?: SettingsSection[];
     children: any;
     icon: React.ReactNode;
+    tone: SettingsTone;
   }) => {
     const selected =
       store.selectedSection === section ||
@@ -420,9 +670,11 @@ const NavMenuItem = observer(
     return (
       <NavItem
         selected={selected}
-        onClick={() => (store.selectedSection = section)}
+        onClick={() => selectSettingsSection(section)}
       >
-        <NavIcon selected={selected}>{icon}</NavIcon>
+        <NavIcon selected={selected} tone={tone}>
+          {icon}
+        </NavIcon>
         <NavLabel selected={selected}>{children}</NavLabel>
       </NavItem>
     );
@@ -489,22 +741,22 @@ export default observer(() => {
   const { selectedSection } = store;
 
   const [searchQuery, setSearchQuery] = React.useState('');
+  const searchInputRef = React.useRef<HTMLInputElement>(null);
   const searchResults = searchSettings(searchQuery);
   const searching = searchQuery.trim().length > 0;
+  const sectionHydratedRef = React.useRef(false);
 
   React.useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const section = params.get('section');
-
-    if (!section) {
-      return;
-    }
+    const hashSection = window.location.hash.replace(/^#(?:section=)?/, '');
+    const section = hashSection || params.get('section');
 
     const validSections: SettingsSection[] = [
       'appearance',
       'autofill',
       'address-bar',
       'privacy',
+      'web-browsing',
       'permissions',
       'startup',
       'language',
@@ -519,8 +771,18 @@ export default observer(() => {
       'about',
     ];
 
-    if (validSections.includes(section as SettingsSection)) {
-      store.selectedSection = section as SettingsSection;
+    if (section && validSections.includes(section as SettingsSection)) {
+      store.selectedSection =
+        section === 'customize-toolbar'
+          ? 'appearance'
+          : (section as SettingsSection);
+    }
+
+    if (
+      section === 'web-browsing' &&
+      params.get('dialog') === 'browsing-data'
+    ) {
+      store.dialogContent = 'browsing-data';
     }
 
     // 双引擎搜索告知条「设置」按钮带 ?highlight=<key>:滚动+脉冲高亮该项。
@@ -528,12 +790,58 @@ export default observer(() => {
     if (highlight) {
       store.setHighlightedSetting(highlight);
     }
+
+    sectionHydratedRef.current = true;
+
+    const onLocationChange = () => {
+      const next = window.location.hash.replace(/^#(?:section=)?/, '');
+      if (validSections.includes(next as SettingsSection)) {
+        store.selectedSection = next as SettingsSection;
+      }
+    };
+    window.addEventListener('hashchange', onLocationChange);
+    window.addEventListener('popstate', onLocationChange);
+    return () => {
+      window.removeEventListener('hashchange', onLocationChange);
+      window.removeEventListener('popstate', onLocationChange);
+    };
   }, []);
 
+  // A few settings panels navigate to a sub-section directly through the store.
+  // Mirror those changes into the URL as well, without clobbering the initial
+  // query-string deep link before it has been read above.
+  React.useEffect(() => {
+    if (!sectionHydratedRef.current) return;
+    if (window.location.hash.replace(/^#(?:section=)?/, '') === selectedSection) return;
+    const url = new URL(window.location.href);
+    url.hash = selectedSection;
+    window.history.replaceState({section: selectedSection}, '', url.toString());
+  }, [selectedSection]);
+
+  React.useEffect(() => {
+    const onPageKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.key === '/' &&
+        document.activeElement !== searchInputRef.current &&
+        !['INPUT', 'TEXTAREA', 'SELECT'].includes(
+          (document.activeElement as HTMLElement)?.tagName,
+        )
+      ) {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', onPageKeyDown);
+    return () => window.removeEventListener('keydown', onPageKeyDown);
+  }, []);
+
+  const selectedLabel = SECTION_LABELS[selectedSection] || '设置';
+
   const onResultClick = (section: SettingsSection) => {
-    store.selectedSection = section;
+    selectSettingsSection(section);
     setSearchQuery('');
   };
+
 
   const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && searchResults.length > 0) {
@@ -553,7 +861,17 @@ export default observer(() => {
 
   return (
     <ThemeProvider
-      theme={{ ...store.theme, dark: store.theme['pages.lightForeground'] }}
+      theme={{
+        ...store.theme,
+        dark: store.theme['pages.lightForeground'],
+        settingsPage: true,
+        settingsAccent: store.theme['pages.lightForeground']
+          ? '#7583FF'
+          : '#4A5AE9',
+        settingsAccentSoft: store.theme['pages.lightForeground']
+          ? 'rgba(117, 131, 255, 0.16)'
+          : '#EEF0FF',
+      }}
     >
       <Container
         onMouseDown={(e) => (store.dialogVisible = false)}
@@ -595,7 +913,7 @@ export default observer(() => {
         >
           <SeDialogHeader>
             <SeDialogIcon>
-              <IconSearch size={22} />
+              <MagnifyingGlass size={22} weight="bold" />
             </SeDialogIcon>
             <div>
               <SeDialogHeading>{dialogTitle}</SeDialogHeading>
@@ -644,7 +962,10 @@ export default observer(() => {
           </SeFieldGroup>
 
           <SeDialogFooter>
-            <NormalButton variant="soft" onClick={() => (store.dialogVisible = false)}>
+            <NormalButton
+              variant="soft"
+              onClick={() => (store.dialogVisible = false)}
+            >
               取消
             </NormalButton>
             <NormalButton onClick={onSaveClick}>保存</NormalButton>
@@ -652,10 +973,16 @@ export default observer(() => {
         </SeDialog>
 
         <Nav>
-          <NavTitle>设置</NavTitle>
+          <NavBrand>
+            <NavLogo>
+              <GearSix size={20} weight="fill" />
+            </NavLogo>
+            <NavTitle>设置</NavTitle>
+          </NavBrand>
           <NavSearch>
-            <IconSearch size={16} />
+            <MagnifyingGlass size={15} />
             <NavSearchInput
+              ref={searchInputRef}
               value={searchQuery}
               placeholder="搜索设置"
               spellCheck={false}
@@ -669,14 +996,17 @@ export default observer(() => {
                 title="清除"
                 onClick={() => setSearchQuery('')}
               >
-                <IconClose size={14} />
+                <X size={14} weight="bold" />
               </NavSearchClear>
             )}
+            {!searching && <NavKeyboardShortcut>/</NavKeyboardShortcut>}
           </NavSearch>
           {searching ? (
             <NavResults>
               {searchResults.length === 0 ? (
-                <NavResultEmpty>未找到“{searchQuery.trim()}”相关设置</NavResultEmpty>
+                <NavResultEmpty>
+                  未找到“{searchQuery.trim()}”相关设置
+                </NavResultEmpty>
               ) : (
                 searchResults.map((item, key) => (
                   <NavResultItem
@@ -694,82 +1024,144 @@ export default observer(() => {
               )}
             </NavResults>
           ) : (
-            <NavList>
-              <NavMenuItem icon={<IconPersonalize />} section="appearance">
-                个性化
-              </NavMenuItem>
-              <NavMenuItem icon={<IconCustomizeToolbar />} section="customize-toolbar">
-                自定义工具栏
-              </NavMenuItem>
-              {process.env.ENABLE_AUTOFILL && (
-                <NavMenuItem icon={<IconAutofill />} section="autofill">
-                  密码填充
+            <>
+              <NavSectionLabel>全部设置</NavSectionLabel>
+              <NavList>
+                <NavMenuItem
+                  icon={<Sun size={16} weight="fill" />}
+                  tone="purple"
+                  section="appearance"
+                >
+                  外观设置
                 </NavMenuItem>
-              )}
-              <NavMenuItem icon={<IconStartup />} section="startup">
-                启动时
-              </NavMenuItem>
-              <NavMenuItem
-                icon={<IconSearch />}
-                section="address-bar"
-                subSections={['search-engines']}
-              >
-                地址栏
-              </NavMenuItem>
-              <NavMenuItem icon={<IconDownload />} section="downloads">
-                下载
-              </NavMenuItem>
-              <NavMenuItem icon={<IconShield />} section="privacy">
-                拦截保护
-              </NavMenuItem>
-              <NavMenuItem icon={<IconPermission />} section="permissions">
-                权限管理
-              </NavMenuItem>
-              <NavMenuItem icon={<IconShortcuts />} section="shortcuts">
-                快捷键
-              </NavMenuItem>
-              <NavMenuItem icon={<IconMouseGestures />} section="mouse-gestures">
-                鼠标手势
-              </NavMenuItem>
-              <NavMenuItem icon={<IconSelectionTranslate />} section="selection-translate">
-                划词翻译
-              </NavMenuItem>
-              <NavMenuItem
-                icon={<IconDefaultBrowser />}
-                section="default-browser"
-              >
-                默认浏览器
-              </NavMenuItem>
-              <NavMenuItem icon={<IconSystem />} section="system">
-                系统
-              </NavMenuItem>
-              <NavMenuItem icon={<IconAbout />} section="about">
-                关于
-              </NavMenuItem>
-            </NavList>
+                {process.env.ENABLE_AUTOFILL && (
+                  <NavMenuItem
+                    icon={<Key size={16} weight="fill" />}
+                    tone="purple"
+                    section="autofill"
+                  >
+                    自动填充和密码
+                  </NavMenuItem>
+                )}
+                <NavMenuItem
+                  icon={<Power size={16} weight="bold" />}
+                  tone="orange"
+                  section="startup"
+                >
+                  启动时
+                </NavMenuItem>
+                <NavMenuItem
+                  icon={<MagnifyingGlass size={16} weight="bold" />}
+                  tone="cyan"
+                  section="address-bar"
+                  subSections={['search-engines']}
+                >
+                  搜索设置
+                </NavMenuItem>
+                <NavMenuItem
+                  icon={<DownloadSimple size={16} weight="bold" />}
+                  tone="orange"
+                  section="downloads"
+                >
+                  下载
+                </NavMenuItem>
+                <NavMenuItem
+                  icon={<GlobeHemisphereWest size={16} weight="fill" />}
+                  tone="cyan"
+                  section="web-browsing"
+                >
+                  网站浏览
+                </NavMenuItem>
+                <NavMenuItem
+                  icon={<ShieldCheck size={16} weight="fill" />}
+                  tone="blue"
+                  section="privacy"
+                >
+                  拦截保护
+                </NavMenuItem>
+                <NavMenuItem
+                  icon={<LockKey size={16} weight="fill" />}
+                  tone="red"
+                  section="permissions"
+                >
+                  权限管理
+                </NavMenuItem>
+                <NavMenuItem
+                  icon={<Keyboard size={16} weight="fill" />}
+                  tone="green"
+                  section="shortcuts"
+                >
+                  快捷键
+                </NavMenuItem>
+                <NavMenuItem
+                  icon={<HandPalm size={16} weight="fill" />}
+                  tone="blue"
+                  section="mouse-gestures"
+                >
+                  鼠标手势
+                </NavMenuItem>
+                <NavMenuItem
+                  icon={<TextAa size={16} weight="fill" />}
+                  tone="purple"
+                  section="selection-translate"
+                >
+                  文字选择
+                </NavMenuItem>
+                <NavMenuItem
+                  icon={<GlobeHemisphereWest size={16} weight="fill" />}
+                  tone="cyan"
+                  section="default-browser"
+                >
+                  默认浏览器
+                </NavMenuItem>
+                <NavMenuItem
+                  icon={<Browsers size={16} weight="fill" />}
+                  tone="orange"
+                  section="system"
+                >
+                  系统
+                </NavMenuItem>
+                <NavMenuItem
+                  icon={<Info size={16} weight="fill" />}
+                  tone="purple"
+                  section="about"
+                >
+                  关于
+                </NavMenuItem>
+              </NavList>
+            </>
           )}
         </Nav>
 
-        <Main>
-          <MainInner>
-            {selectedSection === 'appearance' && <Appearance />}
-            {selectedSection === 'customize-toolbar' && <CustomizeToolbar />}
-            {selectedSection === 'autofill' && process.env.ENABLE_AUTOFILL && (
-              <Autofill />
-            )}
-            {selectedSection === 'address-bar' && <AddressBar />}
-            {selectedSection === 'search-engines' && <ManageSearchEngines />}
-            {selectedSection === 'startup' && <OnStartup />}
-            {selectedSection === 'privacy' && <Privacy />}
-            {selectedSection === 'permissions' && <Permissions />}
-            {selectedSection === 'shortcuts' && <Shortcuts />}
-            {selectedSection === 'mouse-gestures' && <MouseGestures />}
-            {selectedSection === 'selection-translate' && <SelectionTranslate />}
-            {selectedSection === 'downloads' && <Downloads />}
-            {selectedSection === 'default-browser' && <DefaultBrowser />}
-            {selectedSection === 'system' && <SystemSection />}
-            {selectedSection === 'about' && <About />}
-          </MainInner>
+        <Main data-settings-main>
+          <MainTopbar>
+            <Breadcrumb>
+              设置 / <strong>{selectedLabel}</strong>
+            </Breadcrumb>
+          </MainTopbar>
+          <MainContent>
+            <MainInner>
+              <PageHeading>{selectedLabel}</PageHeading>
+              {selectedSection === 'appearance' && <Appearance />}
+              {selectedSection === 'autofill' &&
+                process.env.ENABLE_AUTOFILL && <Autofill />}
+              {selectedSection === 'address-bar' && <AddressBar />}
+              {selectedSection === 'search-engines' && <ManageSearchEngines />}
+              {selectedSection === 'startup' && <OnStartup />}
+              {selectedSection === 'privacy' && <Privacy />}
+              {selectedSection === 'web-browsing' && <WebBrowsing />}
+              {selectedSection === 'permissions' && <Permissions />}
+              {selectedSection === 'shortcuts' && <Shortcuts />}
+              {selectedSection === 'mouse-gestures' && <MouseGestures />}
+              {selectedSection === 'selection-translate' && (
+                <SelectionTranslate />
+              )}
+              {selectedSection === 'downloads' && <Downloads />}
+              {selectedSection === 'default-browser' && <DefaultBrowser />}
+              {selectedSection === 'system' && <SystemSection />}
+              {selectedSection === 'about' && <About />}
+            </MainInner>
+          </MainContent>
         </Main>
       </Container>
     </ThemeProvider>

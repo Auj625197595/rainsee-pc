@@ -1,11 +1,6 @@
 import { observer } from 'mobx-react-lite';
 import * as React from 'react';
-import styled, {
-  ThemeProvider,
-  createGlobalStyle,
-  keyframes,
-  css,
-} from 'styled-components';
+import styled, { ThemeProvider, createGlobalStyle } from 'styled-components';
 import { ipcRenderer } from 'electron';
 
 import store from '../store';
@@ -27,7 +22,7 @@ import {
 const TRIGGER_HEIGHT = 3;
 const SHOW_DELAY_MS = 70;
 const HIDE_DELAY_MS = 280;
-const ANIMATION_MS = 240;
+const HEIGHT_STORAGE_KEY = 'rainsee-immersive-header-height';
 
 const logImmersiveOverlay = (...args: any[]) => {
   if (
@@ -42,7 +37,7 @@ const OverlayStyle = createGlobalStyle`
   html,
   body,
   #app {
-    background: transparent !important;
+    background: var(--immersive-header-background, #ffffff) !important;
   }
 
   html,
@@ -53,54 +48,14 @@ const OverlayStyle = createGlobalStyle`
   }
 `;
 
-const reveal = keyframes`
-  from {
-    opacity: 0;
-    transform: translateY(-14px) scale(0.985);
-    filter: saturate(0.94);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-    filter: saturate(1);
-  }
-`;
-
-const hide = keyframes`
-  from {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-    filter: saturate(1);
-  }
-  to {
-    opacity: 0;
-    transform: translateY(-10px) scale(0.992);
-    filter: saturate(0.96);
-  }
-`;
-
-const AnimatedHeader = styled.div<{
-  $phase: OverlayPhase;
-}>`
+const AnimatedHeader = styled.div`
   position: relative;
-  width: 100%;
-  opacity: 1;
-  transform-origin: top center;
+  box-sizing: border-box;
+  width: 100vw;
+  min-width: 100vw;
+  max-width: 100vw;
+  flex-shrink: 0;
   overflow: hidden;
-  box-shadow: 0 18px 36px -24px rgba(16, 24, 40, 0.42);
-  will-change: transform, opacity, filter;
-
-  ${({ $phase }) =>
-    $phase === 'expanding' &&
-    css`
-      animation: ${reveal} ${ANIMATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1);
-    `}
-
-  ${({ $phase }) =>
-    $phase === 'collapsing' &&
-    css`
-      animation: ${hide} ${ANIMATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1);
-    `}
 `;
 
 const Root = createGlobalStyle`
@@ -113,27 +68,29 @@ const Root = createGlobalStyle`
   }
 `;
 
-type OverlayPhase = 'collapsed' | 'expanding' | 'expanded' | 'collapsing';
+type OverlayPhase = 'collapsed' | 'expanded';
 
 const OverlayShell = observer(() => {
   const headerRef = React.useRef<HTMLDivElement>(null);
   const [phase, setPhase] = React.useState<OverlayPhase>('collapsed');
   const hideTimerRef = React.useRef<number | null>(null);
   const showTimerRef = React.useRef<number | null>(null);
-  const phaseTimerRef = React.useRef<number | null>(null);
   const lastReportedHeightRef = React.useRef<number>(TRIGGER_HEIGHT);
   const hoveredRef = React.useRef(false);
 
-  const expanded = phase !== 'collapsed';
+  const expanded = phase === 'expanded';
   const stateLogRef = React.useRef({ phase, expanded });
   stateLogRef.current = { phase, expanded };
 
-  const clearTimer = React.useCallback((timerRef: React.MutableRefObject<number | null>) => {
-    if (timerRef.current) {
-      window.clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-  }, []);
+  const clearTimer = React.useCallback(
+    (timerRef: React.MutableRefObject<number | null>) => {
+      if (timerRef.current) {
+        window.clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    },
+    [],
+  );
 
   const clearHideTimer = React.useCallback(() => {
     clearTimer(hideTimerRef);
@@ -143,36 +100,17 @@ const OverlayShell = observer(() => {
     clearTimer(showTimerRef);
   }, [clearTimer]);
 
-  const clearPhaseTimer = React.useCallback(() => {
-    clearTimer(phaseTimerRef);
-  }, [clearTimer]);
-
-  const transitionTo = React.useCallback((next: OverlayPhase) => {
-    clearPhaseTimer();
-    logImmersiveOverlay('transition', {
-      from: phase,
-      to: next,
-      hovered: hoveredRef.current,
-    });
-    setPhase(next);
-
-    if (next === 'expanding') {
-      phaseTimerRef.current = window.setTimeout(() => {
-        setPhase((current) => (current === 'expanding' ? 'expanded' : current));
-      }, ANIMATION_MS);
-      return;
-    }
-
-    if (next === 'collapsing') {
-      phaseTimerRef.current = window.setTimeout(() => {
-        if (hoveredRef.current) {
-          transitionTo('expanding');
-          return;
-        }
-        setPhase((current) => (current === 'collapsing' ? 'collapsed' : current));
-      }, ANIMATION_MS);
-    }
-  }, [clearPhaseTimer]);
+  const transitionTo = React.useCallback(
+    (next: OverlayPhase) => {
+      logImmersiveOverlay('transition', {
+        from: phase,
+        to: next,
+        hovered: hoveredRef.current,
+      });
+      setPhase(next);
+    },
+    [phase],
+  );
 
   const reportHeight = React.useCallback(() => {
     const height = expanded
@@ -194,6 +132,16 @@ const OverlayShell = observer(() => {
       windowId: store.windowId,
     });
     ipcRenderer.send(`immersive-header-height-${store.windowId}`, height);
+    if (expanded && height > TRIGGER_HEIGHT) {
+      try {
+        window.localStorage.setItem(HEIGHT_STORAGE_KEY, String(height));
+      } catch {
+        // localStorage 不可用时仅跳过跨启动复用，当前进程仍使用主进程内存值。
+      }
+      ipcRenderer.send(`immersive-header-metrics-${store.windowId}`, {
+        height,
+      });
+    }
   }, [expanded, phase]);
 
   const showHeader = React.useCallback(() => {
@@ -205,19 +153,14 @@ const OverlayShell = observer(() => {
     clearHideTimer();
     clearShowTimer();
 
-    if (phase === 'expanded' || phase === 'expanding') return;
-
-    if (phase === 'collapsing') {
-      transitionTo('expanding');
-      return;
-    }
+    if (phase === 'expanded') return;
 
     showTimerRef.current = window.setTimeout(() => {
       if (!hoveredRef.current) return;
       logImmersiveOverlay('show timer fired', {
         phase,
       });
-      transitionTo('expanding');
+      transitionTo('expanded');
     }, SHOW_DELAY_MS);
   }, [clearHideTimer, clearShowTimer, expanded, phase, transitionTo]);
 
@@ -232,16 +175,21 @@ const OverlayShell = observer(() => {
     }
     clearShowTimer();
 
-    if (phase === 'collapsed' || phase === 'collapsing') return;
+    if (phase === 'collapsed') return;
 
     hideTimerRef.current = window.setTimeout(() => {
       if (hoveredRef.current) return;
-      if (Object.keys(store.dialogsVisibility).some((k) => store.dialogsVisibility[k])) {
+      if (
+        store.immersiveSearchActive ||
+        Object.keys(store.dialogsVisibility).some(
+          (k) => store.dialogsVisibility[k],
+        )
+      ) {
         hideHeader();
         return;
       }
 
-      transitionTo('collapsing');
+      transitionTo('collapsed');
     }, HIDE_DELAY_MS);
   }, [clearHideTimer, clearShowTimer, expanded, phase, transitionTo]);
 
@@ -250,6 +198,18 @@ const OverlayShell = observer(() => {
       windowId: store.windowId,
       href: window.location.href,
     });
+    try {
+      const storedHeight = Number(
+        window.localStorage.getItem(HEIGHT_STORAGE_KEY),
+      );
+      if (Number.isFinite(storedHeight) && storedHeight > TRIGGER_HEIGHT) {
+        ipcRenderer.send(`immersive-header-metrics-${store.windowId}`, {
+          height: storedHeight,
+        });
+      }
+    } catch {
+      // 使用主进程的默认高度。
+    }
     reportHeight();
   }, [reportHeight]);
 
@@ -259,7 +219,8 @@ const OverlayShell = observer(() => {
     reportHeight,
     expanded,
     store.settings.object.topBarVariant,
-    store.settings.object.bookmarksBar,
+    store.settings.object.bookmarksBarDisplay,
+    store.tabs.selectedTab?.url,
     store.settings.object.bookmarksBarRows,
   ]);
 
@@ -278,11 +239,13 @@ const OverlayShell = observer(() => {
     () => () => {
       clearShowTimer();
       clearHideTimer();
-      clearPhaseTimer();
       lastReportedHeightRef.current = TRIGGER_HEIGHT;
-      ipcRenderer.send(`immersive-header-height-${store.windowId}`, TRIGGER_HEIGHT);
+      ipcRenderer.send(
+        `immersive-header-height-${store.windowId}`,
+        TRIGGER_HEIGHT,
+      );
     },
-    [clearHideTimer, clearPhaseTimer, clearShowTimer],
+    [clearHideTimer, clearShowTimer],
   );
 
   // 悬停信号改由主进程游标轮询下发(替换 DOM mouseenter/leave):透明置顶窗在
@@ -314,9 +277,11 @@ const OverlayShell = observer(() => {
 
   // 弹窗全部关闭且游标已不在头部时收起。主进程只在悬停态「变化」时发信号,若游标
   // 早已离开、仅剩弹窗撑着不收,弹窗关闭这一刻不会再有 hover=false 到达,这里补上。
-  const anyDialogVisible = Object.keys(store.dialogsVisibility).some(
-    (k) => store.dialogsVisibility[k],
-  );
+  const anyDialogVisible =
+    store.immersiveSearchActive ||
+    Object.keys(store.dialogsVisibility).some(
+      (k) => store.dialogsVisibility[k],
+    );
   React.useEffect(() => {
     if (!anyDialogVisible && !hoveredRef.current && expanded) {
       hideHeader();
@@ -324,20 +289,18 @@ const OverlayShell = observer(() => {
   }, [anyDialogVisible, expanded, hideHeader]);
 
   return (
-    <div
-      style={{ width: '100%', height: '100%' }}
-    >
+    <div style={{ width: '100%', height: '100%' }}>
       {expanded ? (
-        <AnimatedHeader
-          ref={headerRef}
-          $phase={phase}
-        >
+        <AnimatedHeader ref={headerRef}>
           <HeaderWrapper>
             <Titlebar />
             {store.settings.object.topBarVariant === 'default' && <Toolbar />}
           </HeaderWrapper>
           <BookmarkBar />
-          <HeaderFileDropPanel targetRef={headerRef} windowId={store.windowId} />
+          <HeaderFileDropPanel
+            targetRef={headerRef}
+            windowId={store.windowId}
+          />
         </AnimatedHeader>
       ) : null}
     </div>
@@ -345,6 +308,18 @@ const OverlayShell = observer(() => {
 });
 
 const ImmersiveHeaderOverlay = observer(() => {
+  const backgroundColor = store.theme['titlebar.backgroundColor'] || '#ffffff';
+
+  React.useLayoutEffect(() => {
+    document.documentElement.style.setProperty(
+      '--immersive-header-background',
+      backgroundColor,
+    );
+    ipcRenderer.send(`immersive-header-metrics-${store.windowId}`, {
+      backgroundColor,
+    });
+  }, [backgroundColor]);
+
   return (
     <ThemeProvider
       theme={{

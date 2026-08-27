@@ -70,6 +70,11 @@ const onTitleChange = () => {
   updateBookmark();
 };
 
+const onUrlChange = () => {
+  store.bookmark.url = store.urlRef.current.value;
+  updateBookmark();
+};
+
 const onRemove = () => {
   if (!store.bookmark) return;
   ipcRenderer.send('bookmarks-remove', [store.bookmark._id]);
@@ -297,6 +302,18 @@ export const App = observer(() => {
                 onChange={onTitleChange}
               />
             </Field>
+
+            {!store.bookmark?.isFolder && (
+              <Field>
+                <FieldLabel>链接</FieldLabel>
+                <Input
+                  tabIndex={0}
+                  ref={store.urlRef}
+                  type="url"
+                  onChange={onUrlChange}
+                />
+              </Field>
+            )}
 
             <Field as="div">
               <FieldLabel>文件夹</FieldLabel>

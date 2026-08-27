@@ -3,6 +3,7 @@ import { observable, computed, makeObservable } from 'mobx';
 import { parse } from 'url';
 import { WEBUI_BASE_URL, WEBUI_PROTOCOL } from '~/constants/files';
 import { DialogStore } from '~/models/dialog-store';
+import type { ITabMemorySnapshot } from '~/interfaces/memory';
 
 export class Store extends DialogStore {
   private timeout: any;
@@ -21,6 +22,16 @@ export class Store extends DialogStore {
   public x = 0;
 
   public xTransition = false;
+
+  public tabId = -1;
+
+  public memory: ITabMemorySnapshot = {
+    available: false,
+    pid: 0,
+    memoryBytes: 0,
+    privateBytes: 0,
+    sharedTabCount: 0,
+  };
 
   // Computed
 
@@ -68,6 +79,8 @@ export class Store extends DialogStore {
       favicon: observable,
       x: observable,
       xTransition: observable,
+      tabId: observable,
+      memory: observable,
       domain: computed,
       displayUrl: computed,
     });
@@ -96,12 +109,26 @@ export class Store extends DialogStore {
         this.thumbnail = tab.thumbnail || '';
         this.favicon = tab.favicon || '';
         this.x = tab.x;
+        this.tabId = tab.id;
+        this.memory = tab.memory || this.memory;
 
         if (visible && this.title !== '' && this.url !== '') {
           this.visible = visible;
         }
       }
     });
+  }
+
+  public pointerEnter() {
+    this.send('preview-pointer-enter');
+  }
+
+  public pointerLeave() {
+    this.send('preview-pointer-leave');
+  }
+
+  public openMemoryPanel() {
+    ipcRenderer.send('preview-open-memory-panel', { tabId: this.tabId });
   }
 }
 

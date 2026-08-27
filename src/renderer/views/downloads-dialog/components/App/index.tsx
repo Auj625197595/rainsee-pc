@@ -11,10 +11,11 @@ import {
   Badge,
   Heading,
   Subtitle,
+  HeaderActions,
+  MoreButton,
   CloseButton,
   ListCard,
   Empty,
-  Footer,
 } from './panel';
 import store from '../../store';
 import { DownloadItem } from '../DownloadItem';
@@ -90,17 +91,20 @@ export const App = observer(() => {
               <Heading>下载列表</Heading>
               <Subtitle>{subtitle}</Subtitle>
             </div>
-            <CloseButton aria-label="关闭下载列表" onClick={onClose}>
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-              >
-                <path d="M18 6L6 18M6 6l12 12" />
-              </svg>
-            </CloseButton>
+            <HeaderActions>
+              <MoreButton onClick={openAll}>更多</MoreButton>
+              <CloseButton aria-label="关闭下载列表" onClick={onClose}>
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                >
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </CloseButton>
+            </HeaderActions>
           </Header>
 
           <ListCard menuOpen={menuOpen}>
@@ -112,8 +116,6 @@ export const App = observer(() => {
               ))
             )}
           </ListCard>
-
-          <Footer onClick={openAll}>查看全部</Footer>
         </Content>
       </StyledApp>
     </ThemeProvider>

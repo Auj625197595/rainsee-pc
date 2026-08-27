@@ -97,6 +97,13 @@ export const TitleRow = styled.div`
   gap: 10px;
 `;
 
+export const TitleActions = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+`;
+
 export const Title = styled.div`
   min-width: 0;
   flex: 1;
@@ -150,8 +157,18 @@ export const MoreButton = styled.button`
         `}
 `;
 
+export const PauseButton = styled(MoreButton)``;
+
 export const StatusRow = styled.div`
-  margin-top: 4px;
+  margin-top: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+`;
+
+export const StatusPrimary = styled.div`
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -176,16 +193,37 @@ export const StatusBadge = styled.span`
 `;
 
 export const Detail = styled.span`
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 11px;
-  font-weight: 700;
-  opacity: 0.56;
+  font-weight: 650;
+  opacity: 0.5;
+`;
+
+export const TransferInfo = styled(Detail)`
+  font-variant-numeric: tabular-nums;
+  opacity: 0.64;
+`;
+
+export const Speed = styled.span`
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #3452ff;
+
+  ${({ theme }: { theme?: ITheme }) =>
+    theme.dark &&
+    css`
+      color: #9db0ff;
+    `}
 `;
 
 export const ProgressBackground = styled.div`
-  margin-top: 5px;
+  margin-top: 7px;
   height: 4px;
   border-radius: 999px;
   overflow: hidden;

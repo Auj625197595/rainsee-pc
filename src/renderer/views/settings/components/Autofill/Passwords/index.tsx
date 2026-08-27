@@ -41,7 +41,9 @@ const getMaskedPassword = (password: string, fallbackLength = 0) => {
     return '*'.repeat(password.length);
   }
 
-  return `${password.slice(0, 2)}${'*'.repeat(password.length - 4)}${password.slice(-2)}`;
+  return `${password.slice(0, 2)}${'*'.repeat(
+    password.length - 4,
+  )}${password.slice(-2)}`;
 };
 
 const isReadablePassword = (password: string) =>
@@ -63,6 +65,39 @@ const getSiteDisplay = (url?: string) => {
   };
 };
 
+const compareText = (left: string, right: string) => {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+};
+
+// Keep the field order aligned with the Android and HarmonyOS password lists.
+const compareCredentials = (left: IFormFillData, right: IFormFillData) => {
+  const leftSite = getDomain(left.url).toLowerCase();
+  const rightSite = getDomain(right.url).toLowerCase();
+  const siteResult = compareText(leftSite, rightSite);
+  if (siteResult !== 0) return siteResult;
+
+  const leftUsername = (left.fields?.username || '').toLowerCase();
+  const rightUsername = (right.fields?.username || '').toLowerCase();
+  const usernameResult = compareText(leftUsername, rightUsername);
+  if (usernameResult !== 0) return usernameResult;
+
+  const passwordResult = compareText(
+    left.fields?.password || '',
+    right.fields?.password || '',
+  );
+  if (passwordResult !== 0) return passwordResult;
+
+  const urlResult = compareText(
+    (left.url || '').toLowerCase(),
+    (right.url || '').toLowerCase(),
+  );
+  if (urlResult !== 0) return urlResult;
+
+  return compareText(left._id || '', right._id || '');
+};
+
 const Item = observer(({ data }: { data: IFormFillData }) => {
   const { url, favicon, fields } = data;
   const [displayPassword, setDisplayPassword] = React.useState(
@@ -71,7 +106,11 @@ const Item = observer(({ data }: { data: IFormFillData }) => {
   const site = React.useMemo(() => getSiteDisplay(url), [url]);
   const username = fields?.username || '未填写用户名';
   const iconUrl =
-    favicon && favicon.trim() !== '' ? favicon : url ? getIconByUrlNet(url) : '';
+    favicon && favicon.trim() !== ''
+      ? favicon
+      : url
+      ? getIconByUrlNet(url)
+      : '';
 
   React.useEffect(() => {
     let mounted = true;
@@ -102,7 +141,9 @@ const Item = observer(({ data }: { data: IFormFillData }) => {
           {iconUrl ? (
             <img src={iconUrl} alt="" draggable={false} />
           ) : (
-            <FaviconFallback>{site.domain.slice(0, 1).toUpperCase()}</FaviconFallback>
+            <FaviconFallback>
+              {site.domain.slice(0, 1).toUpperCase()}
+            </FaviconFallback>
           )}
         </Favicon>
         <SiteText>
@@ -112,7 +153,7 @@ const Item = observer(({ data }: { data: IFormFillData }) => {
       <ValueCell>
         <UserMain title={username}>{username}</UserMain>
       </ValueCell>
-      <ValueCell align="end">
+      <ValueCell $align="end">
         <TextValue title={displayPassword}>{displayPassword}</TextValue>
         <DeleteButton onClick={onDelete} title="删除密码" />
       </ValueCell>
@@ -153,7 +194,7 @@ const ImportExportToolbar = observer(() => {
 
   return (
     <Toolbar>
-      <CloudButton variant="primary" onClick={onImport}>
+      <CloudButton $variant="primary" onClick={onImport}>
         导入密码
       </CloudButton>
       <CloudButton onClick={onExport}>导出密码</CloudButton>
@@ -166,9 +207,9 @@ const ImportExportToolbar = observer(() => {
 export const Passwords = observer(() => {
   const [query, setQuery] = React.useState('');
   const keyword = query.trim().toLowerCase();
-  const filteredCredentials =
+  const filteredCredentials = (
     keyword === ''
-      ? store.autoFill.credentials
+      ? store.autoFill.credentials.slice()
       : store.autoFill.credentials.filter((item) => {
           const site = getSiteDisplay(item.url);
           const username = item.fields?.username || '';
@@ -176,10 +217,11 @@ export const Passwords = observer(() => {
           return [site.domain, site.fullUrl, username].some((value) =>
             value.toLowerCase().includes(keyword),
           );
-        });
+        })
+  ).sort(compareCredentials);
 
   return (
-    <Section label="网站密码" icon={ICON_KEY}>
+    <Section label="网站密码" icon={ICON_KEY} defaultExpanded>
       <ImportExportToolbar />
       <CardHeader>
         <div>
@@ -204,13 +246,15 @@ export const Passwords = observer(() => {
       <Container>
         <HeaderLabel>网站</HeaderLabel>
         <HeaderLabel>用户名</HeaderLabel>
-        <HeaderLabel align="end">密码</HeaderLabel>
+        <HeaderLabel $align="end">密码</HeaderLabel>
         {filteredCredentials.length ? (
           filteredCredentials.map((item) => <Item key={item._id} data={item} />)
         ) : (
           <EmptyState>
             没有找到匹配的网站
-            <EmptyStateSub>试试输入域名、完整网址或用户名关键词。</EmptyStateSub>
+            <EmptyStateSub>
+              试试输入域名、完整网址或用户名关键词。
+            </EmptyStateSub>
           </EmptyState>
         )}
       </Container>

@@ -213,7 +213,8 @@ export class Store {
 
   @action
   private setItems(items: IHistoryItem[]) {
-    this.items = items || [];
+    // 云端合并可能刚追加了较早的记录；倒序分组前先统一按访问时间排序。
+    this.items = this.sortByDate(items);
   }
 
   public async load() {

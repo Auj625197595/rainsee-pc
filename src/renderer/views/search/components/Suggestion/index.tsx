@@ -18,13 +18,15 @@ import {
   Url,
   JumpButton,
   ClipboardTag,
+  BejsonTag,
+  RemoveButton,
 } from './style';
 import { ISuggestion } from '~/interfaces';
 import store from '../../store';
-import { ipcRenderer } from 'electron';
 import { callViewMethod } from '~/utils/view';
 import { getWebUIURL } from '~/common/webui';
-import { Clipboard } from '@phosphor-icons/react';
+import { Clipboard, X } from '@phosphor-icons/react';
+import { ipcRenderer } from 'electron';
 
 interface Props {
   suggestion: ISuggestion;
@@ -32,6 +34,8 @@ interface Props {
 
 const onMouseEnter = (suggestion: ISuggestion) => () => {
   suggestion.hovered = true;
+  // 鼠标悬停项与键盘当前项保持一致,回车时执行用户指向的结果。
+  store.suggestions.selected = suggestion.id;
 };
 
 const onMouseLeave = (suggestion: ISuggestion) => () => {
@@ -43,11 +47,11 @@ const onJumpClick = (suggestion: ISuggestion) => (
   e: React.MouseEvent<HTMLDivElement>,
 ) => {
   e.stopPropagation();
-  ipcRenderer.send('search-select-tab', suggestion.tabId);
+  store.executeSuggestion(suggestion);
   store.hide();
 };
 
-// 剪贴板项右侧「剪贴板」标识:点击跳转地址栏设置页(可关闭该联想来源)。
+// 剪贴板项右侧「剪贴板」标识:点击跳转搜索设置页(可关闭该联想来源)。
 const onClipboardTagClick = (e: React.MouseEvent<HTMLDivElement>) => {
   e.stopPropagation();
   callViewMethod(
@@ -58,25 +62,28 @@ const onClipboardTagClick = (e: React.MouseEvent<HTMLDivElement>) => {
   store.hide();
 };
 
+const onRemoveClick = (suggestion: ISuggestion) => (
+  e: React.MouseEvent<HTMLButtonElement>,
+) => {
+  e.preventDefault();
+  e.stopPropagation();
+  store.removeHistorySuggestion(suggestion);
+};
+
 const onClick = (suggestion: ISuggestion) => () => {
-  if (suggestion.type === 'tab') {
-    ipcRenderer.send('search-select-tab', suggestion.tabId);
-    store.hide();
-    return;
-  }
+  store.executeSuggestion(suggestion);
+  store.hide();
+};
 
-  let url = suggestion.isSearch ? suggestion.primaryText : suggestion.url;
-
-  if (suggestion.isSearch) {
-    url = store.searchEngine.url.replace('%s', url);
-    // 双引擎搜索:点击搜索类建议时,触发副引擎侧边栏。
-    ipcRenderer.send(`dual-engine-search-${store.windowId}`, suggestion.primaryText);
-  } else if (url.indexOf('://') === -1) {
-    url = `http://${url}`;
-  }
-
-  store.navigate(url);
-
+// JSON 剪贴板内容跳转 bejson,由主进程在页面加载完成后负责填充编辑器。
+const onBejsonTagClick = (suggestion: ISuggestion) => (
+  e: React.MouseEvent<HTMLDivElement>,
+) => {
+  e.stopPropagation();
+  void ipcRenderer.invoke('open-clipboard-in-bejson', {
+    webContentsId: store.tabId,
+    content: suggestion.rawClipboard || suggestion.primaryText || '',
+  });
   store.hide();
 };
 
@@ -103,7 +110,7 @@ const getCategoryIcon = (suggestion: ISuggestion): string => {
 
 export const Suggestion = observer(({ suggestion }: Props) => {
   const { hovered } = suggestion;
-  const { primaryText, secondaryText, url } = suggestion;
+  const { primaryText, secondaryText, displayUrl, url } = suggestion;
 
   const selected = store.suggestions.selected === suggestion.id;
 
@@ -145,22 +152,53 @@ export const Suggestion = observer(({ suggestion }: Props) => {
       )}
       {isClipboard ? (
         <>
-          <ClipboardTag title="地址栏设置" onClick={onClipboardTagClick}>
+          <ClipboardTag title="搜索设置" onClick={onClipboardTagClick}>
             剪贴板
           </ClipboardTag>
           <PrimaryText style={{ flex: 1, minWidth: 0 }}>
             {clipboardPrefix} {clipboardValue}
           </PrimaryText>
+          {suggestion.isJsonClipboard && (
+            <BejsonTag
+              title="在 bejson 中格式化 JSON"
+              onClick={onBejsonTagClick(suggestion)}
+            >
+              BeJson
+            </BejsonTag>
+          )}
         </>
       ) : (
         <>
           {primaryText && <PrimaryText>{primaryText}</PrimaryText>}
           {primaryText && (secondaryText || url) && <Dash>&ndash;</Dash>}
-          {url ? <Url>{url}</Url> : <SecondaryText>{secondaryText}</SecondaryText>}
+          {url ? (
+            <Url>{displayUrl || url}</Url>
+          ) : (
+            <SecondaryText>{secondaryText}</SecondaryText>
+          )}
         </>
       )}
       {suggestion.type === 'tab' && (
         <JumpButton onClick={onJumpClick(suggestion)}>跳转</JumpButton>
+      )}
+      {(suggestion.type === 'history' ||
+        suggestion.type === 'searchTerm') && (
+        <RemoveButton
+          type="button"
+          title={
+            suggestion.type === 'searchTerm'
+              ? '删除此条搜索历史'
+              : '删除此条历史记录'
+          }
+          aria-label={
+            suggestion.type === 'searchTerm'
+              ? '删除此条搜索历史'
+              : '删除此条历史记录'
+          }
+          onClick={onRemoveClick(suggestion)}
+        >
+          <X size={16} weight="regular" />
+        </RemoveButton>
       )}
     </StyledSuggestion>
   );

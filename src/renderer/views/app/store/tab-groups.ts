@@ -77,13 +77,15 @@ export class TabGroupsStore {
         if (!group) return;
         if (t.name != null) group.name = t.name;
         if (t.color) group.color = t.color;
-        // 名称/颜色变更落库。
-        this.db
-          .update({ id: t.id } as any, {
-            name: group.name,
-            color: group.color,
-          } as any)
-          .catch(() => {});
+        // 工作区由 workspace snapshot 持久化；普通窗口才写 tabGroups 数据库。
+        if (store.canPersistNormalSession) {
+          this.db
+            .update({ id: t.id } as any, {
+              name: group.name,
+              color: group.color,
+            } as any)
+            .catch(() => {});
+        }
         store.tabs.updateTabsBounds(true);
       }
     });
@@ -94,15 +96,16 @@ export class TabGroupsStore {
   }
 
   // id 由调用方提供(恢复路径,保持持久化 id);缺省则运行时自增。
-  public addGroup(id?: number) {
+  public addGroup(id?: number, workspaceKey?: string) {
     const gid = id != null ? id : this.nextId++;
     if (gid >= this.nextId) this.nextId = gid + 1;
 
     const tabGroup = new ITabGroup(this.store, this, gid);
+    tabGroup.workspaceKey = workspaceKey;
     this.list.push(tabGroup);
 
     // 仅运行时新建的组(无 id 入参)写库;恢复路径由 load() 统一读库,不重复写。
-    if (id == null) {
+    if (id == null && this.store.canPersistNormalSession) {
       this.db
         .insert({
           id: tabGroup.id,
@@ -123,7 +126,7 @@ export class TabGroupsStore {
   // 组内最后一个成员离开 → 删除持久化的组记录。失败静默(DB 与内存可能瞬时不同步,
   // 下次 load 时空组因无成员不渲染,不致错误)。
   public removeGroupDoc(id: number) {
-    if (isImmersiveHeaderWindow()) return;
+    if (!this.store.canPersistNormalSession) return;
     this.db.remove({ id } as any).catch(() => {});
   }
 
@@ -133,7 +136,9 @@ export class TabGroupsStore {
     const g = this.getGroupById(id);
     if (!g || !color) return;
     g.color = color;
-    this.db.update({ id } as any, { color } as any).catch(() => {});
+    if (this.store.canPersistNormalSession) {
+      this.db.update({ id } as any, { color } as any).catch(() => {});
+    }
   }
 
   // 改名(悬停弹窗内联输入框)。同步内存 + 落库。空串视为无组名。
@@ -142,7 +147,9 @@ export class TabGroupsStore {
     const g = this.getGroupById(id);
     if (!g) return;
     g.name = (name || '').trim();
-    this.db.update({ id } as any, { name: g.name } as any).catch(() => {});
+    if (this.store.canPersistNormalSession) {
+      this.db.update({ id } as any, { name: g.name } as any).catch(() => {});
+    }
   }
 
   // 整组钉住/取消钉住(固定分组)。同步内存 + 落库。
@@ -151,7 +158,9 @@ export class TabGroupsStore {
     const g = this.getGroupById(id);
     if (!g) return;
     g.isPinned = pinned;
-    this.db.update({ id } as any, { isPinned: pinned } as any).catch(() => {});
+    if (this.store.canPersistNormalSession) {
+      this.db.update({ id } as any, { isPinned: pinned } as any).catch(() => {});
+    }
   }
 
   // 从持久层恢复组记录。必须在 startupTabs.load() 之前完成,使标签恢复时
@@ -161,6 +170,17 @@ export class TabGroupsStore {
     // overlay 是镜像:分组由主渲染进程经 immersive-header-sync 对齐,不从 DB 自建
     // (否则会与 reconcile 的 addGroup 重复 push)。
     if (isImmersiveHeaderWindow()) return;
+
+    if (this.store.workspaceContext) {
+      this.list = [];
+      for (const group of this.store.workspaceContext.groups || []) {
+        const item = this.addGroup(undefined, group.key);
+        item.name = group.name;
+        item.color = group.color;
+        item.isPinned = !!group.isPinned;
+      }
+      return;
+    }
     let docs: ITabGroupDoc[] = [];
     try {
       docs = await this.db.get({ windowId: this.store.windowId } as any);

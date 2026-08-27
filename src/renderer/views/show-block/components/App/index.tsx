@@ -31,7 +31,6 @@ import {
   RequestHost,
   RequestFilter,
   EmptyState,
-  ComplaintBanner,
 } from './style';
 import store from '../../store';
 import {UIStyle} from '~/renderer/mixins/default-styles';
@@ -60,15 +59,6 @@ const onMarkAd = () => {
   store.hide();
 };
 
-const onComplaint = () => {
-  // 跳转到「误拦截申诉」uniapp 页(部署在 third.yjllq.com/h5),带当前域名预填
-  const domain = store.domain || '';
-  const url = `https://third.yjllq.com/h5/pages/extensionComplaint/adblockComplaint?lang=zh${
-    domain ? `&domain=${encodeURIComponent(domain)}` : ''
-  }`;
-  ipcRenderer.send(`add-tab-${store.windowId}`, {url, active: true});
-  store.hide();
-};
 
 export const App = observer(() => {
   const rootRef = React.useRef<HTMLDivElement>(null);
@@ -133,12 +123,6 @@ export const App = observer(() => {
             </PillButton>
           </ActionButtons>
         </StatusCard>
-
-        {store.list.length > 0 && (
-          <ComplaintBanner onClick={onComplaint} title="误拦截申诉">
-            网站没有非法广告 误拦截申诉
-          </ComplaintBanner>
-        )}
 
         <ListCard>
           <ListHeader>

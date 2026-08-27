@@ -105,6 +105,32 @@ export const JumpButton = styled.div`
   `}
 `;
 
+export const RemoveButton = styled.button`
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  margin: 0 7px 0 auto;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  color: inherit;
+  background: transparent;
+  opacity: ${transparency.icons.inactive};
+  cursor: pointer;
+
+  &:hover {
+    opacity: ${transparency.icons.active};
+    ${({ theme }: { theme?: ITheme }) => css`
+      background-color: ${theme['searchBox.lightForeground']
+        ? 'rgba(255, 255, 255, 0.1)'
+        : 'rgba(0, 0, 0, 0.08)'};
+    `}
+  }
+`;
+
 // 剪贴板置顶项的「剪贴板」标识(位于文字前):实心蓝底白字,点击跳转地址栏设置页。
 export const ClipboardTag = styled.div`
   display: flex;
@@ -121,4 +147,9 @@ export const ClipboardTag = styled.div`
   &:hover {
     filter: brightness(0.9);
   }
+`;
+
+// JSON 剪贴板内容的 bejson 快捷入口。
+export const BejsonTag = styled(ClipboardTag)`
+  background-color: #1683ff;
 `;

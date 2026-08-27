@@ -1,4 +1,4 @@
-import {observable, computed, makeObservable, makeAutoObservable} from 'mobx';
+import {action, observable, computed, makeObservable, makeAutoObservable, reaction} from 'mobx';
 
 import {TabsStore} from './tabs';
 import {TabGroupsStore} from './tab-groups';
@@ -11,12 +11,14 @@ import {getTargetWindowId, isImmersiveHeaderWindow} from '../utils/windows';
 import {StartupTabsStore} from './startup-tabs';
 import {getTheme} from '~/utils/themes';
 import {AutoFillStore} from './autofill';
-import {IDownloadItem, BrowserActionChangeType} from '~/interfaces';
+import {IDownloadItem, BrowserActionChangeType, IWorkspace, IWorkspaceSnapshot} from '~/interfaces';
 import {IBrowserAction} from '../models';
 import {IURLSegment} from '~/interfaces/urls';
 import {BookmarkBarStore} from './bookmark-bar';
 import {getWebUIURL} from "~/common/webui";
 import {initImmersiveMirror, initImmersiveSyncSource} from './immersive-sync';
+import {mergeChromeTheme, mixCssColors} from '~/common/chrome-theme';
+import {notifyDualEngineSearch} from '../utils/dual-engine';
 
 export class Store {
   public settings = new SettingsStore(this);
@@ -50,6 +52,21 @@ export class Store {
     `is-pending-detach-${this.windowId}`,
   );
 
+  // 外部请求打开的初始 URL(「在新窗口打开链接」等)。startup-tabs 优先开它。
+  public initialUrl = ipcRenderer.sendSync(
+    `get-initial-url-${this.windowId}`,
+  );
+
+  public restoreSessionWithInitialUrl = ipcRenderer.sendSync(
+    `restore-session-with-initial-url-${this.windowId}`,
+  );
+
+  public workspaceContext: IWorkspace | null = ipcRenderer.sendSync(
+    `get-workspace-context-${this.windowId}`,
+  );
+
+  public workspaceReady = false;
+
   // Observable
   public addressbarTextVisible = true;
 
@@ -60,6 +77,9 @@ export class Store {
   public expectingNewTabFocus = false;
 
   public addressbarEditing = false;
+
+  // 沉浸模式下搜索弹窗位于主窗口,地址栏视觉层位于悬浮窗;两者共享一次输入会话。
+  public immersiveSearchActive = false;
 
   // gosearch 等程序化聚焦时置位:下一次地址栏 onFocus 应弹出联想面板。
   // 用于区分新标签页的程序化聚焦(不弹)与 gosearch(弹)。
@@ -110,6 +130,22 @@ export class Store {
     'extensions-list': false,
   };
 
+  // 「正在清理浏览数据」全屏覆盖层,仅 exit 模式(关闭最后一个窗口的退出清理)使用。
+  // 清理完成后由主进程销毁窗口,覆盖层随窗口一起消失;phase 用于显示当前阶段文案。
+  public clearExitOverlay: {
+    visible: boolean;
+    mode: 'exit' | 'manual';
+    phase: 'history' | 'searchHistory' | 'cache' | 'cookies' | 'finalize';
+    percent: number;
+    done: boolean;
+  } = {
+    visible: false,
+    mode: 'exit',
+    phase: 'history',
+    percent: 0,
+    done: false,
+  };
+
   // Computed
 
   public get downloadProgress() {
@@ -142,11 +178,43 @@ export class Store {
     return this.tabsLayout === 'left' || this.tabsLayout === 'right';
   }
 
+  // 沉浸头部是主窗口状态的镜像，不能自行改动会话数据；无痕和工作区也不应写入
+  // 普通 startupTabs/tabGroups 数据库。将这条策略收口，避免各 Store 漏加守卫。
+  public get canPersistNormalSession() {
+    return (
+      !isImmersiveHeaderWindow() &&
+      !this.isIncognito &&
+      !this.workspaceContext
+    );
+  }
+
   public get theme() {
     // 无痕窗口的整窗 UI(标题栏/工具栏/地址栏图标/标签)与 ThemeProvider 一样强制走深色主题。
     // 否则直接读 store.theme['toolbar.lightForeground'] 配色、并显式 autoInvert={false} 的图标
     // (前进/后退/刷新、主页、盾牌、翻译等)会按用户真实(浅色)主题算出近黑/灰色,在黑底上看不见。
-    return getTheme(this.isIncognito ? 'wexond-dark' : this.settings.object.theme);
+    const base = getTheme(
+      this.isIncognito
+        ? 'wexond-dark'
+        : this.settings.object.activeChromeTheme
+        ? 'wexond-light'
+        : this.settings.object.theme,
+    );
+    const merged = this.isIncognito
+      ? base
+      : mergeChromeTheme(base, this.settings.object.activeChromeTheme);
+    if (!this.workspaceContext?.color || this.isIncognito) return merged;
+
+    const accent = this.workspaceContext.color;
+    return {
+      ...merged,
+      accentColor: accent,
+      'titlebar.backgroundColor': mixCssColors(merged['titlebar.backgroundColor'], accent, merged.dark ? 0.28 : 0.16),
+      'toolbar.backgroundColor': mixCssColors(merged['toolbar.backgroundColor'], accent, merged.dark ? 0.24 : 0.12),
+      'toolbar.bottomLine.backgroundColor': mixCssColors(merged['toolbar.bottomLine.backgroundColor'], accent, merged.dark ? 0.32 : 0.2),
+      'tab.selected.backgroundColor': mixCssColors(merged['tab.selected.backgroundColor'] || merged['toolbar.backgroundColor'], accent, merged.dark ? 0.3 : 0.16),
+      'sidebar.backgroundColor': mixCssColors(merged['sidebar.backgroundColor'] || merged['titlebar.backgroundColor'], accent, merged.dark ? 0.22 : 0.12),
+      'sidebar.tab.selectedBackgroundColor': mixCssColors(merged['sidebar.tab.selectedBackgroundColor'] || merged['toolbar.backgroundColor'], accent, merged.dark ? 0.3 : 0.16),
+    };
   }
 
   public get addressbarValue() {
@@ -253,6 +321,7 @@ export class Store {
       addressbarTextVisible: observable,
       addressbarFocused: observable,
       addressbarEditing: observable,
+      immersiveSearchActive: observable,
       addressbarOpenInNewTab: observable,
       isAlwaysOnTop: observable,
       isFullscreen: observable,
@@ -268,6 +337,9 @@ export class Store {
       isBookmarked: observable,
       zoomFactor: observable,
       dialogsVisibility: observable,
+      clearExitOverlay: observable,
+      workspaceContext: observable,
+      workspaceReady: observable,
       addressbarUrlSegments: computed,
       addressbarValue: computed,
       theme: computed,
@@ -279,6 +351,17 @@ export class Store {
 
     ipcRenderer.on('update-navigation-state', (e, data) => {
       this.navigationState = data;
+    });
+
+    ipcRenderer.on('workspace-context-updated', (_e, context: IWorkspace) => {
+      if (context?.id === this.workspaceContext?.id) this.workspaceContext = context;
+    });
+
+    ipcRenderer.on('workspace-snapshot-request', (_e, requestId: string) => {
+      ipcRenderer.send('workspace-snapshot-response', {
+        requestId,
+        snapshot: this.getWorkspaceSnapshot(),
+      });
     });
 
     ipcRenderer.on('fullscreen', (e, fullscreen: boolean) => {
@@ -295,6 +378,27 @@ export class Store {
         this.updateVersion = data.version || '';
         this.updateNotes = data.notes || '';
       }
+    });
+
+    // 「正在清理浏览数据」覆盖层:主进程驱动显示/进度/隐藏。
+    ipcRenderer.on('clear-overlay-show', (e, data: {mode: 'exit' | 'manual'}) => {
+      this.clearExitOverlay = {
+        visible: true,
+        mode: (data && data.mode) || 'exit',
+        phase: 'history',
+        percent: 0,
+        done: false,
+      };
+    });
+
+    ipcRenderer.on('clear-progress', (e, p: any) => {
+      if (!p) return;
+      this.clearExitOverlay = {
+        ...this.clearExitOverlay,
+        phase: p.phase || this.clearExitOverlay.phase,
+        percent: typeof p.percent === 'number' ? p.percent : this.clearExitOverlay.percent,
+        done: !!p.done,
+      };
     });
 
     ipcRenderer.on('download-started', (e, item) => {
@@ -359,6 +463,34 @@ export class Store {
       this.dialogsVisibility[name] = state;
     });
 
+    ipcRenderer.on('immersive-header-search-active', (_e, active: boolean) => {
+      this.immersiveSearchActive = !!active;
+      if (this.immersiveSearchActive) {
+        this.addressbarTextVisible = false;
+        this.addressbarFocused = true;
+        this.addressbarEditing = true;
+        if (this.tabs.selectedTab) this.tabs.selectedTab.addressbarFocused = true;
+      }
+    });
+
+    ipcRenderer.on('immersive-addressbar-preview', (_e, data) => {
+      const tab = this.tabs.getTabById(data?.id);
+      if (!tab) return;
+
+      tab.addressbarValue = data.text || '';
+      tab.addressbarSelectionRange = [data.selectionStart, data.selectionEnd];
+      if (tab.isSelected && this.inputRef) {
+        this.inputRef.value = tab.addressbarValue;
+        const start = Number.isFinite(data.selectionStart)
+          ? data.selectionStart
+          : tab.addressbarValue.length;
+        const end = Number.isFinite(data.selectionEnd)
+          ? data.selectionEnd
+          : start;
+        this.inputRef.setSelectionRange(start, end);
+      }
+    });
+
     // 空白新标签页首次加载完成(did-finish-load)回传:页面 autofocus 会从地址栏
     // 抢走焦点,据此夺回。仅当仍是那次空白新建的选中标签时生效,延后一个事件循环
     // 让页面 autofocus 先发生,再聚焦地址栏。
@@ -382,6 +514,7 @@ export class Store {
     });
 
     ipcRenderer.on(`addressbar-update-input`, (e, data) => {
+      this.immersiveSearchActive = false;
       const tab = this.tabs.getTabById(data.id);
       //console.log(`addressbar-update-input`, data, tab, tab.isSelected);
 
@@ -410,7 +543,10 @@ export class Store {
           } else if(data.enter) {
             this.mouseUpped = false;
             const blurNow = () => {
-              this.inputRef.blur();
+              // 沉浸头部可能在延迟执行前收起并卸载 AddressBar。
+              // ref 已被 React 置空时只同步状态，不再操作失效的 DOM 节点。
+              const input = this.inputRef;
+              if (input) input.blur();
               window.getSelection().removeAllRanges();
               this.addressbarTextVisible = true;
               this.addressbarFocused = false;
@@ -432,17 +568,37 @@ export class Store {
             this.tabs.selectedTab.addressbarValue = null;
 
             requestAnimationFrame(() => {
-              this.inputRef.select();
+              if (this.inputRef) this.inputRef.select();
             });
           }
         }
       }
     });
 
-    // 「新标签页搜索」结果:在当前窗口新建标签页打开(由 search 弹窗经主进程转发而来)。
-    ipcRenderer.on('search-open-new-tab', (e, url: string) => {
+    // 搜索弹层请求新建结果标签。双列模式要等标签建成后再绑定副面板，
+    // 否则 selectedId 仍可能指向发起搜索的旧标签。
+    ipcRenderer.on('search-open-new-tab', async (e, data: string | {
+      url: string;
+      dualQuery?: string;
+    }) => {
       if (isImmersiveHeaderWindow()) return;
-      this.tabs.addTab({ url, active: true });
+      const url = typeof data === 'string' ? data : data?.url;
+      if (!url) return;
+      const tab = await this.tabs.addTab({url, active: true});
+      if (typeof data !== 'string' && data.dualQuery && tab) {
+        notifyDualEngineSearch(data.dualQuery, tab.id);
+      }
+    });
+
+    ipcRenderer.on('search-open-multi-tabs', (e, query: string) => {
+      if (isImmersiveHeaderWindow()) return;
+      this.openMultiSearchTabs(query);
+    });
+
+    ipcRenderer.on('pc-search-bridge-dual', (_e, data) => {
+      if (isImmersiveHeaderWindow()) return;
+      if (typeof data?.query !== 'string') return;
+      notifyDualEngineSearch(data.query, Number(data.viewId) || undefined);
     });
 
     if (process.env.ENABLE_EXTENSIONS) {
@@ -549,7 +705,6 @@ export class Store {
           }
         },
       );
-      ipcRenderer.send('load-extensions');
     }
 
     ipcRenderer.on("show-adblock-rule", (e, fullscreen: boolean) => {
@@ -570,7 +725,99 @@ export class Store {
     } else {
       initImmersiveSyncSource(this);
     }
+
+    if (this.workspaceContext && !isImmersiveHeaderWindow()) {
+      reaction(
+        () => this.workspaceReady ? JSON.stringify(this.getWorkspaceSnapshot()) : '',
+        (snapshot) => {
+          if (!snapshot) return;
+          this.syncWorkspaceSnapshot(JSON.parse(snapshot) as IWorkspaceSnapshot);
+        },
+        { delay: 300 },
+      );
+      window.addEventListener('beforeunload', () => {
+        this.syncWorkspaceSnapshot(this.getWorkspaceSnapshot());
+      });
+    }
+  }
+
+  private syncWorkspaceSnapshot(snapshot: IWorkspaceSnapshot) {
+    if (!this.workspaceReady || !this.workspaceContext) return;
+    // 标签水合前或关闭最后一个标签的瞬间可能出现空列表；浏览器会补出新标签页，
+    // 因此不能用该短暂状态覆盖一个已有标签的工作区文档。
+    if (!snapshot.tabs.length && this.workspaceContext.tabs.length) return;
+    ipcRenderer.send('workspace-session-sync', {
+      workspaceId: this.workspaceContext.id,
+      snapshot,
+    });
+  }
+
+  public getWorkspaceSnapshot(): IWorkspaceSnapshot {
+    const groups = this.tabGroups.list.map((group) => ({
+      key: group.workspaceKey || `group-${group.id}`,
+      name: group.name,
+      color: group.color,
+      isPinned: group.isPinned,
+    }));
+    const groupKeys = new Map(this.tabGroups.list.map((group) => [group.id, group.workspaceKey || `group-${group.id}`]));
+    const tabs = this.tabs.list
+      .filter((tab) => !tab.isClosing)
+      .map((tab, order) => ({
+        key: tab.workspaceKey || `tab-${tab.id}`,
+        url: tab.url,
+        title: tab.title,
+        favicon: tab.favicon,
+        order,
+        pinned: tab.isPinned,
+        active: tab.isSelected,
+        groupKey: groupKeys.get(tab.tabGroupId),
+      }));
+    return { tabs, groups };
+  }
+
+  public activateWorkspaceSync() {
+    this.workspaceReady = true;
+  }
+
+  public async openMultiSearchTabs(query: string) {
+    const value = (query || '').trim();
+    if (!value) return;
+
+    const configured = new Set(
+      this.settings.object.efficiencySearchEngineKeywords || [],
+    );
+    let engines = (this.settings.object.searchEngines || []).filter(
+      (engine) =>
+        !!engine?.keyword && !!engine?.url && configured.has(engine.keyword),
+    );
+
+    // 被删除或损坏的配置不能让多开搜索静默失效。
+    if (engines.length < 2) {
+      engines = (this.settings.object.searchEngines || [])
+        .filter((engine) => !!engine?.url)
+        .slice(0, 2);
+    }
+    if (engines.length === 0) return;
+
+    for (let index = 0; index < engines.length; index++) {
+      const url = engines[index].url.replace(
+        '%s',
+        encodeURIComponent(value),
+      );
+      await this.tabs.addTab({url, active: index === 0});
+    }
   }
 }
 
-export default new Store();
+const store = new Store();
+
+export default store;
+
+// 默认导出完成后再进入 TabsStore。外部页面立即开始加载;设置到达后仍由
+// SettingsStore 按“分组 -> 会话标签”顺序完成正常恢复。
+if (store.initialUrl) {
+  void store.startupTabs.loadInitialUrl().catch((error) => {
+    // load() 会继续走正常会话恢复,这里仅避免模块初始化产生未处理 Promise。
+    console.error('[startup-tabs] failed to preload initial URL', error);
+  });
+}

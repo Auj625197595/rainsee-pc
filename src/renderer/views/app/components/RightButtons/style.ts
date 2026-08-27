@@ -1,6 +1,8 @@
 import styled, { css } from 'styled-components';
 import { ITheme } from '~/interfaces';
 
+export const OTHER_BUTTONS_COMPACT_WIDTH = 825;
+
 export const Buttons = styled.div`
   position: relative;
   z-index: 1;
@@ -14,13 +16,7 @@ export const Buttons = styled.div`
     flex-shrink: 0;
   }
 
-  @media (max-width: 850px) {
-    .right-action--extension {
-      display: none;
-    }
-  }
-
-  @media (max-width: 825px) {
+  @media (max-width: ${OTHER_BUTTONS_COMPACT_WIDTH}px) {
     .right-action--ai {
       display: none;
     }
@@ -35,6 +31,12 @@ export const Buttons = styled.div`
   ${({ theme }: { theme?: ITheme }) => css`
     color: ${theme['toolbar.lightForeground'] ? '#fff' : 'rgb(117 128 154)'};
   `};
+`;
+
+export const ExtensionActions = styled.div`
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
 `;
 
 export const Separator = styled.div`

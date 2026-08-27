@@ -80,7 +80,7 @@ export const ActionButton = styled.div`
     opacity: 0.85;
   }
 
-  ${({ variant, theme }: { variant: 'danger' | 'ghost'; theme?: ITheme }) => css`
+  ${({ variant, theme }: { variant: 'danger' | 'ghost' | 'primary'; theme?: ITheme }) => css`
     ${variant === 'danger'
       ? css`
           color: #e14b57;
@@ -94,17 +94,26 @@ export const ActionButton = styled.div`
               : 'rgba(255, 96, 109, 0.18)'};
           }
         `
-      : css`
-          color: ${theme.dark ? 'rgba(255,255,255,0.82)' : '#5f6679'};
-          background-color: ${theme.dark
-            ? 'rgba(255,255,255,0.08)'
-            : '#f2f4f8'};
+      : variant === 'primary'
+        ? css`
+            color: #fff;
+            background-color: ${theme.dark ? '#5b72ff' : '#3452ff'};
 
-          &:hover {
+            &:hover {
+              background-color: ${theme.dark ? '#6b80ff' : '#2640e6'};
+            }
+          `
+        : css`
+            color: ${theme.dark ? 'rgba(255,255,255,0.82)' : '#5f6679'};
             background-color: ${theme.dark
-              ? 'rgba(255,255,255,0.14)'
-              : '#e9edf3'};
-          }
-        `}
+              ? 'rgba(255,255,255,0.08)'
+              : '#f2f4f8'};
+
+            &:hover {
+              background-color: ${theme.dark
+                ? 'rgba(255,255,255,0.14)'
+                : '#e9edf3'};
+            }
+          `}
   `};
 `;

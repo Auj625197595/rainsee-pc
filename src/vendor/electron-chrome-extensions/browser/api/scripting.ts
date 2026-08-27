@@ -8,6 +8,7 @@ import { ExtensionEvent } from '../router'
 import {
   getFrameMatchUrls,
   isBrowserInternalFrame,
+  isBrowserInternalUrl,
   isRelatedFrameUrl,
   matchesScriptFilter,
   executeExtensionScript,
@@ -57,18 +58,69 @@ interface RegisteredContentScript {
  */
 type InjectPhase = 'start' | 'end' | 'all'
 
+// Electron exposes storage.sync/managed in extension isolated worlds as
+// objects whose methods throw "is not available in this instance of Chrome".
+// Renderer overrides cannot patch worlds created later by
+// executeJavaScriptInIsolatedWorld, so every scripting.executeScript call must
+// repair those areas before running extension code.
+const isolatedWorldCompatibilityPreamble = `
+;(() => {
+  try {
+    const chromeApi = globalThis.chrome;
+    const storage = chromeApi && chromeApi.storage;
+    if (!storage) return;
+    let local;
+    try { local = storage.local; } catch (_) { return; }
+    if (!local) return;
+    let replaceStorage = false;
+    for (const name of ['sync', 'managed']) {
+      let current;
+      try { current = storage[name]; } catch (_) {}
+      if (current === local) continue;
+      try {
+        Object.defineProperty(storage, name, {
+          value: local,
+          configurable: true,
+          enumerable: true,
+          writable: true,
+        });
+      } catch (_) {
+        replaceStorage = true;
+      }
+    }
+    if (!replaceStorage) return;
+    let session;
+    let onChanged;
+    try { session = storage.session; } catch (_) {}
+    try { onChanged = storage.onChanged; } catch (_) {}
+    const replacement = { local, sync: local, managed: local };
+    if (session) replacement.session = session;
+    if (onChanged) replacement.onChanged = onChanged;
+    try {
+      Object.defineProperty(chromeApi, 'storage', {
+        value: replacement,
+        configurable: true,
+        enumerable: true,
+        writable: true,
+      });
+    } catch (_) {}
+  } catch (_) {}
+})();
+`
+
 const scriptingBySession = new WeakMap<Electron.Session, ScriptingAPI>()
 let documentStartHandlerInstalled = false
 
 const installDocumentStartHandler = () => {
   if (documentStartHandlerInstalled) return
   documentStartHandlerInstalled = true
-  ipcMain.on('crx-get-document-start-scripts', (event) => {
+  ipcMain.on('crx-get-document-start-scripts', (event, rendererUrl?: unknown) => {
     const api = scriptingBySession.get(event.sender.session)
+    const currentUrl = typeof rendererUrl === 'string' ? rendererUrl : undefined
     event.returnValue = api
       ? {
-          isolated: api.getPreloadDocumentStartScripts(event.senderFrame),
-          main: api.getPreloadDocumentStartMainScripts(event.senderFrame),
+          isolated: api.getPreloadDocumentStartScripts(event.senderFrame, currentUrl),
+          main: api.getPreloadDocumentStartMainScripts(event.senderFrame, currentUrl),
         }
       : { isolated: [], main: [] }
   })
@@ -558,10 +610,15 @@ export class ScriptingAPI {
     }
   }
 
-  private scriptMatches(script: RegisteredContentScript, frame: Electron.WebFrameMain) {
+  private scriptMatches(
+    script: RegisteredContentScript,
+    frame: Electron.WebFrameMain,
+    currentUrl?: string,
+  ) {
     const urls = getFrameMatchUrls(frame, {
       matchAboutBlank: script.matchAboutBlank,
       matchOriginAsFallback: script.matchOriginAsFallback,
+      urlOverride: currentUrl,
     })
     return matchesScriptFilter({
       urls,
@@ -575,28 +632,32 @@ export class ScriptingAPI {
   private collectDocumentStartScripts(
     frame: Electron.WebFrameMain | null | undefined,
     targetWorld: 'MAIN',
+    currentUrl?: string,
   ): string[]
   private collectDocumentStartScripts(
     frame: Electron.WebFrameMain | null | undefined,
     targetWorld: 'ISOLATED',
+    currentUrl?: string,
   ): PreloadIsolatedScript[]
   private collectDocumentStartScripts(
     frame: Electron.WebFrameMain | null | undefined,
     targetWorld: 'MAIN' | 'ISOLATED',
+    currentUrl?: string,
   ): Array<string | PreloadIsolatedScript> {
     if (!frame) return []
+    if (currentUrl && isBrowserInternalUrl(currentUrl)) return []
     const sessionExtensions = this.ctx.session.extensions || this.ctx.session
     const token = this.ctx.dynamicContentScripts.token(frame)
     const payloads: Array<string | PreloadIsolatedScript> = []
     for (const [extensionId, scripts] of this.scriptsMap) {
       const extension = sessionExtensions.getExtension(extensionId)
-      if (!extension || !this.hasHostAccess(extension, frame)) continue
+      if (!extension || !this.hasHostAccess(extension, frame, currentUrl)) continue
       for (const script of scripts) {
         if ((script.runAt || 'document_idle') !== 'document_start') continue
         const scriptWorld = (script.world || 'ISOLATED') === 'MAIN' ? 'MAIN' : 'ISOLATED'
         if (scriptWorld !== targetWorld) continue
         if (frame.parent && !script.allFrames) continue
-        if (!this.scriptMatches(script, frame) || !script._code) continue
+        if (!this.scriptMatches(script, frame, currentUrl) || !script._code) continue
 
         let record = this.injected.get(frame)
         if (!record || record.token !== token) {
@@ -628,36 +689,35 @@ export class ScriptingAPI {
     return payloads
   }
 
-  getDocumentStartScripts(
-    frame: Electron.WebFrameMain | null | undefined,
-  ): PreloadIsolatedScript[] {
-    return this.collectDocumentStartScripts(frame, 'ISOLATED')
-  }
-
-  getDocumentStartMainScripts(frame: Electron.WebFrameMain | null | undefined): string[] {
-    return this.collectDocumentStartScripts(frame, 'MAIN')
-  }
-
   getPreloadDocumentStartScripts(
     frame: Electron.WebFrameMain | null | undefined,
+    currentUrl?: string,
   ): PreloadIsolatedScript[] {
     return [
-      ...this.getDocumentStartScripts(frame),
-      ...(this.ctx.userScripts?.getDocumentStartScripts(frame) || []),
+      ...this.collectDocumentStartScripts(frame, 'ISOLATED', currentUrl),
+      ...(this.ctx.userScripts?.getDocumentStartScripts(frame, currentUrl) || []),
     ]
   }
 
-  getPreloadDocumentStartMainScripts(frame: Electron.WebFrameMain | null | undefined): string[] {
+  getPreloadDocumentStartMainScripts(
+    frame: Electron.WebFrameMain | null | undefined,
+    currentUrl?: string,
+  ): string[] {
     return [
-      ...this.getDocumentStartMainScripts(frame),
-      ...(this.ctx.userScripts?.getDocumentStartMainScripts?.(frame) || []),
+      ...this.collectDocumentStartScripts(frame, 'MAIN', currentUrl),
+      ...(this.ctx.userScripts?.getDocumentStartMainScripts?.(frame, currentUrl) || []),
     ]
   }
 
-  private hasHostAccess(extension: Electron.Extension, frame: Electron.WebFrameMain) {
+  private hasHostAccess(
+    extension: Electron.Extension,
+    frame: Electron.WebFrameMain,
+    currentUrl?: string,
+  ) {
     const urls = getFrameMatchUrls(frame, {
       matchAboutBlank: true,
       matchOriginAsFallback: true,
+      urlOverride: currentUrl,
     })
     if (urls.some((url) => this.ctx.permissions?.hasOrigin(extension.id, url))) return true
     const activeTab = this.ctx.store.getActiveTabOfCurrentWindow()
@@ -727,7 +787,14 @@ export class ScriptingAPI {
     }
     if (Array.isArray(target.frameIds)) {
       const ids = new Set(target.frameIds)
-      frames = frames.filter((frame) => ids.has(frame.frameTreeNodeId))
+      // Chrome frame IDs are not Electron frameTreeNodeIds: the top-level
+      // frame is always `0`, while child frames use their tree-node id. The
+      // distinction matters for scripting.executeScript({target:{frameIds}})
+      // because extensions commonly obtain frameId=0 from webNavigation.
+      frames = frames.filter((frame) => {
+        const chromeFrameId = frame === frame.top ? 0 : frame.frameTreeNodeId
+        return ids.has(chromeFrameId)
+      })
     }
 
     for (const frame of frames) {
@@ -758,15 +825,20 @@ export class ScriptingAPI {
     if (codes.length === 0) throw new Error('No script source was provided')
     const code = codes.join('\n')
     const world = String(injection.world || 'ISOLATED').toUpperCase() === 'MAIN' ? 'MAIN' : 'ISOLATED'
+    const executableCode =
+      world === 'ISOLATED' ? `${isolatedWorldCompatibilityPreamble}\n${code}` : code
     const results: any[] = []
     for (const frame of frames) {
       const result = await executeExtensionScript(
         frame,
         event.extension.id,
-        code,
+        executableCode,
         world,
       )
-      results.push({ frameId: frame.frameTreeNodeId, result })
+      results.push({
+        frameId: frame === frame.top ? 0 : frame.frameTreeNodeId,
+        result,
+      })
     }
     return results
   }

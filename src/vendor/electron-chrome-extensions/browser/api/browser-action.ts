@@ -275,6 +275,10 @@ export class BrowserActionAPI {
     })
 
     sessionExtensions.on('extension-unloaded', (event, extension) => {
+      if (this.popup?.extensionId === extension.id) {
+        this.popup.destroy()
+        this.popup = undefined
+      }
       this.removeActions(extension.id)
     })
   }
@@ -327,7 +331,16 @@ export class BrowserActionAPI {
             }
           }
 
-          if (iconImage) {
+          // Extensions without an action still appear in chrome.management.
+          // Fall back to their manifest icon so the shared icon endpoint can
+          // serve management pages as well as the browser action toolbar.
+          if (extension && (!iconImage || iconImage.isEmpty())) {
+            const iconPath = getIconPath(extension, imageSize, resizeType)
+            const iconAbsPath = iconPath && resolveExtensionPath(extension, iconPath)
+            if (iconAbsPath) iconImage = nativeImage.createFromPath(iconAbsPath)
+          }
+
+          if (iconImage && !iconImage.isEmpty()) {
             return new Response(iconImage.toPNG(), {
               status: 200,
               headers: {
@@ -508,6 +521,7 @@ export class BrowserActionAPI {
           title,
           incognito: false,
           pinned: false,
+          groupId: this.ctx.tabGroups?.getTabGroupId(tab.id) ?? -1,
           status: 'complete',
         })
       } catch {
@@ -583,11 +597,7 @@ export class BrowserActionAPI {
         throw new Error('Unable to get BrowserWindow from active tab')
       }
 
-      const releasePopupWorker = await this.prewarmPopupServiceWorker(extensionId)
-      if (launchToken !== this.popupLaunchToken) {
-        releasePopupWorker?.()
-        return
-      }
+      const popupWorker = this.prewarmPopupServiceWorker(extensionId)
 
       try {
         this.popup = new PopupView({
@@ -608,18 +618,26 @@ export class BrowserActionAPI {
           tabs: this.buildPopupTabsSnapshot(),
         })
       } catch (error) {
-        releasePopupWorker?.()
+        void popupWorker.then((release) => release?.())
         throw error
       }
 
-      const popupWindow = this.popup.browserWindow
-      if (releasePopupWorker) {
-        if (popupWindow && !popupWindow.isDestroyed()) {
-          popupWindow.once('closed', releasePopupWorker)
-        } else {
+      const popup = this.popup
+      const popupWindow = popup.browserWindow
+      void popupWorker.then((releasePopupWorker) => {
+        if (!releasePopupWorker) return
+        if (
+          launchToken !== this.popupLaunchToken ||
+          this.popup !== popup ||
+          popup.isDestroyed() ||
+          !popupWindow ||
+          popupWindow.isDestroyed()
+        ) {
           releasePopupWorker()
+        } else {
+          popupWindow.once('closed', releasePopupWorker)
         }
-      }
+      })
 
       d(`opened popup: ${popupUrl}`)
 
@@ -633,60 +651,34 @@ export class BrowserActionAPI {
   }
 
   /**
-   * Popup-triggered MV3 wake-ups are the path where Electron may resurrect the
-   * service worker without re-running its registered preload. Warm the worker
-   * explicitly before opening the popup, then hold a keep-alive task for the
-   * popup's lifetime so popup -> background messaging never falls back to a
-   * preload-less auto-wake.
+   * Warm the MV3 worker in parallel with popup creation, then hold a keep-alive
+   * task only for the popup's active lifetime.
    */
   private async prewarmPopupServiceWorker(extensionId: string): Promise<(() => void) | undefined> {
     const sessionExtensions = this.ctx.session.extensions || this.ctx.session
     const extension = sessionExtensions.getExtension(extensionId)
-    if (!extension) return
+    if (!extension) return undefined
 
-    const manifest = getExtensionManifest(extension)
+    const manifest = getExtensionManifest(extension) as chrome.runtime.Manifest & {
+      background?: { service_worker?: string }
+    }
     if (manifest.manifest_version !== 3 || !manifest.background?.service_worker) {
-      return
+      return undefined
     }
 
-    const swApi: any = (this.ctx.session as any).serviceWorkers
-    const hasOriginalStartWorker = typeof swApi?.__origStartWorkerForScope === 'function'
-    const startWorker = hasOriginalStartWorker
-      ? swApi.__origStartWorkerForScope.bind(swApi)
-      : typeof swApi?.startWorkerForScope === 'function'
-        ? swApi.startWorkerForScope.bind(swApi)
-        : undefined
-    if (!startWorker) return
-
-    const scope = extension.url || `chrome-extension://${extension.id}/`
-    d(`popup SW prewarm extId=${extensionId} scope=${scope} usingOriginal=${hasOriginalStartWorker}`)
-
     try {
-      const sw = await startWorker(scope)
-      d(`popup SW prewarm ready extId=${extensionId} versionId=${sw?.versionId ?? 'n/a'}`)
-
-      if (!sw || typeof sw.startTask !== 'function') return
-
-      const task = sw.startTask()
-      d(`popup SW keepAlive acquired extId=${extensionId}`)
-
-      let released = false
-      return () => {
-        if (released) return
-        released = true
-        try {
-          task.end()
-          d(`popup SW keepAlive released extId=${extensionId}`)
-        } catch (error) {
-          console.warn(
-            `[action-click] popup SW keepAlive release failed extId=${extensionId}`,
-            error,
-          )
-        }
-      }
+      const acquire = this.ctx.recoverServiceWorker || this.ctx.messaging?.acquireServiceWorker
+      if (!acquire) return undefined
+      const release = await acquire.call(
+        this.ctx.recoverServiceWorker ? this.ctx : this.ctx.messaging,
+        extensionId,
+        8_000,
+      )
+      d(`popup SW bridge ready and keepAlive acquired extId=${extensionId}`)
+      return release
     } catch (error) {
       console.warn(`[action-click] popup SW prewarm failed extId=${extensionId}`, error)
-      return
+      return undefined
     }
   }
 

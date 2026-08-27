@@ -7,33 +7,73 @@ import {
 } from '~/renderer/constants';
 import { centerIcon } from '~/renderer/mixins';
 import { ITheme } from '~/interfaces';
+import { ContextMenu } from '../ContextMenu';
+
+export const DropdownMenu = styled(ContextMenu)`
+  box-sizing: border-box;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+
+  &::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    border-radius: 3px;
+    background-color: rgba(127, 127, 127, 0.35);
+  }
+`;
 
 export const StyledDropdown = styled.div`
   height: 32px;
-  min-width: 200px;
   position: relative;
-  border-radius: 4px;
   user-select: none;
   cursor: pointer;
   display: flex;
   align-items: center;
 
-  ${({ theme }: { theme: ITheme }) => css`
-    background-color: ${theme['control.backgroundColor']};
+  ${({ theme }: { theme: ITheme }) =>
+    (theme as any).settingsPage
+      ? css`
+          height: 34px;
+          min-width: 76px;
+          border: 1px solid
+            ${theme['pages.lightForeground']
+              ? 'rgba(255, 255, 255, 0.08)'
+              : '#F0F1F6'};
+          border-radius: 10px;
+          background-color: ${theme['pages.lightForeground']
+            ? 'rgba(255, 255, 255, 0.07)'
+            : '#F4F5FA'};
 
-    &:hover {
-      background-color: ${theme['control.hover.backgroundColor']};
-    }
-  `}
+          &:hover {
+            color: ${(theme as any).settingsAccent};
+            background-color: ${(theme as any).settingsAccentSoft};
+          }
+        `
+      : css`
+          min-width: 200px;
+          border-radius: 4px;
+          background-color: ${theme['control.backgroundColor']};
+
+          &:hover {
+            background-color: ${theme['control.hover.backgroundColor']};
+          }
+        `}
 `;
 
 export const Label = styled.div`
   font-size: 13px;
-  margin-left: 8px;
   pointer-events: none;
 
   ${({ theme }: { theme: ITheme }) => css`
-    color: ${theme['control.valueColor']};
+    margin-left: ${(theme as any).settingsPage ? 12 : 8}px;
+    font-weight: ${(theme as any).settingsPage ? 500 : 400};
+    white-space: nowrap;
+    color: ${(theme as any).settingsPage
+      ? theme['pages.textColor']
+      : theme['control.valueColor']};
   `}
 `;
 

@@ -3,46 +3,89 @@ import { ThemeProvider } from 'styled-components';
 
 import { WebUIStyle } from '~/renderer/mixins/default-styles';
 import { getTheme } from '~/utils/themes';
-import { appendDeviceParams, IDeviceParams } from '~/common/newtab-url';
+import { getChromeThemeNtpStyle } from '~/common/chrome-theme';
 import { ipcRenderer } from '~/common/renderer-ipc';
 import { ICON_INCOGNITO } from '~/renderer/constants/icons';
-import { Frame, IncognitoPage, IncognitoLogo, IncognitoHint, IncognitoSearch } from './style';
+import { getLightweightIconUrl } from '~/utils/favicon';
+import { IBookmark, ISettings } from '~/interfaces';
+import {
+  Frame,
+  IncognitoPage,
+  IncognitoLogo,
+  IncognitoHint,
+  IncognitoSearch,
+  LocalPage,
+  BrandTitle,
+  BrandSubtitle,
+  SearchRow,
+  EngineChips,
+  EngineChip,
+  ShortcutGrid,
+  ShortcutTile,
+  TileIconWrap,
+  TileLabel,
+} from './style';
 
-// 新标签页直接全屏内嵌 pcapp.rainsee.cn,并拼接设备参数(ck/devid/prod/lang)。
-// deviceParams 由 view-preload 在页面加载时注入到 window。
-const NEWTAB_BASE_URL = 'https://pcapp.rainsee.cn/?hulianpc=true#/';
-const NEWTAB_ORIGIN = new URL(NEWTAB_BASE_URL).origin;
+// 本地新标签页:搜索框(多引擎)、引擎切换、常用书签磁贴,全部本地渲染,
+// 不加载任何云端页面。搜索/直达/切引擎通过与主进程的 IPC 完成:
+//   - newtab-search            搜索词(可携带引擎下标)
+//   - set-search-engine-by-index 引擎 chip 点击
+//   - newtab-search-url        URL 直达(主进程二次校验协议)
 
-const postHomepageItems = (items: any[], frame: HTMLIFrameElement | null) => {
-  if (!frame?.contentWindow || !Array.isArray(items) || items.length === 0) {
-    return;
+const URL_PATTERN = /^(https?:\/\/|file:\/\/)/i;
+
+const resolveSettings = (): Partial<ISettings> => {
+  try {
+    return ipcRenderer.sendSync('get-settings-sync') || {};
+  } catch {
+    return (window as any).settings || {};
   }
+};
 
-  frame.contentWindow.postMessage(
-    {
-      type: 'homepageItems',
-      data: items,
-    },
-    '*',
+const resolveDarkTheme = (settings: Partial<ISettings>) => {
+  if (settings.themeAuto === false) return settings.theme === 'wexond-dark';
+  return (
+    window.matchMedia?.('(prefers-color-scheme: dark)').matches ??
+    settings.theme === 'wexond-dark'
   );
 };
 
-const buildSrc = (params: IDeviceParams | null | undefined) =>
-  appendDeviceParams(NEWTAB_BASE_URL, params || null);
+// 明暗两套设计令牌,以 CSS 变量注入 LocalPage
+const paletteFor = (dark: boolean): Record<string, string> =>
+  dark
+    ? {
+        '--ntp-text': '#e8eaed',
+        '--ntp-muted': '#9aa0a6',
+        '--ntp-panel': '#303134',
+        '--ntp-border': '#5f6368',
+        '--ntp-accent': '#8ab4f8',
+        '--ntp-accent-ring': 'rgba(138, 180, 248, 0.28)',
+        '--ntp-accent-chip': 'rgba(138, 180, 248, 0.16)',
+        '--ntp-tile-hover': 'rgba(255, 255, 255, 0.07)',
+      }
+    : {
+        '--ntp-text': '#202124',
+        '--ntp-muted': '#5f6368',
+        '--ntp-panel': '#ffffff',
+        '--ntp-border': 'rgba(0, 0, 0, 0.14)',
+        '--ntp-accent': '#1a73e8',
+        '--ntp-accent-ring': 'rgba(26, 115, 232, 0.22)',
+        '--ntp-accent-chip': 'rgba(26, 115, 232, 0.10)',
+        '--ntp-tile-hover': 'rgba(0, 0, 0, 0.05)',
+      };
 
-// 同步尽力获取最新 deviceParams:优先 view-preload 已注入到 window 的值
-// (preload IIFE 用 await webFrame.executeJavaScript 异步注入,存在晚于首渲染的 race);
-// 没有就同步向主进程拉一次。newtab 是 sandbox:false + contextIsolation:false 的 webui
-// 页,view-preload 顶部同步 (window).electron = electronRenderer 在 bundle 执行前完成,
-// 故 ipcRenderer.sendSync 在首渲染时即可用(plan 已列为实测验证项)。
-const resolveDeviceParams = (): IDeviceParams | null | undefined => {
-  const fromWindow = (window as any).deviceParams;
-  if (fromWindow) return fromWindow;
+// 主屏书签(static === 'main')前 12 条作为快捷入口
+const loadShortcuts = async (): Promise<IBookmark[]> => {
   try {
-    return ipcRenderer.sendSync('get-device-params') as IDeviceParams;
+    const bookmarks = await ipcRenderer.invoke('bookmarks-get');
+    if (!Array.isArray(bookmarks)) return [];
+    return bookmarks
+      .filter(
+        (b) => b && b.static === 'main' && b.url && !b.isFolder,
+      )
+      .slice(0, 12);
   } catch {
-    // ipcRenderer 尚未桥接或 sendSync 不可用,退回无参 URL(pcapp 走未登录态)。
-    return null;
+    return [];
   }
 };
 
@@ -78,80 +121,166 @@ const IncognitoNewTab = () => {
 };
 
 export default () => {
-  // 无痕 newtab:不加载 pcapp iframe(避免带 cookie 请求泄漏),渲染本地无痕页。
+  // 无痕 newtab:渲染本地无痕页。
   let isIncognito = false;
   try {
     isIncognito = !!ipcRenderer.sendSync('is-newtab-incognito');
   } catch {
     isIncognito = false;
   }
-  if (isIncognito) return <IncognitoNewTab />;
 
-  const theme = getTheme((window as any).settings?.theme);
-  const frameRef = React.useRef<HTMLIFrameElement>(null);
-  // iframe 首次 onLoad 后即锁定:此后任何来源都不再改动 src,避免重载 iframe 导致
-  // pcapp 整页重新加载(双加载比单次更慢)。ck 的后续变化由 pcapp 内部处理。
-  const loadedRef = React.useRef(false);
+  const [settings, setSettings] = React.useState<Partial<ISettings>>(
+    resolveSettings,
+  );
+  React.useEffect(() => {
+    const onSettingsUpdate = (
+      _e: Electron.IpcRendererEvent,
+      nextSettings: ISettings,
+    ) => setSettings(nextSettings);
 
-  // 首渲染即尽力带 ck(resolveDeviceParams 同步取),iframe 只加载这一次。
-  // 这从根上消除"先无 ck 加载、再带 ck 重载"的 deviceParams race 双加载。
-  const [src] = React.useState<string>(() => buildSrc(resolveDeviceParams()));
+    ipcRenderer.on('update-settings', onSettingsUpdate);
+    setSettings(resolveSettings());
+    return () => {
+      ipcRenderer.removeListener('update-settings', onSettingsUpdate);
+    };
+  }, []);
+
+  // settings.json 加载完成前,theme 可能仍是默认浅色;优先使用系统主题作为
+  // 首帧判断,避免暗色窗口先按浅色绘制外壳背景。
+  const dark = resolveDarkTheme(settings);
+  const theme = getTheme(dark ? 'wexond-dark' : settings.theme);
+  const chromeThemeNtp = getChromeThemeNtpStyle(settings.activeChromeTheme);
+
+  const [query, setQuery] = React.useState('');
+  const [shortcuts, setShortcuts] = React.useState<IBookmark[]>([]);
 
   React.useEffect(() => {
-    const onHomepageItems = (_e: Electron.IpcRendererEvent, items: any[]) => {
-      postHomepageItems(items, frameRef.current);
-    };
-
-    const onMessage = (event: MessageEvent) => {
-      if (
-        event.source !== frameRef.current?.contentWindow ||
-        event.origin !== NEWTAB_ORIGIN
-      ) {
-        return;
-      }
-
-      const data = event.data;
-      if (!data) return;
-
-      if (data.type === 'showPcSearch') {
-        ipcRenderer.send(
-          `newtab-search-show-${(window as any).windowId}`,
-          data.data,
-        );
-        return;
-      }
-
-      if (data.type === 'removeDownHomepageItems') {
-        ipcRenderer.send('remove-down-homepage-items', data.data || []);
-      }
-    };
-
-    ipcRenderer.on('homepage-items', onHomepageItems);
-    window.addEventListener('message', onMessage);
-
+    let mounted = true;
+    loadShortcuts().then((items) => {
+      if (mounted) setShortcuts(items);
+    });
     return () => {
-      ipcRenderer.removeListener('homepage-items', onHomepageItems);
-      window.removeEventListener('message', onMessage);
+      mounted = false;
     };
   }, []);
 
-  const onFrameLoad = React.useCallback(async () => {
-    loadedRef.current = true;
-    const items = await ipcRenderer.invoke('get-pending-homepage-items');
-    postHomepageItems(items, frameRef.current);
-  }, []);
+  const engines = Array.isArray(settings.searchEngines)
+    ? settings.searchEngines
+    : [];
+  const engineIndex =
+    typeof settings.searchEngine === 'number' &&
+    settings.searchEngine >= 0 &&
+    settings.searchEngine < engines.length
+      ? settings.searchEngine
+      : 0;
+
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const value = query.trim();
+    if (!value) return;
+    if (URL_PATTERN.test(value)) {
+      ipcRenderer.send('newtab-search-url', value);
+    } else {
+      ipcRenderer.send('newtab-search', value);
+    }
+  };
+
+  const onSelectEngine = (index: number) => {
+    ipcRenderer.invoke('set-search-engine-by-index', index).catch(() => {});
+  };
+
+  const openShortcut = (url?: string) => {
+    if (!url || !URL_PATTERN.test(url)) return;
+    ipcRenderer.send('newtab-search-url', url);
+  };
+
+  if (isIncognito) return <IncognitoNewTab />;
+
+  const background =
+    chromeThemeNtp?.backgroundColor || theme['pages.backgroundColor'];
 
   return (
     <ThemeProvider theme={{ ...theme }}>
-      <>
+      <Frame>
         <WebUIStyle />
-        <Frame
-          ref={frameRef}
-          src={src}
-          allow="clipboard-read; clipboard-write"
-          onLoad={onFrameLoad}
-        />
-      </>
+        <LocalPage
+          style={{
+            backgroundColor: background,
+            backgroundImage: chromeThemeNtp?.backgroundImage
+              ? `url("${chromeThemeNtp.backgroundImage}")`
+              : 'none',
+            backgroundPosition: chromeThemeNtp?.backgroundPosition,
+            backgroundRepeat: chromeThemeNtp?.backgroundRepeat,
+            ...paletteFor(dark),
+          }}
+        >
+          <BrandTitle>雨见浏览器</BrandTitle>
+          <BrandSubtitle>轻快 · 干净 · 本地优先</BrandSubtitle>
+
+          <SearchRow onSubmit={onSubmit}>
+            <input
+              value={query}
+              onChange={(e) => setQuery((e.target as HTMLInputElement).value)}
+              placeholder="搜索，或输入网址直达"
+              autoFocus
+              spellCheck={false}
+            />
+            <button type="submit">搜索</button>
+          </SearchRow>
+
+          {engines.length > 0 && (
+            <EngineChips>
+              {engines.map((engine, i) => (
+                <EngineChip
+                  key={engine.keyword || i}
+                  $active={i === engineIndex}
+                  onClick={() => onSelectEngine(i)}
+                  title={`使用 ${engine.name} 搜索`}
+                >
+                  {engine.icon && engine.icon !== '' && (
+                    <img src={engine.icon} alt="" onError={hideImg} />
+                  )}
+                  {engine.name}
+                </EngineChip>
+              ))}
+            </EngineChips>
+          )}
+
+          {shortcuts.length > 0 && (
+            <ShortcutGrid>
+              {shortcuts.map((bookmark) => (
+                <ShortcutTile
+                  key={bookmark._id || bookmark.url}
+                  onClick={() => openShortcut(bookmark.url)}
+                  title={bookmark.title || bookmark.url}
+                >
+                  <TileIconWrap>
+                    <span className="fallback">
+                      {(bookmark.title || bookmark.url || '?')
+                        .trim()
+                        .charAt(0)
+                        .toUpperCase()}
+                    </span>
+                    <img
+                      src={
+                        bookmark.favicon ||
+                        getLightweightIconUrl(bookmark.url!)
+                      }
+                      alt=""
+                      onError={hideImg}
+                    />
+                  </TileIconWrap>
+                  <TileLabel>{bookmark.title || bookmark.url}</TileLabel>
+                </ShortcutTile>
+              ))}
+            </ShortcutGrid>
+          )}
+        </LocalPage>
+      </Frame>
     </ThemeProvider>
   );
 };
+
+function hideImg(e: React.SyntheticEvent<HTMLImageElement>) {
+  e.currentTarget.style.display = 'none';
+}

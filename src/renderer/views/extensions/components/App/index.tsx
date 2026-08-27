@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { observer } from 'mobx-react-lite';
 import { ThemeProvider } from 'styled-components';
+import { BrowsersIcon } from '@phosphor-icons/react';
 
 import store, { ExtFilter, IStoreExt } from '../../store';
 import { IExtItem } from '~/interfaces';
@@ -18,9 +19,13 @@ import {
   IconCrx,
   IconPuzzle,
   IconRefresh,
+  IconPlus,
+  IconEdit,
+  IconTrash,
 } from './icons';
 import { ExtCard } from './ExtCard';
 import { ExtDetail } from './ExtDetail';
+import { BrowserMigrationDialog } from './BrowserMigrationDialog';
 import { ModalBackdrop } from './card';
 import {
   Sidebar,
@@ -57,6 +62,22 @@ import {
   StoreName,
   StoreIntro,
   StoreInstallBtn,
+  MainHeader,
+  MainTitle,
+  HeaderAction,
+  GroupSection as GroupSectionStyle,
+  GroupHeader,
+  GroupTitle,
+  GroupCount,
+  GroupAction,
+  DragItem,
+  DropZone,
+  GroupEditorMask,
+  GroupEditorDialog,
+  GroupEditorTitle,
+  GroupEditorInput,
+  GroupEditorActions,
+  GroupEditorButton,
 } from './style';
 
 const w = window as any;
@@ -169,11 +190,122 @@ const StoreSection = observer(() => {
   );
 });
 
+const ExtensionDropCard = ({
+  item,
+  groupId,
+}: {
+  item: IExtItem;
+  groupId: string | null;
+}) => {
+  const onDragStart = (event: React.DragEvent<HTMLDivElement>) => {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', item.id);
+  };
+  const onDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const id = event.dataTransfer.getData('text/plain');
+    if (id && id !== item.id) store.moveExtension(id, groupId, item.id);
+  };
+
+  return (
+    <DragItem
+      draggable
+      onDragStart={onDragStart}
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={onDrop}
+    >
+      <ExtCard item={item} />
+    </DragItem>
+  );
+};
+
+const ExtensionGroup = observer(
+  ({
+    groupId,
+    title,
+    onRename,
+  }: {
+    groupId: string | null;
+    title: string;
+    onRename: (groupId: string, name: string) => void;
+  }) => {
+    const group = groupId ? store.groups.find((item) => item.id === groupId) : null;
+    const items = store.itemsForGroup(groupId);
+    const onDrop = (event: React.DragEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const id = event.dataTransfer.getData('text/plain');
+      if (id) store.moveExtension(id, groupId);
+    };
+
+    return (
+      <GroupSectionStyle>
+        <GroupHeader>
+          <GroupTitle>{title}</GroupTitle>
+          <GroupCount>{items.length} 个扩展</GroupCount>
+          {group && (
+            <>
+              <Switch
+                value={store.groupEnabled(group.id)}
+                onClick={() => store.setGroupEnabled(group.id, !store.groupEnabled(group.id))}
+              />
+              <GroupAction
+                aria-label="重命名分组"
+                title="重命名分组"
+                onClick={() => onRename(group.id, group.name)}
+              >
+                <IconEdit />
+              </GroupAction>
+              <GroupAction
+                aria-label="删除分组"
+                title="删除分组"
+                onClick={() => {
+                  if (window.confirm(`删除分组「${group.name}」？扩展不会被卸载。`)) {
+                    store.removeGroup(group.id);
+                  }
+                }}
+              >
+                <IconTrash />
+              </GroupAction>
+            </>
+          )}
+        </GroupHeader>
+        <div onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
+          {items.length > 0 ? (
+            <Grid>
+              {items.map((item) => (
+                <ExtensionDropCard item={item} groupId={groupId} key={item.id} />
+              ))}
+            </Grid>
+          ) : (
+            <DropZone>将扩展拖到这里加入分组</DropZone>
+          )}
+        </div>
+      </GroupSectionStyle>
+    );
+  },
+);
+
 export default observer(() => {
   const list: IExtItem[] = store.list;
   const detail = store.selected;
   const [dragActive, setDragActive] = React.useState(false);
+  const [groupEditor, setGroupEditor] = React.useState<{
+    groupId: string | null;
+    name: string;
+  } | null>(null);
   const dragDepth = React.useRef(0);
+
+  const submitGroupEditor = () => {
+    if (!groupEditor || !groupEditor.name.trim()) return;
+    if (groupEditor.groupId) {
+      store.renameGroup(groupEditor.groupId, groupEditor.name);
+    } else {
+      store.createGroup(groupEditor.name);
+    }
+    setGroupEditor(null);
+  };
 
   // 详情以整页视图展示，Escape 与顶部返回按钮都可回到扩展列表。
   React.useEffect(() => {
@@ -276,6 +408,10 @@ export default observer(() => {
           )}
 
           <SectionLabel>安装</SectionLabel>
+          <InstallButton onClick={() => store.openBrowserMigration()}>
+            <BrowsersIcon size={17} />
+            从本地浏览器迁移扩展
+          </InstallButton>
           <InstallButton onClick={() => store.installFromCrx()}>
             <IconCrx />
             从本地 crx/zip 安装
@@ -302,12 +438,12 @@ export default observer(() => {
             <IconStore />
             Chrome 扩展商店
           </InstallButton>
-          <InstallButton
+          {/* <InstallButton
             onClick={() => store.installFromWeb('https://www.crxsoso.com/')}
           >
             <IconStore />
             Crx 搜搜商店
-          </InstallButton>
+          </InstallButton> */}
 
           <BottomActions>
             <DevToggleRow>
@@ -329,6 +465,51 @@ export default observer(() => {
 
         <MainScroll>
           <MainInner>
+            <MainHeader>
+              <MainTitle>已安装扩展</MainTitle>
+              <HeaderAction
+                type="button"
+                onClick={() => setGroupEditor({ groupId: null, name: '' })}
+              >
+                <IconPlus />
+                新建分组
+              </HeaderAction>
+            </MainHeader>
+            {groupEditor && (
+              <GroupEditorMask onMouseDown={() => setGroupEditor(null)}>
+                <GroupEditorDialog
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    submitGroupEditor();
+                  }}
+                >
+                  <GroupEditorTitle>
+                    {groupEditor.groupId ? '重命名分组' : '新建分组'}
+                  </GroupEditorTitle>
+                  <GroupEditorInput
+                    autoFocus
+                    maxLength={40}
+                    value={groupEditor.name}
+                    placeholder="输入分组名称"
+                    onChange={(event) =>
+                      setGroupEditor({ ...groupEditor, name: event.currentTarget.value })
+                    }
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') setGroupEditor(null);
+                    }}
+                  />
+                  <GroupEditorActions>
+                    <GroupEditorButton type="button" onClick={() => setGroupEditor(null)}>
+                      取消
+                    </GroupEditorButton>
+                    <GroupEditorButton primary type="submit" disabled={!groupEditor.name.trim()}>
+                      确定
+                    </GroupEditorButton>
+                  </GroupEditorActions>
+                </GroupEditorDialog>
+              </GroupEditorMask>
+            )}
             {dragActive && (
               <DragOverlay>
                 <DragCard>
@@ -342,6 +523,7 @@ export default observer(() => {
                 </DragCard>
               </DragOverlay>
             )}
+            {store.migrationOpen && <BrowserMigrationDialog />}
             {detail && (
               <ModalBackdrop>
                 <ExtDetail item={detail} />
@@ -358,11 +540,17 @@ export default observer(() => {
                 </EmptyText>
               </EmptyState>
             ) : (
-              <Grid>
-                {list.map((item) => (
-                  <ExtCard item={item} key={item.id} />
+              <>
+                {store.groups.map((group) => (
+                  <ExtensionGroup
+                    groupId={group.id}
+                    title={group.name}
+                    key={group.id}
+                    onRename={(groupId, name) => setGroupEditor({ groupId, name })}
+                  />
                 ))}
-              </Grid>
+                <ExtensionGroup groupId={null} title="未分组" onRename={() => undefined} />
+              </>
             )}
 
             <StoreSection />

@@ -28,10 +28,18 @@ export const StyledSwitch = styled.div`
   }
 
   ${({ activated, color, theme, clickable, dense }: Props) => css`
-    background-color: ${activated ? color : theme['switch.backgroundColor']};
+    background-color: ${(theme as any).settingsPage
+      ? activated
+        ? (theme as any).settingsAccent
+        : theme['pages.lightForeground']
+        ? 'rgba(255, 255, 255, 0.22)'
+        : '#D6D6DE'
+      : activated
+      ? color
+      : theme['switch.backgroundColor']};
     cursor: ${clickable ? 'pointer' : 'default'};
-    width: ${dense ? 32 : 36}px;
-    height: ${dense ? 16 : 18}px;
+    width: ${(theme as any).settingsPage ? 44 : dense ? 32 : 36}px;
+    height: ${(theme as any).settingsPage ? 25 : dense ? 16 : 18}px;
 
     &:hover {
       &:after {
@@ -50,10 +58,29 @@ export const Thumb = styled.div`
   transition: 0.15s left;
   ${centerVertical()};
 
-  ${({ activated, dense }: { activated: boolean; dense: boolean }) => css`
-    width: ${dense ? 12 : 14}px;
-    height: ${dense ? 12 : 14}px;
-    left: ${activated ? (dense ? 18 : 20) : 2}px;
+  ${({
+    activated,
+    dense,
+    theme,
+  }: {
+    activated: boolean;
+    dense: boolean;
+    theme: ITheme;
+  }) => css`
+    width: ${(theme as any).settingsPage ? 19 : dense ? 12 : 14}px;
+    height: ${(theme as any).settingsPage ? 19 : dense ? 12 : 14}px;
+    left: ${(theme as any).settingsPage
+      ? activated
+        ? 22
+        : 3
+      : activated
+      ? dense
+        ? 18
+        : 20
+      : 2}px;
     background-color: #fff;
+    box-shadow: ${(theme as any).settingsPage
+      ? '0 2px 4px rgba(0, 0, 0, 0.15)'
+      : 'none'};
   `}
 `;

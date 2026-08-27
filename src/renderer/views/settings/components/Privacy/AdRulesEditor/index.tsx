@@ -9,9 +9,8 @@ import store from '../../../store';
 
 const Wrapper = styled.div`
   width: 100%;
-  margin-top: 10px;
   padding: 16px 18px;
-  border-radius: 16px;
+  border-radius: 18px;
 
   ${({ theme }: { theme?: ITheme }) => {
     const p = getPalette(theme);
@@ -20,6 +19,20 @@ const Wrapper = styled.div`
       box-shadow: inset 0 0 0 1px ${p.line}, 0 1px 2px rgba(20, 27, 45, 0.04);
     `;
   }}
+`;
+
+const GroupBlock = styled.div`
+  margin-top: 26px;
+`;
+
+const GroupLabel = styled.div`
+  padding: 0 4px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textSub};
+  `}
 `;
 
 const TopBar = styled.div`
@@ -144,29 +157,28 @@ export default observer(() => {
   const dirty = text !== original;
 
   return (
-    <Wrapper theme={theme}>
-      <TopBar>
-        <div>
-          <TopTitle theme={theme}>广告标识规则</TopTitle>
-          <Hint theme={theme}>“标记广告”生成的规则保存在这里，可直接编辑</Hint>
-        </div>
-        <Spacer />
-        {saved && !dirty ? <Saved theme={theme}>已保存</Saved> : null}
-        <SmallButton theme={theme} disabled={busy || !dirty} onClick={onSave}>
-          {busy ? '保存中…' : '保存'}
-        </SmallButton>
-      </TopBar>
+    <GroupBlock>
+      <GroupLabel theme={theme}>广告标识规则</GroupLabel>
+      <Wrapper theme={theme}>
+        <TopBar>
+          <Spacer />
+          {saved && !dirty ? <Saved theme={theme}>已保存</Saved> : null}
+          <SmallButton theme={theme} disabled={busy || !dirty} onClick={onSave}>
+            {busy ? '保存中…' : '保存'}
+          </SmallButton>
+        </TopBar>
 
-      <Area
-        theme={theme}
-        value={text}
-        placeholder={PLACEHOLDER}
-        disabled={busy}
-        onChange={(e) => {
-          setText(e.target.value);
-          setSaved(false);
-        }}
-      />
-    </Wrapper>
+        <Area
+          theme={theme}
+          value={text}
+          placeholder={PLACEHOLDER}
+          disabled={busy}
+          onChange={(e) => {
+            setText(e.target.value);
+            setSaved(false);
+          }}
+        />
+      </Wrapper>
+    </GroupBlock>
   );
 });

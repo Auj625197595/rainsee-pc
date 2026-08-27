@@ -9,9 +9,8 @@ import store from '../../../store';
 
 const Wrapper = styled.div`
   width: 100%;
-  margin-top: 10px;
   padding: 16px 18px;
-  border-radius: 16px;
+  border-radius: 18px;
 
   ${({ theme }: { theme?: ITheme }) => {
     const p = getPalette(theme);
@@ -20,6 +19,20 @@ const Wrapper = styled.div`
       box-shadow: inset 0 0 0 1px ${p.line}, 0 1px 2px rgba(20, 27, 45, 0.04);
     `;
   }}
+`;
+
+const GroupBlock = styled.div`
+  margin-top: 26px;
+`;
+
+const GroupLabel = styled.div`
+  padding: 0 4px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textSub};
+  `}
 `;
 
 const TopTitle = styled.div`
@@ -69,7 +82,10 @@ const Input = styled.input`
   }}
 `;
 
-const SmallButton = styled.button<{ theme?: ITheme; kind?: 'primary' | 'danger' }>`
+const SmallButton = styled.button<{
+  theme?: ITheme;
+  kind?: 'primary' | 'danger';
+}>`
   font-family: inherit;
   font-size: 13px;
   font-weight: 600;
@@ -198,52 +214,52 @@ export default observer(() => {
   const theme = store.theme;
 
   return (
-    <Wrapper theme={theme}>
-      <TopTitle theme={theme}>白名单列表</TopTitle>
-      <Hint theme={theme}>白名单内的网站不会被广告拦截</Hint>
+    <GroupBlock>
+      <GroupLabel theme={theme}>白名单</GroupLabel>
+      <Wrapper theme={theme}>
+        <AddRow>
+          <Input
+            theme={theme}
+            value={input}
+            placeholder="添加白名单域名，如 example.com"
+            disabled={busy}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') onAdd();
+            }}
+          />
+          <SmallButton
+            theme={theme}
+            kind="primary"
+            disabled={busy || !input.trim()}
+            onClick={onAdd}
+          >
+            {busy ? '处理中…' : '添加'}
+          </SmallButton>
+        </AddRow>
 
-      <AddRow>
-        <Input
-          theme={theme}
-          value={input}
-          placeholder="添加白名单域名，如 example.com"
-          disabled={busy}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') onAdd();
-          }}
-        />
-        <SmallButton
-          theme={theme}
-          kind="primary"
-          disabled={busy || !input.trim()}
-          onClick={onAdd}
-        >
-          {busy ? '处理中…' : '添加'}
-        </SmallButton>
-      </AddRow>
+        {error ? <ErrorText theme={theme}>{error}</ErrorText> : null}
 
-      {error ? <ErrorText theme={theme}>{error}</ErrorText> : null}
-
-      {list.length === 0 ? (
-        <Empty theme={theme}>暂无白名单域名</Empty>
-      ) : (
-        <List>
-          {list.map((d) => (
-            <Item key={d} theme={theme}>
-              <Domain theme={theme}>{d}</Domain>
-              <SmallButton
-                theme={theme}
-                kind="danger"
-                disabled={busy}
-                onClick={() => onRemove(d)}
-              >
-                删除
-              </SmallButton>
-            </Item>
-          ))}
-        </List>
-      )}
-    </Wrapper>
+        {list.length === 0 ? (
+          <Empty theme={theme}>暂无白名单域名</Empty>
+        ) : (
+          <List>
+            {list.map((d) => (
+              <Item key={d} theme={theme}>
+                <Domain theme={theme}>{d}</Domain>
+                <SmallButton
+                  theme={theme}
+                  kind="danger"
+                  disabled={busy}
+                  onClick={() => onRemove(d)}
+                >
+                  删除
+                </SmallButton>
+              </Item>
+            ))}
+          </List>
+        )}
+      </Wrapper>
+    </GroupBlock>
   );
 });

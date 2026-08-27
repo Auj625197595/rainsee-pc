@@ -296,6 +296,345 @@ export const FeatureDesc = styled.p`
   margin: 8px 0 0;
 `;
 
+// —— 第 3 页：浏览数据迁移 ——
+export const MigrationPageWrap = styled.div`
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 16px 38px 120px;
+  max-width: 1100px;
+  margin: 0 auto;
+  box-sizing: border-box;
+`;
+export const MigrationCards = styled.div`
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+`;
+export const MigrationCard = styled.div`
+  min-width: 0;
+  min-height: 250px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 22px;
+  box-sizing: border-box;
+  border: 1px solid ${C.border};
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: ${SHADOW.soft};
+`;
+export const MigrationCardIcon = styled.div<{$bg: string; $fg: string}>`
+  width: 54px;
+  height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 15px;
+  color: ${({$fg}) => $fg};
+  background: ${({$bg}) => $bg};
+`;
+export const MigrationCardBody = styled.div`
+  flex: 1;
+  width: 100%;
+  margin-top: 20px;
+`;
+export const MigrationCardTitle = styled.h3`
+  margin: 0;
+  font-size: 19px;
+  font-weight: 900;
+  color: ${C.textMain};
+`;
+export const MigrationCardText = styled.p`
+  margin: 7px 0 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: ${C.textSub};
+`;
+export const MigrationBrowserTags = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 15px;
+  span {
+    padding: 5px 9px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    color: ${C.textSub};
+    background: ${C.bgLight};
+  }
+`;
+export const MigrationAction = styled.button`
+  max-width: 100%;
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 9px 14px;
+  border: 1px solid rgba(52, 82, 255, 0.24);
+  border-radius: 8px;
+  color: ${C.primaryDeep};
+  background: ${C.primarySoft};
+  font: 800 13px ${FONT_STACK};
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  transition: border-color 0.18s ease, background 0.18s ease;
+  &:hover { border-color: ${C.primary}; background: #e4e9ff; }
+`;
+
+// —— 迁移弹窗 ——
+export const ImportOverlay = styled.div`
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  box-sizing: border-box;
+  background: rgba(20, 27, 45, 0.48);
+  -webkit-app-region: no-drag;
+`;
+export const ImportDialog = styled.div`
+  width: min(680px, 100%);
+  max-height: min(680px, calc(100vh - 64px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(20, 27, 45, 0.3);
+`;
+export const ImportHeader = styled.div`
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 58px;
+  padding: 0 18px 0 22px;
+  border-bottom: 1px solid ${C.chromeLine};
+`;
+export const ImportHeading = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 17px;
+  font-weight: 900;
+`;
+export const ImportIconButton = styled.button`
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 7px;
+  color: ${C.textSub};
+  background: transparent;
+  cursor: pointer;
+  &:hover:not(:disabled) { color: ${C.textMain}; background: ${C.bgLight}; }
+  &:disabled { opacity: 0.45; cursor: default; }
+`;
+export const ImportBody = styled.div`
+  min-height: 250px;
+  padding: 22px;
+  box-sizing: border-box;
+  overflow-y: auto;
+`;
+export const BrowserList = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+`;
+export const BrowserOption = styled.button`
+  width: 100%;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  border: 1px solid ${C.border};
+  border-radius: 8px;
+  color: ${C.textMain};
+  background: #fff;
+  font: 800 14px ${FONT_STACK};
+  cursor: pointer;
+  &:hover:not(:disabled) { border-color: ${C.primary}; background: #fbfcff; }
+  &:disabled { opacity: 0.52; cursor: default; }
+`;
+export const BrowserDot = styled.span<{$color: string}>`
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: ${({$color}) => $color};
+`;
+export const BrowserState = styled.span`
+  margin-left: auto;
+  font-size: 12px;
+  color: ${C.textMute};
+`;
+export const ImportConfirm = styled.div`
+  min-height: 210px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: ${C.primary};
+`;
+export const ImportConfirmTitle = styled.h3`
+  margin: 13px 0 0;
+  color: ${C.textMain};
+  font-size: 18px;
+`;
+export const ImportConfirmText = styled.p`
+  margin: 7px 0 0;
+  color: ${C.textSub};
+  font-size: 13px;
+`;
+export const ImportToolbar = styled.div`
+  flex-shrink: 0;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px;
+  border-bottom: 1px solid ${C.chromeLine};
+`;
+export const SelectAllButton = styled.button`
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  color: ${C.textMain};
+  background: transparent;
+  font: 800 13px ${FONT_STACK};
+  cursor: pointer;
+  &:disabled { opacity: 0.45; cursor: default; }
+`;
+export const SelectDirectoryButton = styled(SelectAllButton)`
+  color: ${C.primary};
+`;
+export const ImportCheckbox = styled.span<{$checked: boolean}>`
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border: 1px solid ${({$checked}) => $checked ? C.primary : '#cbd3e4'};
+  border-radius: 4px;
+  color: #fff;
+  background: ${({$checked}) => $checked ? C.primary : '#fff'};
+`;
+export const ExtensionList = styled.div`
+  min-height: 260px;
+  max-height: 410px;
+  overflow-y: auto;
+  padding: 8px 12px;
+`;
+export const ExtensionRow = styled.button<{$checked: boolean}>`
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 64px;
+  padding: 9px 10px;
+  border: 0;
+  border-bottom: 1px solid ${C.chromeLine};
+  text-align: left;
+  color: ${C.textMain};
+  background: ${({$checked}) => $checked ? '#f8faff' : '#fff'};
+  cursor: pointer;
+  &:hover { background: ${C.bgLight}; }
+`;
+export const ExtensionIcon = styled.div`
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: ${C.textSub};
+  img { width: 30px; height: 30px; object-fit: contain; }
+`;
+export const ExtensionInfo = styled.div`
+  min-width: 0;
+  flex: 1;
+`;
+export const ExtensionName = styled.div`
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 800;
+`;
+export const ExtensionMeta = styled.div`
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: ${C.textSub};
+`;
+export const ImportEmpty = styled.div`
+  min-height: 240px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: ${C.textSub};
+  font-size: 13px;
+`;
+export const ImportSpinner = styled.span`
+  width: 24px;
+  height: 24px;
+  border: 3px solid #dce3f3;
+  border-top-color: ${C.primary};
+  border-radius: 50%;
+  animation: onbSpin 0.8s linear infinite;
+  @keyframes onbSpin { to { transform: rotate(360deg); } }
+`;
+export const ImportFooter = styled.div`
+  flex-shrink: 0;
+  min-height: 66px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 18px;
+  box-sizing: border-box;
+  border-top: 1px solid ${C.chromeLine};
+`;
+export const ImportStatus = styled.div<{$error: boolean}>`
+  min-width: 0;
+  flex: 1;
+  font-size: 12px;
+  line-height: 1.45;
+  color: ${({$error}) => $error ? '#c2413b' : C.textSub};
+`;
+export const ImportActions = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+`;
+export const ImportButton = styled.button<{$primary?: boolean}>`
+  min-width: 74px;
+  min-height: 36px;
+  padding: 8px 13px;
+  border: 1px solid ${({$primary}) => $primary ? C.primary : C.border};
+  border-radius: 7px;
+  color: ${({$primary}) => $primary ? '#fff' : C.textMain};
+  background: ${({$primary}) => $primary ? C.primary : '#fff'};
+  font: 800 13px ${FONT_STACK};
+  cursor: pointer;
+  &:disabled { opacity: 0.45; cursor: default; }
+`;
+
 // —— 第 3 页 ——
 export const Page3Wrap = styled.div`
   min-height: 100%;
@@ -387,7 +726,7 @@ export const PickPreview = styled.div<{$variant: string}>`
       }
     `}
 `;
-export const PickLabel = styled.span<{$active?: boolean}>`
+export const PickLabel = styled.span<{$active?: boolean; $mt?: boolean}>`
   font-size: 14px;
   font-weight: 800;
   color: ${({$active}) => ($active ? C.primaryDeep : C.textMain)};

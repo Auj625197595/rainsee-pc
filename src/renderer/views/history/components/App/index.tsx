@@ -21,12 +21,19 @@ import {
   RangeLabel,
   RangeCount,
   BottomActions,
+  SidebarAction,
   ClearButton,
+  ActionStatus,
   MainScroll,
   MainInner,
   HeaderRow,
 } from './style';
 import { OpenInNewTabToggle } from '~/renderer/components/OpenInNewTabToggle';
+import {Browsers} from '@phosphor-icons/react';
+import {
+  MigrationDialog,
+  MigrationMode,
+} from '~/renderer/views/onboarding/components/MigrationDialog';
 
 // ===== 内联图标（跟随 currentColor）=====
 
@@ -151,6 +158,16 @@ const onClearClick = () => {
 };
 
 export default observer(() => {
+  const [importVisible, setImportVisible] = React.useState(false);
+  const [importStatus, setImportStatus] = React.useState('');
+
+  const onImported = async (mode: MigrationMode, message: string) => {
+    if (mode !== 'history') return;
+    setImportVisible(false);
+    setImportStatus(message);
+    await store.load();
+  };
+
   return (
     <ThemeProvider theme={{ ...store.theme }}>
       <Container>
@@ -185,6 +202,11 @@ export default observer(() => {
           </RangeNav>
 
           <BottomActions>
+            <SidebarAction type="button" onClick={() => setImportVisible(true)}>
+              <Browsers size={18} />
+              从其他浏览器导入
+            </SidebarAction>
+            {importStatus && <ActionStatus>{importStatus}</ActionStatus>}
             <ClearButton onClick={onClearClick}>
               <IconTrash />
               清除浏览记录
@@ -213,6 +235,13 @@ export default observer(() => {
             ))}
           </MainInner>
         </MainScroll>
+        {importVisible && (
+          <MigrationDialog
+            mode="history"
+            onClose={() => setImportVisible(false)}
+            onImported={onImported}
+          />
+        )}
       </Container>
     </ThemeProvider>
   );
