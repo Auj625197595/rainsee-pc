@@ -1,5 +1,4 @@
 import { ipcRenderer } from 'electron';
-import * as remote from '@electron/remote';
 import { observable, computed, makeObservable } from 'mobx';
 import { getTheme } from '~/utils/themes';
 import { ISettings } from '~/interfaces';
@@ -21,6 +20,8 @@ export class DialogStore {
   }
 
   private _windowId = -1;
+
+  private _id = -1;
 
   private persistent = false;
 
@@ -53,6 +54,8 @@ export class DialogStore {
 
     this.persistent = persistent;
 
+    this._id = Number(ipcRenderer.sendSync('get-webcontents-id'));
+
     if (visibilityWrapper && persistent) {
       ipcRenderer.on('visible', async (e, flag, ...args) => {
         this.onVisibilityChange(flag, ...args);
@@ -78,6 +81,10 @@ export class DialogStore {
       this.onUpdateTabInfo(tabId, data),
     );
 
+    ipcRenderer.on('dialog-host-window-id', (_e, id: number) => {
+      if (Number.isFinite(id) && id > 0) this._windowId = id;
+    });
+
     this.onHide = () => {};
     this.onUpdateTabInfo = () => {};
     this.onVisibilityChange = () => {};
@@ -94,16 +101,22 @@ export class DialogStore {
   }
 
   public get id() {
-    return remote.getCurrentWebContents().id;
+    return this._id;
   }
 
   public get windowId() {
     // Persistent dialogs reuse the same BrowserView across browser windows.
     // Its owner can therefore change after the first read (for example when
-    // quickmenu is opened from a newly-created incognito window). Resolve the
-    // current owner every time instead of permanently caching the first one.
-    const win = remote.getCurrentWindow();
-    if (win) this._windowId = win.id;
+    // quickmenu is opened from a newly-created incognito window). Electron 43
+    // no longer resolves remote.getCurrentWindow() for BrowserViews, so ask
+    // the main process which BrowserWindow currently owns this view.
+    // The main process sends dialog-host-window-id before each show; once that
+    // value is known, avoid a synchronous IPC on every render/action.
+    if (this._windowId > 0) return this._windowId;
+    const id = Number(ipcRenderer.sendSync('get-window-id'));
+    if (Number.isFinite(id) && id > 0) {
+      this._windowId = id;
+    }
 
     return this._windowId;
   }

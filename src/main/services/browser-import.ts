@@ -27,7 +27,7 @@ export interface DetectedBrowsers {
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { promises as fsPromises } from 'fs';
-import { join } from 'path';
+import { basename, dirname, join } from 'path';
 import { tmpdir } from 'os';
 
 // ===== 路径解析（Windows 优先；本应用为 Windows 目标）=====
@@ -72,9 +72,12 @@ export const detectBrowsers = async (): Promise<DetectedBrowsers> => {
 
 // ===== Chromium（Chrome / Edge）=====
 
-// 选 profile：优先 Local State 的 profile.last_used（且其 Bookmarks 存在），
+// 选 profile：优先 Local State 的 profile.last_used（且目标数据文件存在），
 // 否则 Default，否则首个 "Profile *" 目录。
-const pickChromiumProfile = (userDataDir: string): string | null => {
+const pickChromiumProfile = (
+  userDataDir: string,
+  artifact = 'Bookmarks',
+): {dir: string; name: string} | null => {
   const candidates: string[] = [];
 
   try {
@@ -99,7 +102,9 @@ const pickChromiumProfile = (userDataDir: string): string | null => {
   }
 
   for (const c of candidates) {
-    if (c && existsSync(join(userDataDir, c, 'Bookmarks'))) return c;
+    if (c && existsSync(join(userDataDir, c, artifact))) {
+      return {dir: join(userDataDir, c), name: c};
+    }
   }
   return null;
 };
@@ -140,7 +145,7 @@ const readChromium = (vendor: 'chrome' | 'edge'): Bookmark[] => {
 
   let json: any;
   try {
-    json = JSON.parse(readFileSync(join(userDataDir, profile, 'Bookmarks'), 'utf8'));
+    json = JSON.parse(readFileSync(join(profile.dir, 'Bookmarks'), 'utf8'));
   } catch (err) {
     throw new Error('PARSE_FAILED: ' + (err as Error).message);
   }
@@ -218,7 +223,9 @@ const parseIni = (text: string): Record<string, Record<string, string>> => {
 // 几乎没用过的空 profile，其 places.sqlite 为 0 字节）。改为在所有候选 profile
 // 里挑 places.sqlite 非空且 mtime 最新的——即最近使用过、真正活跃的那个 profile。
 // 候选来源：profiles.ini 的 [ProfileN] 段 + Profiles/ 子目录扫描（兜底 ini 缺项）。
-const pickFirefoxProfile = (baseDir: string): string | null => {
+const pickFirefoxProfile = (
+  baseDir: string,
+): {dir: string; name: string} | null => {
   const iniPath = join(baseDir, 'profiles.ini');
   const candidateDirs = new Set<string>();
 
@@ -271,13 +278,15 @@ const pickFirefoxProfile = (baseDir: string): string | null => {
     }
   }
 
-  return best?.dir || fallback;
+  const dir = best?.dir || fallback;
+  return dir ? {dir, name: basename(dir)} : null;
 };
 
 const readFirefox = async (): Promise<Bookmark[]> => {
   const baseDir = firefoxDir();
-  const profileDir = pickFirefoxProfile(baseDir);
-  if (!profileDir) throw new Error('PROFILE_NOT_FOUND');
+  const profile = pickFirefoxProfile(baseDir);
+  if (!profile) throw new Error('PROFILE_NOT_FOUND');
+  const profileDir = profile.dir;
 
   const liveDb = join(profileDir, 'places.sqlite');
   if (!exists(liveDb)) throw new Error('BROWSER_NOT_FOUND');
@@ -437,6 +446,203 @@ const readFirefox = async (): Promise<Bookmark[]> => {
       // 临时文件残留不影响功能
     }
   }
+};
+
+// ===== 历史记录（Chromium History / Firefox places.sqlite）=====
+
+export interface BrowserHistoryRecord {
+  title: string;
+  url: string;
+  date: number;
+}
+
+export interface BrowserHistoryPreview {
+  browserId: BrowserId;
+  profileName: string;
+  count: number;
+  oldestDate: number | null;
+  newestDate: number | null;
+}
+
+export interface BrowserHistoryReadResult extends BrowserHistoryPreview {
+  items: BrowserHistoryRecord[];
+}
+
+const isBrowserId = (id: unknown): id is BrowserId =>
+  id === 'chrome' || id === 'edge' || id === 'firefox';
+
+const getHistorySource = (id: BrowserId) => {
+  if (id === 'firefox') {
+    const profile = pickFirefoxProfile(firefoxDir());
+    if (!profile) throw new Error('PROFILE_NOT_FOUND');
+    const database = join(profile.dir, 'places.sqlite');
+    if (!exists(database)) throw new Error('BROWSER_NOT_FOUND');
+    return {database, profileName: profile.name};
+  }
+
+  const userDataDir = CHROMIUM_DIRS[id];
+  if (!exists(userDataDir)) throw new Error('BROWSER_NOT_FOUND');
+  const profile = pickChromiumProfile(userDataDir, 'History');
+  if (!profile) throw new Error('PROFILE_NOT_FOUND');
+  return {
+    database: join(profile.dir, 'History'),
+    profileName: profile.name,
+  };
+};
+
+// SQLite 数据库运行时可能持有 WAL/SHM 锁。只复制同名前缀文件到唯一临时目录，
+// 永远不直接修改源浏览器数据，也不要求用户先退出浏览器。
+const withSqliteSnapshot = async <T>(
+  liveDatabase: string,
+  prefix: string,
+  read: (snapshotDatabase: string) => Promise<T>,
+): Promise<T> => {
+  const sourceDir = dirname(liveDatabase);
+  const databaseName = basename(liveDatabase);
+  const tempDir = await fsPromises.mkdtemp(join(tmpdir(), `${prefix}-`));
+
+  try {
+    const relatedFiles = readdirSync(sourceDir).filter(
+      (name) => name === databaseName || name.startsWith(`${databaseName}-`),
+    );
+    if (!relatedFiles.includes(databaseName)) {
+      throw new Error('BROWSER_NOT_FOUND');
+    }
+
+    try {
+      for (const name of relatedFiles) {
+        await fsPromises.copyFile(join(sourceDir, name), join(tempDir, name));
+      }
+    } catch (error) {
+      throw new Error(`COPY_FAILED: ${(error as Error).message}`);
+    }
+
+    return await read(join(tempDir, databaseName));
+  } finally {
+    try {
+      await fsPromises.rm(tempDir, {recursive: true, force: true});
+    } catch {
+      // 临时文件残留不影响导入结果。
+    }
+  }
+};
+
+const CHROMIUM_EPOCH_OFFSET_MS = 11644473600000;
+const HISTORY_URL_FILTER = (column: string) =>
+  `(${column} LIKE 'http://%' OR ${column} LIKE 'https://%' OR ${column} LIKE 'file://%')`;
+
+const readHistoryDatabase = async (
+  id: BrowserId,
+  includeItems: boolean,
+): Promise<BrowserHistoryReadResult> => {
+  const source = getHistorySource(id);
+
+  try {
+    return await withSqliteSnapshot(
+      source.database,
+      `rainsee-${id}-history`,
+      async (snapshotDatabase) => {
+        const {DatabaseSync} = await import('node:sqlite');
+        const db: any = new DatabaseSync(snapshotDatabase, {readOnly: true});
+        try {
+          const isFirefox = id === 'firefox';
+          const from = isFirefox
+            ? 'moz_historyvisits v JOIN moz_places p ON p.id = v.place_id'
+            : 'visits v JOIN urls u ON u.id = v.url';
+          const urlColumn = isFirefox ? 'p.url' : 'u.url';
+          const titleColumn = isFirefox ? 'p.title' : 'u.title';
+          const hiddenColumn = isFirefox ? 'p.hidden' : 'u.hidden';
+          const sourceTime = isFirefox
+            ? 'CAST(v.visit_date / 1000 AS INTEGER)'
+            : `CAST(v.visit_time / 1000 - ${CHROMIUM_EPOCH_OFFSET_MS} AS INTEGER)`;
+          const where = `${HISTORY_URL_FILTER(urlColumn)} AND COALESCE(${hiddenColumn}, 0) = 0 AND ${sourceTime} > 0`;
+
+          const summary: any = db
+            .prepare(
+              `SELECT COUNT(*) AS count, MIN(${sourceTime}) AS oldestDate, MAX(${sourceTime}) AS newestDate
+               FROM ${from}
+               WHERE ${where}`,
+            )
+            .get();
+
+          const preview: BrowserHistoryPreview = {
+            browserId: id,
+            profileName: source.profileName,
+            count: Number(summary?.count || 0),
+            oldestDate:
+              summary?.oldestDate == null ? null : Number(summary.oldestDate),
+            newestDate:
+              summary?.newestDate == null ? null : Number(summary.newestDate),
+          };
+
+          if (!includeItems || preview.count === 0) {
+            return {...preview, items: []};
+          }
+
+          const rows: any[] = db
+            .prepare(
+              `SELECT ${urlColumn} AS url, ${titleColumn} AS title, ${sourceTime} AS date
+               FROM ${from}
+               WHERE ${where}
+               ORDER BY ${isFirefox ? 'v.visit_date' : 'v.visit_time'} ASC`,
+            )
+            .all();
+          const nowLimit = Date.now() + 24 * 60 * 60 * 1000;
+          const items = rows
+            .map((row) => ({
+              url: String(row.url || ''),
+              title: String(row.title || row.url || ''),
+              date: Number(row.date),
+            }))
+            .filter(
+              (item) =>
+                item.url &&
+                Number.isFinite(item.date) &&
+                item.date > 0 &&
+                item.date <= nowLimit,
+            );
+
+          return {...preview, count: items.length, items};
+        } finally {
+          db.close();
+        }
+      },
+    );
+  } catch (error) {
+    const message = (error as Error).message || '';
+    if (
+      message.startsWith('BROWSER_NOT_FOUND') ||
+      message.startsWith('PROFILE_NOT_FOUND') ||
+      message.startsWith('COPY_FAILED')
+    ) {
+      throw error;
+    }
+    throw new Error(`PARSE_FAILED: ${message}`);
+  }
+};
+
+export const detectHistoryBrowsers = async (): Promise<DetectedBrowsers> => ({
+  chrome: !!pickChromiumProfile(CHROMIUM_DIRS.chrome, 'History'),
+  edge: !!pickChromiumProfile(CHROMIUM_DIRS.edge, 'History'),
+  firefox: (() => {
+    const profile = pickFirefoxProfile(firefoxDir());
+    return !!profile && exists(join(profile.dir, 'places.sqlite'));
+  })(),
+});
+
+export const previewBrowserHistory = async (
+  id: BrowserId,
+): Promise<BrowserHistoryPreview> => {
+  if (!isBrowserId(id)) throw new Error('BROWSER_NOT_FOUND');
+  const {items, ...preview} = await readHistoryDatabase(id, false);
+  return preview;
+};
+
+export const readBrowserHistory = async (
+  id: BrowserId,
+): Promise<BrowserHistoryReadResult> => {
+  if (!isBrowserId(id)) throw new Error('BROWSER_NOT_FOUND');
+  return readHistoryDatabase(id, true);
 };
 
 // ===== 统一入口 =====

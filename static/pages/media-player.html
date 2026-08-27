@@ -233,6 +233,9 @@
     let activeIndex = 0;       // 当前播放项
     let dp = null;             // DPlayer 实例
     let hls = null;            // hls.js 实例
+    let hlsRecoveryAttempts = 0;
+
+    const MAX_HLS_RECOVERY_ATTEMPTS = 2;
 
     const $ = (id) => document.getElementById(id);
 
@@ -255,7 +258,40 @@
     function destroyPlayer() {
       try { if (hls) { hls.destroy(); hls = null; } } catch (e) {}
       try { if (dp) { dp.destroy(); dp = null; } } catch (e) {}
+      hlsRecoveryAttempts = 0;
       $('dplayer').innerHTML = '';
+    }
+
+    function attachHls(video, url) {
+      const instance = new Hls();
+      hls = instance;
+
+      instance.on(Hls.Events.MEDIA_ATTACHED, () => {
+        if (hls === instance) instance.loadSource(url);
+      });
+
+      // hls.js 会自行处理非致命分片错误；致命错误需要由播放器重建解码链路。
+      instance.on(Hls.Events.ERROR, (event, data) => {
+        if (hls !== instance || !data || !data.fatal) return;
+
+        if (hlsRecoveryAttempts >= MAX_HLS_RECOVERY_ATTEMPTS) {
+          toast('视频流解码失败，请重新选择资源', 'error');
+          return;
+        }
+        hlsRecoveryAttempts += 1;
+
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          instance.startLoad();
+        } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          // 分片时间戳或编码参数突变时，重新创建 MediaSource/解码器状态。
+          instance.recoverMediaError();
+        } else {
+          toast('视频流播放失败', 'error');
+        }
+      });
+
+      // 先 attach 再加载清单，确保首批音视频分片都进入同一个 MediaSource 时间线。
+      instance.attachMedia(video);
     }
 
     // 用 DPlayer + hls.js 播放指定项
@@ -279,9 +315,7 @@
           customType: {
             customHls: function (video, player) {
               if (window.Hls && Hls.isSupported()) {
-                hls = new Hls();
-                hls.loadSource(item.url);
-                hls.attachMedia(video);
+                attachHls(video, item.url);
               } else {
                 video.src = item.url;
               }
@@ -472,6 +506,7 @@
 
     // 就绪后主动拉一次数据(防止 did-finish-load 早于监听注册)
     ipcRenderer.send('media-player-request-data');
+    window.addEventListener('beforeunload', destroyPlayer);
   </script>
 </body>
 </html>

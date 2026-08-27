@@ -10,7 +10,7 @@ const DEFAULT_WIDTH = 400;
 const MIN_WIDTH = 300;
 const MAX_WIDTH = 720;
 
-// 面板宽度持久化(跨会话记忆,独立文件避免与 ai-panel.json 冲突)。
+// 面板宽度持久化(跨会话记忆,独立文件避免与其他面板配置冲突)。
 const widthPath = () => getPath('dual-search-panel.json');
 
 // 「搜索页面 ↔ 面板」绑定关系:每个发起过搜索的标签持有自己的面板,二者同生共灭。

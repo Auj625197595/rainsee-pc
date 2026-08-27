@@ -1,41 +1,319 @@
-import {app, ipcMain, nativeTheme, dialog} from 'electron';
+import { app, ipcMain, nativeTheme, dialog } from 'electron';
 
-import {DEFAULT_SETTINGS, DEFAULT_SEARCH_ENGINES} from '~/constants';
+import {
+  DEFAULT_SETTINGS,
+  DEFAULT_SEARCH_ENGINES,
+  MAX_M3U8_DOWNLOAD_THREADS,
+  MAX_CUSTOM_CHROME_CSS_LENGTH,
+  MIN_M3U8_DOWNLOAD_THREADS,
+  normalizeTabHoverActivationBehavior,
+  normalizeTabHoverActivationDelay,
+} from '~/constants';
 
-import {promises} from 'fs';
+import { promises } from 'fs';
+import { readFileSync } from 'fs';
 
-import {getPath, makeId} from '~/utils';
-import {EventEmitter} from 'events';
+import { getPath, makeId } from '~/utils';
+import { EventEmitter } from 'events';
 import {
   runAdblockService,
   stopAdblockService,
+  applyDnrRequestHeaders,
+  applyDnrResponseHeaders,
   dispatchWebReqToExtensions,
   stripThirdPartySetCookies,
 } from '../services/adblock';
-import {Application} from '../application';
-import {WEBUI_BASE_URL} from '~/constants/files';
-import {ISettings} from '~/interfaces';
-import {resolve} from "path";
-import {deletePath, pathExists, readFileAsText} from "~/utils/files";
-import {ChromeUserAgent} from "~/main/user-agent";
+import { Application } from '../application';
+import { WEBUI_BASE_URL } from '~/constants/files';
+import {
+  EfficiencySearchMode,
+  ISearchEngine,
+  ISettings,
+  TabCloseSelectionBehavior,
+  TabHoverActivationBehavior,
+  TabOverflowBehavior,
+  TabWheelBehavior,
+} from '~/interfaces';
+import { dirname, resolve } from 'path';
+import { deletePath, pathExists, readFileAsText } from '~/utils/files';
+import {
+  ChromeUserAgent,
+  DefaultUserAgent,
+  isGoogleURL,
+} from '~/main/user-agent';
 import IpcMainEvent = Electron.IpcMainEvent;
-import {filterVideo, recordUrlRequest, stripEdgeCspHeaders} from "~/main/services/supervideo-video";
-import {tlog} from "~/main/timing";
-import {discoverDownloaderPath, DOWNLOADER_PRESETS} from "../services/external-downloader";
-import {migrationGate} from "../data-location";
-import {isHeavyUI} from "../utils/hardware-profile";
-import {getViewBackgroundColor} from "../utils/theme";
+import {
+  filterVideo,
+  recordUrlRequest,
+  stripEdgeCspHeaders,
+} from '~/main/services/supervideo-video';
+import { tlog } from '~/main/timing';
+import {
+  discoverDownloaderPath,
+  DOWNLOADER_PRESETS,
+} from '../services/external-downloader';
+import { migrationGate } from '../data-location';
+import { isHeavyUI } from '../utils/hardware-profile';
+import { getViewBackgroundColor } from '../utils/theme';
+import { normalizeChromeTheme } from '~/common/chrome-theme';
+import { normalizeBookmarkBarDisplay } from '~/common/bookmark-bar';
+import { sanitizeChromePanelValues } from '~/common/chrome-style-panel';
+import {
+  activeProfileName,
+  readDataLocationPointer,
+  SYSTEM_USERDATA,
+} from '../bootstrap-paths';
+
+const isSamePath = (left: string, right: string): boolean => {
+  const normalize = (value: string) => {
+    const resolved = resolve(value).replace(/\\/g, '/');
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  };
+  return normalize(left) === normalize(right);
+};
+
+const getSettingsMirrorPath = (): string | null => {
+  if (activeProfileName) return null;
+  const current = app.getPath('userData');
+  const pointer = readDataLocationPointer();
+  if (
+    typeof pointer.current !== 'string' ||
+    !isSamePath(pointer.current, current) ||
+    isSamePath(current, SYSTEM_USERDATA)
+  ) {
+    return null;
+  }
+  return resolve(SYSTEM_USERDATA, 'settings.json');
+};
+
+const getSystemDownloadsPath = (): string => {
+  try {
+    return app.getPath('downloads');
+  } catch {
+    return '';
+  }
+};
+
+const normalizeCustomChromeCss = (value: unknown): string => {
+  if (typeof value !== 'string') return DEFAULT_SETTINGS.customChromeCss;
+  return value.slice(0, MAX_CUSTOM_CHROME_CSS_LENGTH);
+};
+
+// 壳层可视化调控面板:只保留 schema 内合法键(键/类型/范围全在共享模块校验)。
+const normalizeChromeStylePanel = (
+  value: unknown,
+): ISettings['chromeStylePanel'] => sanitizeChromePanelValues(value);
+
+const getTabHoverActivationBehavior = (
+  value: unknown,
+  legacyValue?: unknown,
+): TabHoverActivationBehavior => {
+  if (
+    value === 'off' ||
+    value === 'activate' ||
+    value === 'activate-and-switch'
+  ) {
+    return value;
+  }
+  // 旧开关开启时只在后台恢复，迁移后保持这个既有行为。
+  if (typeof legacyValue === 'boolean') {
+    return legacyValue ? 'activate' : 'off';
+  }
+  return normalizeTabHoverActivationBehavior(value);
+};
+
+const normalizeM3u8DownloadThreads = (value: unknown): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_SETTINGS.m3u8DownloadThreads;
+  }
+  return Math.max(
+    MIN_M3U8_DOWNLOAD_THREADS,
+    Math.min(MAX_M3U8_DOWNLOAD_THREADS, Math.round(value)),
+  );
+};
+
+const EFFICIENCY_SEARCH_MODES = new Set<EfficiencySearchMode>([
+  'normal',
+  'dual',
+  'multi-tab',
+]);
+
+const normalizeEfficiencySearchMode = (value: unknown): EfficiencySearchMode =>
+  EFFICIENCY_SEARCH_MODES.has(value as EfficiencySearchMode)
+    ? (value as EfficiencySearchMode)
+    : DEFAULT_SETTINGS.efficiencySearchMode;
+
+const normalizeTabOverflowBehavior = (value: unknown): TabOverflowBehavior =>
+  value === 'shrink' || value === 'scroll'
+    ? value
+    : DEFAULT_SETTINGS.tabOverflowBehavior;
+
+const normalizeTabWheelBehavior = (value: unknown): TabWheelBehavior =>
+  value === 'auto' || value === 'always-switch'
+    ? value
+    : DEFAULT_SETTINGS.tabWheelBehavior;
+
+const normalizeTabCloseSelectionBehavior = (
+  value: unknown,
+): TabCloseSelectionBehavior =>
+  value === 'left' || value === 'right' || value === 'recent'
+    ? value
+    : DEFAULT_SETTINGS.tabCloseSelectionBehavior;
+
+const normalizeMultiSearchEngineKeywords = (
+  value: unknown,
+  engines: ISearchEngine[],
+): string[] => {
+  const validKeywords = new Set(
+    (engines || []).map((engine) => engine?.keyword).filter(Boolean),
+  );
+  const selected = Array.isArray(value)
+    ? Array.from(
+        new Set(
+          value.filter(
+            (keyword): keyword is string =>
+              typeof keyword === 'string' && validKeywords.has(keyword),
+          ),
+        ),
+      )
+    : [];
+  if (selected.length >= 2) return selected;
+
+  const defaults = DEFAULT_SETTINGS.efficiencySearchEngineKeywords.filter(
+    (keyword) => validKeywords.has(keyword),
+  );
+  return defaults.length >= 2
+    ? defaults
+    : Array.from(validKeywords).slice(0, 2);
+};
+
+const TRANSLATE_ENGINES = new Set(['microsoft', 'custom-llm']);
+
+const normalizeTranslateEngine = (
+  value: unknown,
+): 'microsoft' | 'custom-llm' =>
+  TRANSLATE_ENGINES.has(value as string)
+    ? (value as 'microsoft' | 'custom-llm')
+    : DEFAULT_SETTINGS.translateEngine;
+
+// 自定义 LLM 配置守卫:对象形状校验 + baseUrl trim/补尾斜杠规整为不带尾斜杠 +
+// /v\d 后缀(custom-llm.ts normalizeBaseUrl 复算,这里只做基本卫生)。apiType 白名单。
+const normalizeCustomLlmConfig = (
+  value: unknown,
+): ISettings['customLlmConfig'] => {
+  const base = DEFAULT_SETTINGS.customLlmConfig;
+  if (!value || typeof value !== 'object') return { ...base };
+  const v = value as Record<string, unknown>;
+  const apiType = v.apiType === 'responses' ? 'responses' : 'chat';
+  const baseUrl =
+    typeof v.baseUrl === 'string' && v.baseUrl.trim()
+      ? v.baseUrl.trim().replace(/\/+$/, '')
+      : base.baseUrl.replace(/\/+$/, '');
+  return {
+    baseUrl,
+    apiKey: typeof v.apiKey === 'string' ? v.apiKey : '',
+    model:
+      typeof v.model === 'string' && v.model.trim()
+        ? v.model.trim()
+        : base.model,
+    apiType,
+    systemPrompt: typeof v.systemPrompt === 'string' ? v.systemPrompt : '',
+  };
+};
+
+const normalizePersistSessionCookieHosts = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  const hosts = new Set<string>();
+  value.forEach((item) => {
+    if (typeof item !== 'string') return;
+    let host = item.trim().toLowerCase();
+    if (!host) return;
+    try {
+      host = new URL(host.includes('://') ? host : `https://${host}`).hostname;
+    } catch {
+      return;
+    }
+    host = host.replace(/^\.+|\.+$/g, '');
+    if (
+      host.length <= 253 &&
+      /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(host) &&
+      host.includes('.')
+    ) {
+      hosts.add(host);
+    }
+  });
+  return Array.from(hosts).slice(0, 100);
+};
+
+const normalizeBrowsingDataSettings = (
+  value: unknown,
+  fallback: ISettings['clearBrowsingData'],
+): ISettings['clearBrowsingData'] => {
+  const items =
+    value && typeof value === 'object'
+      ? (value as Partial<ISettings['clearBrowsingData']>)
+      : {};
+  return {
+    cache: typeof items.cache === 'boolean' ? items.cache : fallback.cache,
+    cookies:
+      typeof items.cookies === 'boolean' ? items.cookies : fallback.cookies,
+    history:
+      typeof items.history === 'boolean' ? items.history : fallback.history,
+    searchHistory:
+      typeof items.searchHistory === 'boolean'
+        ? items.searchHistory
+        : fallback.searchHistory,
+  };
+};
+
+const normalizeClearOnExitSettings = (
+  value: unknown,
+  fallback: ISettings['clearOnExit'],
+): ISettings['clearOnExit'] => {
+  const items =
+    value && typeof value === 'object'
+      ? (value as Partial<ISettings['clearOnExit']>)
+      : {};
+  return {
+    cache: typeof items.cache === 'boolean' ? items.cache : fallback.cache,
+    cookies:
+      typeof items.cookies === 'boolean' ? items.cookies : fallback.cookies,
+    history:
+      typeof items.history === 'boolean' ? items.history : fallback.history,
+    searchHistory:
+      typeof items.searchHistory === 'boolean'
+        ? items.searchHistory
+        : fallback.searchHistory,
+  };
+};
 
 export class Settings extends EventEmitter {
-  public object = DEFAULT_SETTINGS;
+  // webRequest 每个事件在 Electron 中只有一个监听槽位。配置未影响拦截器时
+  // 不重复重挂，避免云同步连续更新期间反复重建监听和广告引擎。
+  private networkInterceptorSignature: string | null = null;
+
+  private startupHeavyWorkAllowed = false;
+  // DEFAULT_SETTINGS is shared with sandboxed renderer bundles, where Electron is
+  // unavailable and downloadsPath is intentionally empty. The main process owns
+  // the effective path and can reliably resolve the operating-system default.
+  public object: ISettings = {
+    ...DEFAULT_SETTINGS,
+    downloadsPath: getSystemDownloadsPath(),
+  };
 
   private queue: string[] = [];
 
   private loaded = false;
 
-  // 仅记录本次运行中最近一次「生效主题」。夜间模式扩展只在主题真的发生
-  // 明暗切换时联动；普通设置保存、扩展手动启停和应用重启都不做全局校准。
-  private lastDarknightThemeState: boolean | null = null;
+  // 网页暗色模式联动基线(仅本次运行中真翻转才联动,普通设置保存/扩展手动启停/
+  // 重启都不做全局校准,保留用户对扩展的独立控制权):
+  // - lastDarknightEnabledState:darknight(Dark Reader)是否应运行
+  //   (webDarkMode==='extension' && 暗色生效主题)。
+  // - lastWebDarkMode / lastDarkThemeState:用于判定切换实现方式 / 主题翻转后是否需要
+  //   刷新当前页,让新机制(拓展/脚本/无)立即生效。
+  private lastDarknightEnabledState: boolean | null = null;
+  private lastWebDarkMode: 'extension' | 'browser' | 'off' | null = null;
+  private lastDarkThemeState: boolean | null = null;
 
   public crxListenerMap = new Map<string, any[]>();
 
@@ -63,10 +341,80 @@ export class Settings extends EventEmitter {
 
     ipcMain.on(
       'save-settings',
-      (e, {settings}: { settings: string; incognito: boolean }) => {
-        this.updateSettings(JSON.parse(settings));
+      (e, { settings }: { settings: string; incognito: boolean }) => {
+        const nextSettings = JSON.parse(settings) as Partial<ISettings>;
+
+        // downloadsPath is changed only through downloads-path-change below.
+        // Renderer stores submit a full snapshot and may briefly hold startup
+        // defaults, so accepting this field here can overwrite a path the user
+        // has just selected with an older value.
+        delete nextSettings.downloadsPath;
+        // Theme snapshots are rebuilt from installed manifests in the main process.
+        delete nextSettings.activeChromeTheme;
+        // These settings are updated through the restricted patch IPC below.
+        // A stale renderer's full startup snapshot must never reset browser-data
+        // preferences that were already loaded from the user's data directory.
+        delete nextSettings.clearBrowsingData;
+        delete nextSettings.clearOnExit;
+        delete nextSettings.persistSessionCookies;
+        delete nextSettings.persistSessionCookieHosts;
+        this.updateSettings(nextSettings);
       },
     );
+
+    // 可视化调控面板的即时预览:设置页拖动滑条时高频推送面板值,主窗口外壳
+    // 直接换 <style> 内容实时看效果,不等 save-settings 的持久化往返。
+    // 只广播不落盘 —— 落盘仍走 save-settings(松手后防抖触发)。
+    ipcMain.on(
+      'chrome-style-preview',
+      (_e, values: unknown) => {
+        const payload = sanitizeChromePanelValues(values);
+        Application.instance.dialogs?.sendToAll(
+          'chrome-style-preview',
+          payload,
+        );
+        for (const window of Application.instance.windows?.list || []) {
+          window.send('chrome-style-preview', payload);
+        }
+      },
+    );
+
+    ipcMain.on('save-web-browsing-settings', (_e, raw: unknown) => {
+      if (!raw || typeof raw !== 'object') return;
+
+      const patch = raw as Partial<ISettings>;
+      const next: Partial<ISettings> = {};
+      if (typeof patch.persistSessionCookies === 'boolean') {
+        next.persistSessionCookies = patch.persistSessionCookies;
+      }
+      if (
+        Object.prototype.hasOwnProperty.call(patch, 'persistSessionCookieHosts')
+      ) {
+        next.persistSessionCookieHosts = normalizePersistSessionCookieHosts(
+          patch.persistSessionCookieHosts,
+        );
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'clearBrowsingData')) {
+        next.clearBrowsingData = normalizeBrowsingDataSettings(
+          patch.clearBrowsingData,
+          this.object.clearBrowsingData,
+        );
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'clearOnExit')) {
+        next.clearOnExit = normalizeClearOnExitSettings(
+          patch.clearOnExit,
+          this.object.clearOnExit,
+        );
+      }
+      if (Object.keys(next).length > 0) {
+        this.updateSettings(next);
+        Application.instance.sessions
+          ?.reconcilePersistedSessionCookies()
+          .catch((error) =>
+            console.error('[cookies] reconcile settings failed', error),
+          );
+      }
+    });
 
     // sendSync 必须同步返回:ipcRenderer.sendSync 不会等待 async handler 的微任务,
     // 若此处 await,this.object 在 await 之后的微任务里才赋给 returnValue,而 sendSync
@@ -85,21 +433,23 @@ export class Settings extends EventEmitter {
     });
 
     ipcMain.on('downloads-path-change', async () => {
-      const {canceled, filePaths} = await dialog.showOpenDialog({
-        defaultPath: this.object.downloadsPath,
+      // Do not let a late settings.json read replace a directory selected while
+      // the application is still starting.
+      await this.onLoad();
+
+      const { canceled, filePaths } = await dialog.showOpenDialog({
+        defaultPath: this.object.downloadsPath || getSystemDownloadsPath(),
         properties: ['openDirectory'],
       });
 
-      if (canceled) return;
+      if (canceled || !filePaths[0]) return;
 
-      this.object.downloadsPath = filePaths[0];
-
-      this.addToQueue();
+      this.updateSettings({ downloadsPath: filePaths[0] });
     });
 
     // 外部下载器:选择可执行文件路径(用户手动指定)。
     ipcMain.on('downloader-path-change', async () => {
-      const {canceled, filePaths} = await dialog.showOpenDialog({
+      const { canceled, filePaths } = await dialog.showOpenDialog({
         title: '选择下载器可执行文件',
         defaultPath: this.object.downloaderPath || undefined,
         properties: ['openFile'],
@@ -107,7 +457,7 @@ export class Settings extends EventEmitter {
 
       if (canceled) return;
 
-      this.updateSettings({downloaderPath: filePaths[0]});
+      this.updateSettings({ downloaderPath: filePaths[0] });
     });
 
     // 外部下载器:按预置类型从注册表自动发现路径(IDM 等有注册表项的)。
@@ -116,7 +466,7 @@ export class Settings extends EventEmitter {
       const type = this.object.downloaderType;
       const path = await discoverDownloaderPath(type);
       if (path) {
-        this.updateSettings({downloaderPath: path});
+        this.updateSettings({ downloaderPath: path });
       } else {
         const name = DOWNLOADER_PRESETS[type]?.name ?? '外部下载器';
         dialog.showMessageBox({
@@ -131,43 +481,47 @@ export class Settings extends EventEmitter {
     nativeTheme.on('updated', () => {
       this.update();
     });
-    ipcMain.handle('hiker-crx-msg', async (event, extensionId, fnName, ...args) => {
-      try {
-        const extensions = Application.instance.sessions.extensions;
-        const ext = (extensions || []).find(it => it.id == extensionId);
-        if (ext && ext.manifest && ext.manifest.commands) {
-          const commands = [];
-          for (let key of Object.keys(ext.manifest.commands)) {
-            commands.push({
-              name: key,
-              description: ext.manifest.commands[key].description,
-              shortcut: (ext.manifest.commands[key].suggested_key || {}).default
-            })
+    ipcMain.handle(
+      'hiker-crx-msg',
+      async (event, extensionId, fnName, ...args) => {
+        try {
+          const extensions = Application.instance.sessions.extensions;
+          const ext = (extensions || []).find((it) => it.id == extensionId);
+          if (ext && ext.manifest && ext.manifest.commands) {
+            const commands = [];
+            for (let key of Object.keys(ext.manifest.commands)) {
+              commands.push({
+                name: key,
+                description: ext.manifest.commands[key].description,
+                shortcut: (ext.manifest.commands[key].suggested_key || {})
+                  .default,
+              });
+            }
+            return commands;
           }
-          return commands;
-        }
-        const extensionsPath = getPath('extensions');
-        const path = resolve(extensionsPath, extensionId);
-        const manifestPath = resolve(path, 'manifest.json');
-        const manifest = JSON.parse(
-          await promises.readFile(manifestPath, 'utf8'),
-        );
-        if (manifest && manifest.commands) {
-          const commands = [];
-          for (let key of Object.keys(manifest.commands)) {
-            commands.push({
-              name: key,
-              description: manifest.commands[key].description,
-              shortcut: (manifest.commands[key].suggested_key || {}).default
-            })
+          const extensionsPath = getPath('extensions');
+          const path = resolve(extensionsPath, extensionId);
+          const manifestPath = resolve(path, 'manifest.json');
+          const manifest = JSON.parse(
+            await promises.readFile(manifestPath, 'utf8'),
+          );
+          if (manifest && manifest.commands) {
+            const commands = [];
+            for (let key of Object.keys(manifest.commands)) {
+              commands.push({
+                name: key,
+                description: manifest.commands[key].description,
+                shortcut: (manifest.commands[key].suggested_key || {}).default,
+              });
+            }
+            return commands;
           }
-          return commands;
+        } catch (e) {
+          console.log(e);
         }
-      } catch (e) {
-        console.log(e);
-      }
-      return [];
-    });
+        return [];
+      },
+    );
 
     // ipcMain.on('xiu-crx-add-listener', async (event: IpcMainEvent, extensionId, name, ...opts) => {
     //   if (this.crxListenerMap.has(name)) {
@@ -268,14 +622,32 @@ export class Settings extends EventEmitter {
     }
 
     const isDarkTheme = this.object.theme === 'wexond-dark';
-    let darknightThemeChanged = false;
+    // 网页暗色模式实现:'extension'(Dark Reader) | 'browser'(浏览器预注入脚本) | 'off'(不变色)。
+    // 未知/缺失值归一化为 'browser'(默认),兼容旧 settings.json 无此字段的存量用户。
+    const rawWebDarkMode = (this.object as any).webDarkMode;
+    const webDarkMode: 'extension' | 'browser' | 'off' =
+      rawWebDarkMode === 'extension' || rawWebDarkMode === 'off'
+        ? rawWebDarkMode
+        : 'browser';
+    // darknight 仅在 extension 模式且暗色生效主题下运行。
+    const darknightDesired = webDarkMode === 'extension' && isDarkTheme;
+    let darknightChanged = false;
+    let webDarkModeChanged = false;
+    let themeChanged = false;
     // nativeTheme 可能在 settings.json 尚未加载时先发出 updated。此时不能用
     // DEFAULT_SETTINGS 建立基线，否则磁盘设置加载会被误判成一次用户切换。
     if (this.loaded) {
-      darknightThemeChanged =
-        this.lastDarknightThemeState !== null &&
-        this.lastDarknightThemeState !== isDarkTheme;
-      this.lastDarknightThemeState = isDarkTheme;
+      darknightChanged =
+        this.lastDarknightEnabledState !== null &&
+        this.lastDarknightEnabledState !== darknightDesired;
+      webDarkModeChanged =
+        this.lastWebDarkMode !== null && this.lastWebDarkMode !== webDarkMode;
+      themeChanged =
+        this.lastDarkThemeState !== null &&
+        this.lastDarkThemeState !== isDarkTheme;
+      this.lastDarknightEnabledState = darknightDesired;
+      this.lastWebDarkMode = webDarkMode;
+      this.lastDarkThemeState = isDarkTheme;
     }
 
     if (themeSource !== nativeTheme.themeSource) {
@@ -285,6 +657,7 @@ export class Settings extends EventEmitter {
     Application.instance.dialogs?.sendToAll('update-settings', this.object);
 
     for (const window of Application.instance.windows?.list || []) {
+      window.updateTrafficLightPosition(this.object.tabsLayout);
       window.send('update-settings', this.object);
 
       window.viewManager.views.forEach(async (v) => {
@@ -296,9 +669,8 @@ export class Settings extends EventEmitter {
         }
       });
 
-      // 双引擎搜索:总开关关闭时,立即收起所有窗口已打开的副引擎侧边栏。
-      // (开启后显示由搜索触发 IPC 负责;这里只处理「开着时被关掉」的收尾。)
-      if (!this.object.dualEngineSearch) {
+      // 离开双列模式时立即收起已打开的副引擎侧边栏。
+      if (this.object.efficiencySearchMode !== 'dual') {
         window.secondarySearchPanels?.hideCurrent();
       }
     }
@@ -311,84 +683,193 @@ export class Settings extends EventEmitter {
     const sessions = Application.instance.sessions;
     if (!sessions) return;
 
-    // 夜间模式只跟随「本次运行中发生的主题切换」联动一次。不能在每次 update()
-    // 都按当前主题强制对齐，否则用户从扩展管理页手动禁用 darknight 后，
-    // disabledExtensions 的保存会立刻把它重新启用。
-    if (darknightThemeChanged) {
-      sessions.syncDarknightForTheme(isDarkTheme, true).catch(() => {});
+    // 网页暗色模式联动:darknight 仅在其期望运行状态真翻转时同步(避免覆盖用户在
+    // 扩展管理页的手动启停);reload 仅在「实现方式改变(暗色下)」或「主题翻转(非 off)」
+    // 时刷新当前页,让新机制(拓展/脚本/无)立即生效。两种触发相互独立,可同时发生。
+    if (darknightChanged) {
+      sessions.syncDarknightForTheme(darknightDesired).catch(() => {});
+    }
+    const needReload =
+      (webDarkModeChanged && isDarkTheme) ||
+      (themeChanged && webDarkMode !== 'off');
+    if (needReload) {
+      sessions.reloadCurrentPage();
     }
 
     const contexts = [sessions.view, sessions.viewIncognito];
     const incognitoBlockThirdPartyCookies =
       this.object.incognitoBlockThirdPartyCookies !== false;
-      console.log("onHeadersReceived register-3");
+    const networkInterceptorSignature = JSON.stringify({
+      shield: !!this.object.shield,
+      incognitoBlockThirdPartyCookies,
+    });
+    if (this.networkInterceptorSignature === networkInterceptorSignature)
+      return;
+    this.networkInterceptorSignature = networkInterceptorSignature;
     contexts.forEach((e) => {
-      e.webRequest.onBeforeSendHeaders({urls: ['<all_urls>']}, (details: Electron.OnBeforeSendHeadersListenerDetails, callback: any) => {
-        if (details.url.startsWith('chrome-extension://')) {
-          tlog(`webRequest.onBeforeSendHeaders chrome-extension: ${details.resourceType} ${details.url}`);
-        }
-        const obj: { requestHeaders?: Record<string, string> } = {};
-        try {
-          const {object: settings} = Application.instance.settings;
-          if (settings.doNotTrack) {
-            details.requestHeaders['DNT'] = '1';
-            obj.requestHeaders = details.requestHeaders;
+      e.webRequest.onBeforeSendHeaders(
+        { urls: ['<all_urls>'] },
+        (
+          details: Electron.OnBeforeSendHeadersListenerDetails,
+          callback: any,
+        ) => {
+          if (details.url.startsWith('chrome-extension://')) {
+            tlog(
+              `webRequest.onBeforeSendHeaders chrome-extension: ${details.resourceType} ${details.url}`,
+            );
           }
-          const ua = details.requestHeaders["User-Agent"];
-          if (ua && ua.includes("Electron")) {
-            details.requestHeaders["User-Agent"] = ChromeUserAgent;
-            obj.requestHeaders = details.requestHeaders;
+          const obj: { requestHeaders?: Record<string, string> } = {};
+          try {
+            const { object: settings } = Application.instance.settings;
+            if (settings.doNotTrack) {
+              details.requestHeaders['DNT'] = '1';
+              obj.requestHeaders = details.requestHeaders;
+            }
+            const ua = details.requestHeaders['User-Agent'];
+            if (isGoogleURL(details.url)) {
+              // Google 登录会校验请求 UA；这里必须保留 Electron 的默认 UA，不能
+              // 跟随普通网页的 Chrome UA 伪装。
+              details.requestHeaders['User-Agent'] = DefaultUserAgent;
+              obj.requestHeaders = details.requestHeaders;
+            } else if (ua && ua.includes('Electron')) {
+              details.requestHeaders['User-Agent'] = ChromeUserAgent;
+              obj.requestHeaders = details.requestHeaders;
+            }
+            recordUrlRequest(details);
+            // Electron permits one onBeforeSendHeaders listener per session.
+            // This host listener therefore owns the slot when settings are
+            // active; mirror the event to Chrome extensions after host header
+            // adjustments so webRequest observers keep receiving it.
+            dispatchWebReqToExtensions('onBeforeSendHeaders', details, e);
+            // This listener owns Electron's single onBeforeSendHeaders slot.
+            // Enforce extension DNR modifyHeaders here as well; otherwise the
+            // vendor listener is replaced and per-tab Referer/Cookie rules are
+            // stored but never applied.
+            const dnrHeaders = applyDnrRequestHeaders(details, e);
+            if (dnrHeaders) obj.requestHeaders = dnrHeaders;
+          } catch (err) {
+            console.log(err);
           }
-          const al = details.requestHeaders["Accept-Language"];
-          if (al == "zh-CN") {
-            details.requestHeaders["Accept-Language"] = "zh-CN,zh;q=0.9";
-            obj.requestHeaders = details.requestHeaders;
-          }
-          recordUrlRequest(details);
-        } catch (err) {
-          console.log(err);
-        }
-        // callback MUST always run, even if the logic above throws — otherwise
-        // the request hangs until Chromium's ~30s webRequest timeout.
-        callback(obj);
-      });
+          // callback MUST always run, even if the logic above throws — otherwise
+          // the request hangs until Chromium's ~30s webRequest timeout.
+          callback(obj);
+        },
+      );
 
-      console.log("onHeadersReceived register");
-      e.webRequest.onHeadersReceived({urls: ['<all_urls>']}, (details,callback) => {
-      //   console.log("onHeadersReceived callback", details.url);
-        if (details.url.startsWith('chrome-extension://')) {
-          tlog(`webRequest.onHeadersReceived chrome-extension: ${details.statusCode} ${details.url}`);
+      console.log('onHeadersReceived register');
+      e.webRequest.onHeadersReceived(
+        { urls: ['<all_urls>'] },
+        (details, callback) => {
+          //   console.log("onHeadersReceived callback", details.url);
+          if (details.url.startsWith('chrome-extension://')) {
+            tlog(
+              `webRequest.onHeadersReceived chrome-extension: ${details.statusCode} ${details.url}`,
+            );
+          }
+          // 本监听器在屏蔽关闭/引擎未初始化时是 session 上唯一的 onHeadersReceived
+          // (Electron 单监听器,后注册者覆盖)。settings 的 onHeadersReceived 还需把事件
+          // 转发给扩展(IDM 等依赖它检测视频媒体);屏蔽开启时则由 adblock.ts hookEngine
+          // 的包装器转发; onResponseStarted 由 vendor 的原生监听器负责。
+          try {
+            dispatchWebReqToExtensions('onHeadersReceived', details, e);
+          } catch (err) {
+            console.log('[settings] dispatchWebReqToExtensions error', err);
+          }
+          let dnrHeaders: Record<string, string[]> | undefined;
+          try {
+            dnrHeaders = applyDnrResponseHeaders(details, e);
+          } catch (err) {
+            console.log('[settings] DNR response-headers error', err);
+          }
+          const responseHeaders = stripEdgeCspHeaders(
+            details.url,
+            dnrHeaders || details.responseHeaders,
+          );
+          try {
+            filterVideo(details);
+          } catch (err) {
+            console.log(err);
+          }
+          if (incognitoBlockThirdPartyCookies && e === sessions.viewIncognito) {
+            stripThirdPartySetCookies(details, responseHeaders, e);
+          }
+          callback(responseHeaders ? { responseHeaders } : {});
+        },
+      );
+      if (this.startupHeavyWorkAllowed) {
+        if (this.object.shield) {
+          runAdblockService(e);
+        } else {
+          stopAdblockService(e);
         }
-        // 本监听器在屏蔽关闭/引擎未初始化时是 session 上唯一的 onHeadersReceived
-        // (Electron 单监听器,后注册者覆盖)。settings 的 onHeadersReceived 还需把事件
-        // 转发给扩展(IDM 等依赖它检测视频媒体);屏蔽开启时则由 adblock.ts hookEngine
-        // 的包装器转发,二者互斥(单监听器),不会重复分发。
-        try {
-          dispatchWebReqToExtensions('onHeadersReceived', details, e);
-        } catch (err) {
-          console.log('[settings] dispatchWebReqToExtensions error', err);
-        }
-        const responseHeaders = stripEdgeCspHeaders(
-          details.url,
-          details.responseHeaders,
-        );
-        try {
-          filterVideo(details);
-        } catch (err) {
-          console.log(err);
-        }
-        if (incognitoBlockThirdPartyCookies && e === sessions.viewIncognito) {
-          stripThirdPartySetCookies(details, responseHeaders, e);
-        }
-        callback(responseHeaders ? {responseHeaders} : {});
-      });
-      if (this.object.shield) {
-        runAdblockService(e);
-      } else {
-        stopAdblockService(e);
       }
     });
   };
+
+  // 主窗口 app.html 的启动外观参数(骨架屏主题/布局)。构造 BrowserWindow 时
+  // 通过 URL query 注入,让 head 内联脚本零 IPC 立即着色,替代原先的
+  // sendSync('get-settings-sync')(冷启动时主进程繁忙,同步应答会推迟 dom_ready)。
+  // 直接同步读 settings.json:this.object 在首窗构造时可能尚未 load()(load 在
+  // ready 后),用默认值会让暗色用户的骨架屏闪白;读盘一次数百微秒,且
+  // getStartupBackgroundColor 已是同一模式。
+  public getStartupLook(): Record<string, string | number | boolean> {
+    let persisted: Partial<ISettings> = {};
+    try {
+      persisted = JSON.parse(readFileSync(getPath('settings.json'), 'utf8'));
+    } catch (e) {
+      // 首次启动无文件等场景,全部走默认值。
+    }
+    const o = {...this.object, ...persisted};
+    const hasPersistedBookmarksBarDisplay = Object.prototype.hasOwnProperty.call(
+      persisted,
+      'bookmarksBarDisplay',
+    );
+    const hasPersistedLegacyBookmarksBar = Object.prototype.hasOwnProperty.call(
+      persisted,
+      'bookmarksBar',
+    );
+    const persistedBookmarksBarDisplay = hasPersistedBookmarksBarDisplay
+      ? o.bookmarksBarDisplay
+      : hasPersistedLegacyBookmarksBar
+        ? persisted.bookmarksBar === false
+          ? 'never'
+          : 'always'
+        : o.bookmarksBarDisplay;
+    const look: Record<string, string | number | boolean> = {
+      themeAuto: o.themeAuto !== false,
+      theme: o.theme === 'wexond-dark' ? 'dark' : 'light',
+      tabsLayout:
+        o.tabsLayout === 'left' || o.tabsLayout === 'right'
+          ? o.tabsLayout
+          : 'top',
+      sidebarPinned: o.sidebarPinned !== false,
+      topBarVariant:
+        o.topBarVariant === 'compact' || o.topBarVariant === 'default'
+          ? o.topBarVariant
+          : 'default',
+      bookmarksBar:
+        persistedBookmarksBarDisplay === 'always' ||
+        (persistedBookmarksBarDisplay == null && o.bookmarksBar !== false),
+    };
+    if (typeof o.sidebarWidth === 'number' && Number.isFinite(o.sidebarWidth)) {
+      look.sidebarWidth = Math.max(180, o.sidebarWidth);
+    }
+    return look;
+  }
+
+  public startDeferredNetworkServices() {
+    if (this.startupHeavyWorkAllowed) return;
+    this.startupHeavyWorkAllowed = true;
+    const sessions = Application.instance.sessions;
+    if (!sessions) return;
+    for (const targetSession of [sessions.view, sessions.viewIncognito]) {
+      if (this.object.shield) {
+        void runAdblockService(targetSession);
+      } else {
+        void stopAdblockService(targetSession);
+      }
+    }
+  }
 
   private async load() {
     // 等待数据迁移(若有)完成并切换好 userData,再读 settings.json。无 pending 时
@@ -402,6 +883,21 @@ export class Settings extends EventEmitter {
     try {
       const file = await promises.readFile(getPath('settings.json'), 'utf8');
       const json = JSON.parse(file);
+      json.tabOverflowBehavior = normalizeTabOverflowBehavior(
+        json.tabOverflowBehavior,
+      );
+      json.tabWheelBehavior = normalizeTabWheelBehavior(json.tabWheelBehavior);
+      json.tabCloseSelectionBehavior = normalizeTabCloseSelectionBehavior(
+        json.tabCloseSelectionBehavior,
+      );
+      json.tabHoverActivationBehavior = getTabHoverActivationBehavior(
+        json.tabHoverActivationBehavior,
+        json.activateTabOnHover,
+      );
+      delete json.activateTabOnHover;
+      json.tabHoverActivationDelay = normalizeTabHoverActivationDelay(
+        json.tabHoverActivationDelay,
+      );
 
       if (typeof json.version === 'string') {
         // Migrate from 3.1.0
@@ -431,6 +927,34 @@ export class Settings extends EventEmitter {
         json.themeAuto = true;
       }
 
+      if (typeof json.closeTabOnDoubleClick !== 'boolean') {
+        json.closeTabOnDoubleClick = DEFAULT_SETTINGS.closeTabOnDoubleClick;
+      }
+      if (typeof json.closeTabOnRightClick !== 'boolean') {
+        json.closeTabOnRightClick = DEFAULT_SETTINGS.closeTabOnRightClick;
+      }
+      if (
+        json.tabCloseButtonDisplay !== 'always' &&
+        json.tabCloseButtonDisplay !== 'hover' &&
+        json.tabCloseButtonDisplay !== 'never'
+      ) {
+        // 旧设置中的 true 表示仅悬停时显示，false 表示始终显示。
+        json.tabCloseButtonDisplay =
+          json.hideTabCloseButtons === true
+            ? 'hover'
+            : DEFAULT_SETTINGS.tabCloseButtonDisplay;
+      }
+      delete json.hideTabCloseButtons;
+      if (typeof json.immersivePageIndicator !== 'boolean') {
+        json.immersivePageIndicator = DEFAULT_SETTINGS.immersivePageIndicator;
+      }
+
+      json.bookmarksBarDisplay = normalizeBookmarkBarDisplay(
+        json.bookmarksBarDisplay,
+        json.bookmarksBar,
+      );
+      json.bookmarksBar = json.bookmarksBarDisplay !== 'never';
+
       if (json.overlayBookmarks !== undefined) {
         delete json.overlayBookmarks;
       }
@@ -457,7 +981,10 @@ export class Settings extends EventEmitter {
       }
 
       // extensionShortcuts:扩展命令(chrome.commands)改键覆盖。同 shortcuts,兜底为空对象。
-      if (!json.extensionShortcuts || typeof json.extensionShortcuts !== 'object') {
+      if (
+        !json.extensionShortcuts ||
+        typeof json.extensionShortcuts !== 'object'
+      ) {
         json.extensionShortcuts = {};
       }
 
@@ -465,25 +992,77 @@ export class Settings extends EventEmitter {
       if (typeof json.mouseGesturesEnabled !== 'boolean') {
         json.mouseGesturesEnabled = DEFAULT_SETTINGS.mouseGesturesEnabled;
       }
-      if (typeof json.mouseGestureColor !== 'string' || !json.mouseGestureColor) {
+      if (
+        typeof json.mouseGestureColor !== 'string' ||
+        !json.mouseGestureColor
+      ) {
         json.mouseGestureColor = DEFAULT_SETTINGS.mouseGestureColor;
       }
       if (!json.mouseGestures || typeof json.mouseGestures !== 'object') {
         json.mouseGestures = {};
       }
-
+      if (typeof json.mouseLeftGesturesEnabled !== 'boolean') {
+        json.mouseLeftGesturesEnabled =
+          DEFAULT_SETTINGS.mouseLeftGesturesEnabled;
+      }
+      if (
+        typeof json.mouseLeftGestureThreshold !== 'number' ||
+        !Number.isFinite(json.mouseLeftGestureThreshold)
+      ) {
+        json.mouseLeftGestureThreshold =
+          DEFAULT_SETTINGS.mouseLeftGestureThreshold;
+      }
+      json.mouseLeftGestureThreshold = Math.max(
+        8,
+        Math.min(200, Math.round(json.mouseLeftGestureThreshold)),
+      );
+      if (typeof json.mouseLeftGestureOpenInBackground !== 'boolean') {
+        json.mouseLeftGestureOpenInBackground =
+          DEFAULT_SETTINGS.mouseLeftGestureOpenInBackground;
+      }
+      if (
+        !json.mouseLeftGestures ||
+        typeof json.mouseLeftGestures !== 'object'
+      ) {
+        json.mouseLeftGestures = { ...DEFAULT_SETTINGS.mouseLeftGestures };
+      }
+      if (!json.mouseSideButtons || typeof json.mouseSideButtons !== 'object') {
+        json.mouseSideButtons = { ...DEFAULT_SETTINGS.mouseSideButtons };
+      }
       // 划词翻译:开关/目标语言。老配置缺失或类型错误时回默认。
+      if (typeof json.selectionPanelEnabled !== 'boolean') {
+        json.selectionPanelEnabled = DEFAULT_SETTINGS.selectionPanelEnabled;
+      }
+      if (typeof json.selectionWordCountEnabled !== 'boolean') {
+        json.selectionWordCountEnabled =
+          DEFAULT_SETTINGS.selectionWordCountEnabled;
+      }
+      if (typeof json.openPopupsInNewTab !== 'boolean') {
+        json.openPopupsInNewTab = DEFAULT_SETTINGS.openPopupsInNewTab;
+      }
       if (typeof json.selectionTranslateEnabled !== 'boolean') {
-        json.selectionTranslateEnabled = DEFAULT_SETTINGS.selectionTranslateEnabled;
+        json.selectionTranslateEnabled =
+          DEFAULT_SETTINGS.selectionTranslateEnabled;
       }
-      if (typeof json.selectionTranslateTarget !== 'string' || !json.selectionTranslateTarget) {
-        json.selectionTranslateTarget = DEFAULT_SETTINGS.selectionTranslateTarget;
+      if (
+        typeof json.selectionTranslateTarget !== 'string' ||
+        !json.selectionTranslateTarget
+      ) {
+        json.selectionTranslateTarget =
+          DEFAULT_SETTINGS.selectionTranslateTarget;
       }
+      json.translateEngine = normalizeTranslateEngine(json.translateEngine);
+      json.customLlmConfig = normalizeCustomLlmConfig(json.customLlmConfig);
 
-      // 双引擎搜索:总开关 + 副引擎下标。老配置缺失或类型错误时回默认。
-      if (typeof json.dualEngineSearch !== 'boolean') {
-        json.dualEngineSearch = DEFAULT_SETTINGS.dualEngineSearch;
-      }
+      // 效率搜索:旧双引擎开关统一迁移为默认双列模式;多标签引擎独立保存。
+      json.efficiencySearchMode = normalizeEfficiencySearchMode(
+        json.efficiencySearchMode,
+      );
+      delete json.dualEngineSearch;
+      json.efficiencySearchEngineKeywords = normalizeMultiSearchEngineKeywords(
+        json.efficiencySearchEngineKeywords,
+        json.searchEngines || DEFAULT_SEARCH_ENGINES,
+      );
       if (typeof json.secondarySearchEngine !== 'number') {
         json.secondarySearchEngine = DEFAULT_SETTINGS.secondarySearchEngine;
       }
@@ -505,6 +1084,19 @@ export class Settings extends EventEmitter {
         json.flashSupport = DEFAULT_SETTINGS.flashSupport;
       }
 
+      // Some packaged builds persisted the renderer fallback ('') because the
+      // shared defaults cannot access Electron there. Repair only missing/empty
+      // values; a non-empty user-selected directory must always win.
+      if (
+        typeof json.downloadsPath !== 'string' ||
+        !json.downloadsPath.trim()
+      ) {
+        json.downloadsPath = getSystemDownloadsPath();
+      }
+      json.m3u8DownloadThreads = normalizeM3u8DownloadThreads(
+        json.m3u8DownloadThreads,
+      );
+
       // 外部下载器:开关/类型/路径/参数/自动接管。老配置缺失或类型错误时回默认。
       if (typeof json.downloaderEnabled !== 'boolean') {
         json.downloaderEnabled = DEFAULT_SETTINGS.downloaderEnabled;
@@ -521,6 +1113,63 @@ export class Settings extends EventEmitter {
       if (typeof json.downloaderArgs !== 'string') {
         json.downloaderArgs = '';
       }
+
+      // 壳层 CSS 只接受字符串，防止手工损坏的配置在 renderer 中生成异常节点。
+      json.customChromeCss = normalizeCustomChromeCss(json.customChromeCss);
+      // 可视化调控面板:共享 schema 校验后只留合法键值。
+      json.chromeStylePanel = normalizeChromeStylePanel(json.chromeStylePanel);
+
+      // Never trust the cached snapshot: rebuild it from the installed manifest.
+      try {
+        const activeThemeId = json.activeChromeTheme?.id;
+        if (/^[a-p]{32}$/.test(activeThemeId || '')) {
+          const themeManifest = JSON.parse(
+            await promises.readFile(
+              resolve(getPath('extensions'), activeThemeId, 'manifest.json'),
+              'utf8',
+            ),
+          );
+          json.activeChromeTheme = normalizeChromeTheme(
+            activeThemeId,
+            themeManifest?.name ||
+              json.activeChromeTheme?.name ||
+              activeThemeId,
+            themeManifest?.theme,
+          );
+        } else {
+          json.activeChromeTheme = null;
+        }
+      } catch {
+        json.activeChromeTheme = null;
+      }
+
+      // 手动清理:设置弹窗与工具栏入口共用这 4 个勾选项。
+      const cbd = json.clearBrowsingData;
+      json.clearBrowsingData = {
+        cache: typeof cbd?.cache === 'boolean' ? cbd.cache : true,
+        cookies: typeof cbd?.cookies === 'boolean' ? cbd.cookies : false,
+        history: typeof cbd?.history === 'boolean' ? cbd.history : true,
+        searchHistory:
+          typeof cbd?.searchHistory === 'boolean' ? cbd.searchHistory : false,
+      };
+
+      // 退出时自动清理:4 个子项,老配置缺失/类型错误/非对象时按默认补全。
+      const coe = json.clearOnExit;
+      json.clearOnExit = {
+        cache: typeof coe?.cache === 'boolean' ? coe.cache : false,
+        cookies: typeof coe?.cookies === 'boolean' ? coe.cookies : false,
+        history: typeof coe?.history === 'boolean' ? coe.history : false,
+        searchHistory:
+          typeof coe?.searchHistory === 'boolean' ? coe.searchHistory : false,
+      };
+
+      // 会话 Cookie 持久化:老配置缺失/类型错误时回默认(关)。
+      if (typeof json.persistSessionCookies !== 'boolean') {
+        json.persistSessionCookies = DEFAULT_SETTINGS.persistSessionCookies;
+      }
+      json.persistSessionCookieHosts = normalizePersistSessionCookieHosts(
+        json.persistSessionCookieHosts,
+      );
 
       this.object = {
         ...this.object,
@@ -548,10 +1197,22 @@ export class Settings extends EventEmitter {
 
   private async save() {
     try {
-      await promises.writeFile(
-        getPath('settings.json'),
-        JSON.stringify({...this.object, version: DEFAULT_SETTINGS.version}),
-      );
+      const content = JSON.stringify({
+        ...this.object,
+        version: DEFAULT_SETTINGS.version,
+      });
+      await promises.writeFile(getPath('settings.json'), content);
+
+      const mirrorPath = getSettingsMirrorPath();
+      if (mirrorPath) {
+        try {
+          await promises.mkdir(dirname(mirrorPath), { recursive: true });
+          await promises.writeFile(mirrorPath, content);
+        } catch (error) {
+          // 主数据目录已经成功保存；镜像会在下次保存和下次启动时重试修复。
+          console.error('[settings] 保存 settings.json 镜像失败:', error);
+        }
+      }
 
       if (this.queue.length >= 3) {
         for (let i = this.queue.length - 1; i > 0; i--) {
@@ -593,7 +1254,118 @@ export class Settings extends EventEmitter {
   }
 
   public updateSettings(settings: Partial<ISettings>) {
-    this.object = {...this.object, ...settings};
+    const nextSettings = { ...settings };
+    delete (nextSettings as any).dualEngineSearch;
+    if (
+      Object.prototype.hasOwnProperty.call(nextSettings, 'bookmarksBarDisplay')
+    ) {
+      nextSettings.bookmarksBarDisplay = normalizeBookmarkBarDisplay(
+        nextSettings.bookmarksBarDisplay,
+        nextSettings.bookmarksBar,
+      );
+      nextSettings.bookmarksBar = nextSettings.bookmarksBarDisplay !== 'never';
+    } else if (
+      Object.prototype.hasOwnProperty.call(nextSettings, 'bookmarksBar')
+    ) {
+      nextSettings.bookmarksBarDisplay = nextSettings.bookmarksBar
+        ? 'always'
+        : 'never';
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(nextSettings, 'efficiencySearchMode')
+    ) {
+      nextSettings.efficiencySearchMode = normalizeEfficiencySearchMode(
+        nextSettings.efficiencySearchMode,
+      );
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(
+        nextSettings,
+        'efficiencySearchEngineKeywords',
+      ) ||
+      Object.prototype.hasOwnProperty.call(nextSettings, 'searchEngines')
+    ) {
+      nextSettings.efficiencySearchEngineKeywords =
+        normalizeMultiSearchEngineKeywords(
+          nextSettings.efficiencySearchEngineKeywords ||
+            this.object.efficiencySearchEngineKeywords,
+          nextSettings.searchEngines || this.object.searchEngines,
+        );
+    }
+    if (Object.prototype.hasOwnProperty.call(nextSettings, 'customChromeCss')) {
+      nextSettings.customChromeCss = normalizeCustomChromeCss(
+        nextSettings.customChromeCss,
+      );
+    }
+    if (Object.prototype.hasOwnProperty.call(nextSettings, 'chromeStylePanel')) {
+      nextSettings.chromeStylePanel = normalizeChromeStylePanel(
+        nextSettings.chromeStylePanel,
+      );
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(nextSettings, 'tabOverflowBehavior')
+    ) {
+      nextSettings.tabOverflowBehavior = normalizeTabOverflowBehavior(
+        nextSettings.tabOverflowBehavior,
+      );
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(nextSettings, 'tabWheelBehavior')
+    ) {
+      nextSettings.tabWheelBehavior = normalizeTabWheelBehavior(
+        nextSettings.tabWheelBehavior,
+      );
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(
+        nextSettings,
+        'tabCloseSelectionBehavior',
+      )
+    ) {
+      nextSettings.tabCloseSelectionBehavior =
+        normalizeTabCloseSelectionBehavior(
+          nextSettings.tabCloseSelectionBehavior,
+        );
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(
+        nextSettings,
+        'tabHoverActivationBehavior',
+      )
+    ) {
+      nextSettings.tabHoverActivationBehavior =
+        normalizeTabHoverActivationBehavior(
+          nextSettings.tabHoverActivationBehavior,
+        );
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(
+        nextSettings,
+        'tabHoverActivationDelay',
+      )
+    ) {
+      nextSettings.tabHoverActivationDelay = normalizeTabHoverActivationDelay(
+        nextSettings.tabHoverActivationDelay,
+      );
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(nextSettings, 'm3u8DownloadThreads')
+    ) {
+      nextSettings.m3u8DownloadThreads = normalizeM3u8DownloadThreads(
+        nextSettings.m3u8DownloadThreads,
+      );
+    }
+    if (Object.prototype.hasOwnProperty.call(nextSettings, 'translateEngine')) {
+      nextSettings.translateEngine = normalizeTranslateEngine(
+        nextSettings.translateEngine,
+      );
+    }
+    if (Object.prototype.hasOwnProperty.call(nextSettings, 'customLlmConfig')) {
+      nextSettings.customLlmConfig = normalizeCustomLlmConfig(
+        nextSettings.customLlmConfig,
+      );
+    }
+    this.object = { ...this.object, ...nextSettings };
 
     this.addToQueue();
   }

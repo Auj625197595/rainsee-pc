@@ -1,14 +1,25 @@
 // Windows Hello 身份验证(PIN / 指纹 / 人脸)。
 //
-// 实现:用 PowerShell 调用 WinRT 的 UserConsentVerifier.RequestVerificationAsync,
-// 与 Edge / Chrome 导出密码前的「Windows 安全中心」验证流程一致。
-// 走 -EncodedCommand(UTF-16LE base64)传中文提示,避免 GBK 控制台乱码。
+// 实现:调用预置的明文 win-hello.ps1(`powershell.exe -File`),脚本再走 WinRT
+// UserConsentVerifier.RequestVerificationAsync,与 Edge / Chrome 导出密码前的
+// 「Windows 安全中心」验证流程一致。
+//
+// 为什么用 -File 而不是 -EncodedCommand:后者(base64 编码的 PowerShell payload)
+// 是 360 QVM 等启发式引擎的高权重恶意软件特征,会让整个安装包被判为
+// HEUR/QVM*.Malware.Gen。改用磁盘上的固定明文脚本 + 参数化 reason,形态从
+// 「编码无文件执行」变为「带可审计脚本文件执行」,显著降低误报率。
+//
+// reason 经环境变量 RAINSEE_HELLO_REASON 传入(走 Unicode 环境块,避免命令行
+// argv 在 PowerShell 5.1 下的中文编码坑)。
 //
 // 返回码(UserConsentVerificationResult):
 //   0 Verified            1 DeviceNotPresent    2 NotConfiguredForUser
 //   3 DisabledByPolicy    4 RetriesExhausted    5 Canceled
 
+import { app } from 'electron';
 import { spawn } from 'child_process';
+import { join } from 'path';
+import { existsSync } from 'fs';
 
 export interface IHelloResult {
   ok: boolean;
@@ -25,30 +36,13 @@ const RESULT_MESSAGES: { [k: number]: string } = {
   5: '已取消验证',
 };
 
-// PowerShell 脚本:加载 WinRT,异步等待 RequestVerificationAsync,输出结果码。
-// 占位符 __REASON__ 在运行前替换(reason 单引号转义)。
-const SCRIPT = `
-$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
-try {
-  Add-Type -AssemblyName System.Runtime.WindowsRuntime | Out-Null
-  $asmTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
-    $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation\`1'
-  })[0]
-  function AwaitOp($op, $t) {
-    $task = $asmTask.MakeGenericMethod($t).Invoke($null, @($op))
-    $task.Wait(-1) | Out-Null
-    $task.Result
-  }
-  [Windows.Security.Credentials.UI.UserConsentVerifier,Windows.Security.Credentials.UI,ContentType=WindowsRuntime] | Out-Null
-  $op = [Windows.Security.Credentials.UI.UserConsentVerifier]::RequestVerificationAsync('__REASON__')
-  $r = AwaitOp $op ([Windows.Security.Credentials.UI.UserConsentVerificationResult])
-  Write-Output $r.Value__
-} catch {
-  Write-Output ('ERR:' + ($_.Exception.Message -replace "[\\r\\n]+", ' '))
+// 打包后脚本在 resources/win-hello.ps1(extraResources 解包到 asar 外,供外部进程读取);
+// 开发时在项目 static/ 下。
+function resolveScriptPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'win-hello.ps1')
+    : join(app.getAppPath(), 'static', 'win-hello.ps1');
 }
-`;
 
 export function verifyWindowsHello(reason: string): Promise<IHelloResult> {
   // 非 Windows 平台直接放行(开发环境 / 跨平台兼容)
@@ -56,16 +50,23 @@ export function verifyWindowsHello(reason: string): Promise<IHelloResult> {
     return Promise.resolve({ ok: true, result: 0, msg: '非 Windows 平台,跳过验证' });
   }
 
-  // 单引号转义(PowerShell 单引号字符串里 ' → ''),防注入
-  const safeReason = (reason || '').replace(/'/g, "''");
-  const script = SCRIPT.replace(/__REASON__/g, safeReason);
-  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  const scriptPath = resolveScriptPath();
+  if (!existsSync(scriptPath)) {
+    return Promise.resolve({
+      ok: false,
+      result: -1,
+      msg: 'Windows Hello 脚本缺失,请重装应用',
+    });
+  }
 
   return new Promise((resolve) => {
     const child = spawn(
       'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
-      { windowsHide: true },
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath],
+      {
+        windowsHide: true,
+        env: { ...process.env, RAINSEE_HELLO_REASON: reason || '' },
+      },
     );
 
     let stdout = '';

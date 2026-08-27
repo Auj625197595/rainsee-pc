@@ -11,8 +11,6 @@
 // 且 electron-main bundle 保留了真实 __dirname（base 配置 node.__dirname=false），
 // 所以这里直接拼 __dirname/preload.js：开发态指向 build/preload.js，
 // 打包态指向 app.asar/build/preload.js，正是 setPreloads 需要的真实文件路径。
-"use strict";
+import { join } from 'path';
 
-const { join } = require('path');
-
-exports.PRELOAD_PATH = join(__dirname, 'preload.js');
+export const PRELOAD_PATH = join(__dirname, 'preload.js');

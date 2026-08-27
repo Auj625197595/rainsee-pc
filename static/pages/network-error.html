@@ -155,7 +155,8 @@
       <div class="actions">
         <button class="btn btn-primary" id="btn-reload">重新加载</button>
         <button class="btn btn-ghost" id="btn-ignore-certificate-error" hidden>忽略错误</button>
-        <button class="btn btn-ghost" id="btn-adblock-whitelist" hidden>添加到广告规律白名单</button>
+        <button class="btn btn-ghost" id="btn-adblock-whitelist" hidden>添加到广告白名单</button>
+        <button class="btn btn-ghost" id="btn-copy-diagnostics" hidden>复制诊断信息</button>
         <button class="btn btn-ghost" id="btn-network">检查网络</button>
         <button class="btn btn-ghost" id="btn-home">返回主页</button>
       </div>
@@ -210,6 +211,7 @@
         }
 
         var params = new URLSearchParams(location.search);
+        var isRendererCrash = params.get('kind') === 'renderer-crash';
 
         // 错误码:优先取 ?code=,否则从路径末段兜底
         var code = params.get('code');
@@ -230,14 +232,19 @@
           host = new URL(failedUrl).host || failedUrl;
         } catch (e) {}
 
-        var info =
-          ERRORS[code] || {
+        var info = isRendererCrash
+          ? {
+              n: 'RENDERER_PROCESS_GONE',
+              t: '此页面意外崩溃了',
+              d: '浏览器其他部分仍可继续使用。你可以重新加载；如果问题反复出现，请复制诊断信息并联系开发者。'
+            }
+          : ERRORS[code] || {
             n: chromeDesc || '网络错误',
             t: '无法显示此页面',
             d: '加载该页面时出现了问题,请稍后重试。'
           };
 
-        document.title = host || info.t;
+        document.title = isRendererCrash ? info.t : (host || info.t);
         setText('title', info.t);
 
         // 说明:把 {url} 替换为带链接的主机名
@@ -256,15 +263,57 @@
           }
         });
 
-        setText('code', info.n + (code ? '  ·  ' + code : ''));
+        setText(
+          'code',
+          isRendererCrash
+            ? info.n + '  ·  ' + (params.get('reason') || 'unknown')
+            : info.n + (code ? '  ·  ' + code : '')
+        );
 
         // 按钮(errorReload/GoHome/CheckNetwork 由 view-preload 注入)
+        if (isRendererCrash) {
+          var networkBtn = byId('btn-network');
+          if (networkBtn) networkBtn.hidden = true;
+
+          var copyBtn = byId('btn-copy-diagnostics');
+          if (copyBtn && typeof window.errorCopyDiagnostics === 'function') {
+            copyBtn.hidden = false;
+            copyBtn.addEventListener('click', function () {
+              var diagnostic = [
+                '===== 雨见浏览器 页面崩溃诊断 =====',
+                '时间: ' + (params.get('time') || new Date().toISOString()),
+                '页面: ' + (failedUrl || '(未知)'),
+                '原因: ' + (params.get('reason') || 'unknown'),
+                '退出码: ' + (params.get('exitCode') || '(未知)'),
+                '应用版本: ' + (params.get('appVersion') || '(未知)'),
+                'Electron: ' + (params.get('electronVersion') || '(未知)'),
+                'Chrome: ' + (params.get('chromeVersion') || '(未知)'),
+                '错误: RENDERER_PROCESS_GONE'
+              ].join('\n');
+              try {
+                window.errorCopyDiagnostics(diagnostic);
+                copyBtn.textContent = '已复制';
+                setTimeout(function () {
+                  copyBtn.textContent = '复制诊断信息';
+                }, 1600);
+              } catch (e) {}
+            });
+          }
+        }
+
         var ignoreCertificateBtn = byId('btn-ignore-certificate-error');
         var numericCode = Number(code);
+        var isHttpsProtocolError = false;
+        try {
+          var failedUrlObject = new URL(failedUrl);
+          isHttpsProtocolError =
+            numericCode === -107 &&
+            failedUrlObject.protocol === 'https:';
+        } catch (e) {}
         if (
           ignoreCertificateBtn &&
-          numericCode <= -200 &&
-          numericCode >= -299 &&
+          ((numericCode <= -200 && numericCode >= -299) ||
+            isHttpsProtocolError) &&
           typeof window.errorIgnoreCertificateError === 'function'
         ) {
           ignoreCertificateBtn.hidden = false;
@@ -302,8 +351,8 @@
           });
         }
         byId('btn-reload').addEventListener('click', function () {
-          if (failedUrl) location.replace(failedUrl);
-          else if (window.errorReload) window.errorReload();
+          if (window.errorReload) window.errorReload();
+          else if (failedUrl) location.replace(failedUrl);
           else location.reload();
         });
         byId('btn-network').addEventListener('click', function () {

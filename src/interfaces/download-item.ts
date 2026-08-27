@@ -2,11 +2,14 @@ export interface IDownloadItem {
   fileName?: string;
   receivedBytes?: number;
   totalBytes?: number;
+  speedBytesPerSecond?: number;
   savePath?: string;
   url?: string;
   id?: string;
   completed?: boolean;
   paused?: boolean;
+  interrupted?: boolean;
+  retrying?: boolean;
   canceled?: boolean;
   menuIsOpen?: boolean;
   openWhenDone?: boolean;

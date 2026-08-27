@@ -12,11 +12,11 @@ import { RUNTIME_CONTEXT_TYPE } from '../vendor/electron-chrome-extensions/runti
 const MARKER_PREFIX = '/*__crx_storage_sync_shim';
 
 // Directory-level success record. patchExtensionStorage writes the current
-// SHIM_VERSION here only when EVERY entry file was patched successfully; on any
-// failure it removes the marker so the next startup scan retries. The startup
-// scan reads this single file (see isExtensionStoragePatched) instead of
-// re-reading every entry file each boot. Not JS / not in the manifest, so it is
-// never itself an entry and never gets patched.
+// patch-state version here only when EVERY entry file was patched successfully;
+// on any failure it removes the marker so the next startup scan retries. The
+// startup scan reads this single file (see isExtensionStoragePatched) instead
+// of re-reading every entry file each boot. Not JS / not in the manifest, so it
+// is never itself an entry and never gets patched.
 const PATCH_STATE_FILE = '.crx_storage_patch';
 
 // In development the browser's internal UI is served from this origin. Chrome
@@ -79,15 +79,18 @@ async function patchInternalContentScriptExcludes(
 // Keep this layer deliberately narrow. The vendor preload/runtime bridge owns
 // extension API compatibility; this source-level shim only handles fixes that
 // must run before any bundled extension code can choose the wrong branch:
-//   1. remove only Electron's distinct native `browser` fork so extensions
+//   1. consume the popup's transient tab snapshot before hash routers start;
+//   2. remove only Electron's distinct native `browser` fork so extensions
 //      don't infer Firefox/WebExtension semantics from it, while preserving
 //      extension-created `browser = chrome` aliases;
-//   2. provide early chrome.permissions when the popup preload lands late;
-//   3. bridge declarative content-script message listeners when crx-preload is
+//   3. provide early chrome.permissions when the popup preload lands late;
+//   4. bridge declarative content-script message listeners when crx-preload is
 //      not present in that isolated world;
-//   4. route popup tabs.sendMessage through the current tab when the preload
+//   5. route popup tabs.sendMessage through the current tab when the preload
 //      bridge is missing;
-//   5. map unsupported chrome.storage.sync/managed onto local.
+//   6. map unsupported chrome.storage.sync/managed onto local.
+//   7. keep animation frames progressing when Electron leaves an active
+//      BrowserView in the hidden page lifecycle state.
 //
 // Electron's native chrome.storage exposes `sync`/`managed` as OBJECTS that
 // READ FINE (so `!!st.sync` is true) but whose METHODS (.get/.set/...) throw
@@ -96,8 +99,17 @@ async function patchInternalContentScriptExcludes(
 // already === local. Descriptors are configurable on Electron 42, so
 // defineProperty on the live storage object succeeds; a wholesale
 // chrome.storage replacement is the fallback if any redefine throws.
-const SHIM_BODY =
+const SHIM_BODY = (
   `(function(){` +
+  // The popup URL carries its real tab snapshot in `#crxbridge=...` because
+  // the fragment is available even when Electron skips both crx-preload and
+  // executeJavaScript. Treat it as a bootstrap transport, not as extension
+  // navigation state: synchronously cache a valid array, then remove only the
+  // bridge segment with replaceState before Vue/React/hash routers initialize.
+  // This MUST run before the idempotency return below: another injection path
+  // may already have installed the shim while this page still needs to consume
+  // its own popup URL. Invalid/user-owned fragments are left untouched.
+  `try{(function(){if(typeof window==='undefined'||typeof location==='undefined'||location.protocol!=='chrome-extension:')return;var h=location.hash||'';if(!h)return;var p=h.slice(1).split('&'),k='crxbridge=',i=-1,a=null;for(var n=0;n<p.length;n++){if(p[n].slice(0,k.length)!==k)continue;try{var v=JSON.parse(decodeURIComponent(p[n].slice(k.length)));if(Array.isArray(v)){i=n;a=v;break}}catch(_){}}if(i<0)return;var g=(typeof globalThis!=='undefined'&&globalThis)||window;try{g.__crxTabs=a}catch(_){}try{localStorage.setItem('__crxTabs_lsinjected',JSON.stringify(a));localStorage.setItem('__crxTabs_lsinjected_at',String(Date.now()))}catch(_){}p.splice(i,1);var r=p.length?'#'+p.join('&'):'';try{history.replaceState(history.state,'',location.pathname+location.search+r)}catch(_){}})()}catch(e){}` +
   // Top-level idempotency: this whole shim runs AT MOST ONCE per context
   // (globalThis). Two injection paths can land in the same context — the HTML
   // <head> inline script (injectHtmlHeadShim, runs first) AND the per-JS-file
@@ -111,6 +123,11 @@ const SHIM_BODY =
   // acceptable because extensions capture references rather than overwrite, so
   // the first install persists (verified: the uBlock url-filter fix holds).
   `try{var ZG=(typeof globalThis!=='undefined'&&globalThis)||(typeof self!=='undefined'&&self)||this;if(ZG&&ZG.__crxShimInstalled){return}try{Object.defineProperty(ZG,'__crxShimInstalled',{value:1,configurable:true,writable:true})}catch(_){ZG.__crxShimInstalled=1}}catch(e){}` +
+  // Chrome extension messages use JSON serialization, not the structured-clone
+  // algorithm used by window.postMessage/Electron IPC. Normalize at every shim
+  // message boundary so host objects (for example an HTMLInputElement) follow
+  // Chrome's `{}` coercion instead of aborting delivery with DataCloneError.
+  `var __crxAutoVerbose=false;try{__crxAutoVerbose=!!((typeof globalThis!=='undefined'&&globalThis.__CRX_VERBOSE)||(typeof process!=='undefined'&&process&&process.env&&process.env.CRX_VERBOSE==='1'))}catch(_){}var __crxWarn=function(){if(!__crxAutoVerbose)return;try{var c=typeof globalThis!=='undefined'&&globalThis.console;if(c&&typeof c['warn']==='function')c['warn'].apply(c,arguments)}catch(_){}},__crxJsonClone=function(v){var s=JSON.stringify(v);return s===undefined?undefined:JSON.parse(s)},__crxPostTop=function(w,m){var t=w;try{if(w&&w.top&&w.top!==w)t=w.top}catch(_){}try{t.postMessage(m,'*');return true}catch(_){return false}};` +
   // Neutralize Electron's native globalThis.browser fork. Chromium exposes
   // chrome, not a separate browser object; several extensions treat a distinct
   // browser as Firefox. Preserve extension-created browser===chrome aliases
@@ -153,11 +170,11 @@ const SHIM_BODY =
   `try{return CR(fn)}catch(_){return undefined}}}` +
   `CE.hasListener=function(fn){try{if(CLS.indexOf(fn)>=0)return true}catch(_){}try{return typeof CH==='function'?!!CH(fn):false}catch(_){return false}};` +
   `CW.addEventListener('message',function(ev){var d=ev&&ev.data;if(!d||!d.__crxCsFwd||!d.messageId)return;if(d.extensionId&&d.extensionId!==CEID)return;` +
-  `var mb='';try{mb=d.message&&typeof d.message==='object'?(d.message.id||d.message.method||d.message.type||Object.keys(d.message).slice(0,6).join(',')):String(d.message)}catch(_){mb=typeof d.message}` +
+  `var mb='';try{mb=d.message&&typeof d.message==='object'?(d.message.command||d.message.id||d.message.method||d.message.type||Object.keys(d.message).slice(0,6).join(',')):String(d.message)}catch(_){mb=typeof d.message}` +
   `try{console.warn('[crx-decl] recv id='+d.messageId+' ext='+CEID+' n='+CLS.length+' msg='+mb)}catch(_){}` +
-  `var done=false,async=false;var respond=function(v){if(done)return;done=true;var rb;try{rb=(v===undefined?'undefined':(v===null?'null':(typeof v==='object'?'object:'+Object.keys(v).slice(0,6).join(','):typeof v+':'+String(v).slice(0,80))))}catch(_){rb=typeof v}` +
+  `var done=false,async=false;var respond=function(v){if(done)return;done=true;var rv=v;try{if(v!==undefined)rv=__crxJsonClone(v)}catch(_){rv=undefined}var rb;try{rb=(rv===undefined?'undefined':(rv===null?'null':(typeof rv==='object'?'object:'+Object.keys(rv).slice(0,6).join(','):typeof rv+':'+String(rv).slice(0,80))))}catch(_){rb=typeof rv}` +
   `try{console.warn('[crx-decl] respond id='+d.messageId+' response='+rb)}catch(_){}` +
-  `try{CW.postMessage({__crxCsFwdResp:true,messageId:d.messageId,response:v},'*')}catch(_){}};` +
+  `try{__crxPostTop(CW,{__crxCsFwdResp:true,messageId:d.messageId,response:rv})}catch(_){}};` +
   `var arr;try{arr=CLS.slice()}catch(_){arr=[]}for(var i=0;i<arr.length;i++){var r;try{r=arr[i](d.message,d.sender||{id:CEID},respond)}catch(_){r=undefined}` +
   `if(r===true){async=true;continue}if(r&&typeof r.then==='function'){async=true;try{Promise.resolve(r).then(function(v){respond(v)},function(){respond(undefined)})}catch(_){respond(undefined)}}else if(r!==undefined&&r!==false&&!done){respond(r)}}` +
   `if(!async&&!done)respond(undefined);if(async){setTimeout(function(){respond(undefined)},30000)}},false);}}catch(_){}` +
@@ -179,9 +196,9 @@ const SHIM_BODY =
   `var OS;try{OS=OG.__crxDeclPortState||(OG.__crxDeclPortState={ports:{},pending:{},done:{},seq:0})}catch(_){OS={ports:{},pending:{},done:{},seq:0}}var OPorts=OS.ports||(OS.ports={}),OPending=OS.pending||(OS.pending={}),ODone=OS.done||(OS.done={}),OIID=++OS.seq;try{console.warn('[crx-transfer] port state inst='+OIID+' ports='+Object.keys(OPorts).length)}catch(_){}var OEmit=function(a,arg,p){var cp=[];try{cp=a.slice()}catch(_){}for(var i=0;i<cp.length;i++){try{cp[i](arg,p)}catch(_){}}};` +
   `var OFinish=function(m){try{var tr=m&&m.transfer;if(!tr||tr.type!=='response'||!tr.id)return;var k=String(tr.id),q=OPending[k];try{console.warn('[crx-transfer] port response id='+tr.id+' hasWait='+(!!q)+' dataKeys='+(tr.data&&typeof tr.data==='object'?Object.keys(tr.data).slice(0,8).join(','):'')+' imageLen='+(tr.data&&typeof tr.data.imageDataUrl==='string'?tr.data.imageDataUrl.length:''))}catch(_){}if(!q){ODone[k]=tr.data;setTimeout(function(){try{delete ODone[k]}catch(_){}},30000);return}delete OPending[k];clearTimeout(q.t);setTimeout(function(){try{console.warn('[crx-transfer] resolve wait id='+tr.id)}catch(_){}try{q.r(tr.data)}catch(_){}},0)}catch(_){}};` +
   `var OWrapSend=function(rt,label){try{if(!rt||typeof rt.sendMessage!=='function'||rt.sendMessage.__crxTransferWait)return;var OSM=rt.sendMessage.bind(rt);rt.sendMessage=function(){var a=[],i;for(i=0;i<arguments.length;i++)a.push(arguments[i]);var cb=typeof a[a.length-1]==='function'?a.pop():undefined,msg=a.length>1&&typeof a[0]==='string'?a[1]:a[0],tr=msg&&msg.transfer,wid=tr&&(tr.id||tr.transferId),wait=tr&&tr.transferResponse&&wid,p;try{if(tr)console.warn('[crx-transfer] sendMessage seen label='+label+' id='+(tr.id||'')+' transferId='+(tr.transferId||'')+' wait='+(!!wait)+' cb='+(!!cb)+' msgKeys='+(msg&&typeof msg==='object'?Object.keys(msg).slice(0,8).join(','):''))}catch(_){}try{p=OSM.apply(null,cb&&!wait?a.concat([cb]):a)}catch(e){try{console.warn('[crx-transfer] native send throw id='+(tr&&tr.id)+' err='+(e&&e.message))}catch(_){}if(cb)try{cb(undefined)}catch(_){};return cb?undefined:Promise.reject(e)}if(!wait){if(cb)return undefined;return p}var wp=new Promise(function(resolve){var k=String(wid),old=OPending[k];if(old){clearTimeout(old.t);delete OPending[k]}if(Object.prototype.hasOwnProperty.call(ODone,k)){var done=ODone[k];delete ODone[k];try{console.warn('[crx-transfer] use cached response id='+k)}catch(_){}resolve(done);return}OPending[k]={r:resolve,t:setTimeout(function(){try{console.warn('[crx-transfer] wait timeout id='+k)}catch(_){}delete OPending[k];resolve(undefined)},30000)}});var out=Promise.resolve(p).then(function(v){try{console.warn('[crx-transfer] native result id='+wid+' type='+(v===undefined?'undefined':v===null?'null':typeof v)+' keys='+(v&&typeof v==='object'?Object.keys(v).slice(0,8).join(','):''))}catch(_){}return v},function(e){try{console.warn('[crx-transfer] native reject id='+wid+' err='+(e&&e.message))}catch(_){}return undefined}).then(function(v){return v===undefined||v===null?wp:v});if(cb){out.then(function(v){try{console.warn('[crx-transfer] callback result id='+wid+' type='+(v===undefined?'undefined':v===null?'null':typeof v)+' keys='+(v&&typeof v==='object'?Object.keys(v).slice(0,8).join(','):''))}catch(_){}try{cb(v)}catch(_){}});return undefined}return out};try{Object.defineProperty(rt.sendMessage,'__crxTransferWait',{value:true,configurable:true})}catch(_){}try{console.warn('[crx-transfer] wrap sendMessage label='+label)}catch(_){}}catch(_){}};var OWrapAll=function(){try{OWrapSend(OC.runtime,'chrome');if(OG.browser&&OG.browser.runtime)OWrapSend(OG.browser.runtime,'browser')}catch(_){}};try{OWrapAll();var OWrapTries=0,OWrapTimer=setInterval(function(){OWrapAll();if(++OWrapTries>120)clearInterval(OWrapTimer)},250)}catch(_){}` +
-  `var OMakePort=function(id,name,sender){var old=OPorts[id];try{if(old&&old.cancel)old.cancel('replace')}catch(_){}var ml=[],dl=[],closed=false,cleanup=0,disconnectTimer=0,drop=function(reason){if(cleanup)return;try{console.warn('[crx-transfer] port schedule cleanup inst='+OIID+' port='+id+' name='+name+' reason='+reason+' listeners='+ml.length)}catch(_){}cleanup=setTimeout(function(){try{console.warn('[crx-transfer] port cleanup inst='+OIID+' port='+id+' name='+name)}catch(_){}if(OPorts[id]&&OPorts[id].port===p)delete OPorts[id]},30000)},sendDisconnect=function(reason,delay){if(disconnectTimer)return;try{console.warn('[crx-transfer] port schedule main disconnect inst='+OIID+' port='+id+' reason='+reason+' delay='+delay)}catch(_){}disconnectTimer=setTimeout(function(){try{console.warn('[crx-transfer] port main disconnect inst='+OIID+' port='+id+' reason='+reason)}catch(_){}try{OW.postMessage({__crxSwPortDisconnectBack:true,portId:id},'*')}catch(_){}},delay||0)},p={name:name||'',sender:sender||{id:OEID},onMessage:{addListener:function(f){if(typeof f==='function'&&ml.indexOf(f)<0)ml.push(f);try{console.warn('[crx-transfer] port addListener inst='+OIID+' port='+id+' name='+name+' n='+ml.length)}catch(_){}} ,removeListener:function(f){var i=ml.indexOf(f);if(i>=0)ml.splice(i,1)},hasListener:function(f){return ml.indexOf(f)>=0}},onDisconnect:{addListener:function(f){if(typeof f==='function'&&dl.indexOf(f)<0)dl.push(f)},removeListener:function(f){var i=dl.indexOf(f);if(i>=0)dl.splice(i,1)},hasListener:function(f){return dl.indexOf(f)>=0}},postMessage:function(m){try{console.warn('[crx-transfer] port postMessage back inst='+OIID+' port='+id+' name='+name+' closed='+closed+' msg='+(m&&m.id||m&&m.transfer&&m.transfer.type||typeof m))}catch(_){}try{OW.postMessage({__crxSwPortPostBack:true,portId:id,message:m},'*')}catch(_){}} ,disconnect:function(){if(closed)return;closed=true;try{console.warn('[crx-transfer] port disconnect local inst='+OIID+' port='+id+' name='+name)}catch(_){}OEmit(dl,p,p);sendDisconnect('local-disconnect',30000);drop('local-disconnect')}};OPorts[id]={port:p,msg:ml,dis:dl,cancel:function(reason){if(cleanup){try{clearTimeout(cleanup)}catch(_){}cleanup=0}if(disconnectTimer){try{clearTimeout(disconnectTimer)}catch(_){}disconnectTimer=0}try{console.warn('[crx-transfer] port cancel cleanup inst='+OIID+' port='+id+' reason='+reason)}catch(_){}},close:function(){if(closed)return;closed=true;if(disconnectTimer){try{clearTimeout(disconnectTimer)}catch(_){}disconnectTimer=0}try{console.warn('[crx-transfer] port remote close inst='+OIID+' port='+id+' name='+name)}catch(_){}OEmit(dl,p,p);drop('remote-close')}};return p};` +
+  `var OMakePort=function(id,name,sender){var old=OPorts[id];try{if(old&&old.cancel)old.cancel('replace')}catch(_){}var ml=[],dl=[],closed=false,cleanup=0,disconnectTimer=0,drop=function(reason){if(cleanup)return;try{if(__crxAutoVerbose)console.warn('[crx-transfer] port schedule cleanup inst='+OIID+' port='+id+' name='+name+' reason='+reason+' listeners='+ml.length)}catch(_){}cleanup=setTimeout(function(){try{if(__crxAutoVerbose)console.warn('[crx-transfer] port cleanup inst='+OIID+' port='+id+' name='+name)}catch(_){}if(OPorts[id]&&OPorts[id].port===p)delete OPorts[id]},30000)},sendDisconnect=function(reason,delay){if(disconnectTimer)return;try{if(__crxAutoVerbose)console.warn('[crx-transfer] port schedule main disconnect inst='+OIID+' port='+id+' reason='+reason+' delay='+delay)}catch(_){}disconnectTimer=setTimeout(function(){try{if(__crxAutoVerbose)console.warn('[crx-transfer] port main disconnect inst='+OIID+' port='+id+' reason='+reason)}catch(_){}try{__crxPostTop(OW,{__crxSwPortDisconnectBack:true,portId:id})}catch(_){}},delay||0)},p={name:name||'',sender:sender||{id:OEID},onMessage:{addListener:function(f){if(typeof f==='function'&&ml.indexOf(f)<0)ml.push(f);try{if(__crxAutoVerbose)console.warn('[crx-transfer] port addListener inst='+OIID+' port='+id+' name='+name+' n='+ml.length)}catch(_){}} ,removeListener:function(f){var i=ml.indexOf(f);if(i>=0)ml.splice(i,1)},hasListener:function(f){return ml.indexOf(f)>=0}},onDisconnect:{addListener:function(f){if(typeof f==='function'&&dl.indexOf(f)<0)dl.push(f)},removeListener:function(f){var i=dl.indexOf(f);if(i>=0)dl.splice(i,1)},hasListener:function(f){return dl.indexOf(f)>=0}},postMessage:function(m){try{if(__crxAutoVerbose)console.warn('[crx-transfer] port postMessage back inst='+OIID+' port='+id+' name='+name+' closed='+closed+' msg='+(m&&m.id||m&&m.transfer&&m.transfer.type||typeof m))}catch(_){}try{__crxPostTop(OW,{__crxSwPortPostBack:true,portId:id,message:m})}catch(_){}} ,disconnect:function(){if(closed)return;closed=true;try{if(__crxAutoVerbose)console.warn('[crx-transfer] port disconnect local inst='+OIID+' port='+id+' name='+name)}catch(_){}OEmit(dl,p,p);sendDisconnect('local-disconnect',30000);drop('local-disconnect')}};OPorts[id]={port:p,msg:ml,dis:dl,cancel:function(reason){if(cleanup){try{clearTimeout(cleanup)}catch(_){}cleanup=0}if(disconnectTimer){try{clearTimeout(disconnectTimer)}catch(_){}disconnectTimer=0}try{if(__crxAutoVerbose)console.warn('[crx-transfer] port cancel cleanup inst='+OIID+' port='+id+' reason='+reason)}catch(_){}},close:function(){if(closed)return;closed=true;if(disconnectTimer){try{clearTimeout(disconnectTimer)}catch(_){}disconnectTimer=0}try{if(__crxAutoVerbose)console.warn('[crx-transfer] port remote close inst='+OIID+' port='+id+' name='+name)}catch(_){}OEmit(dl,p,p);drop('remote-close')}};return p};` +
   `OW.addEventListener('message',function(ev){var d=ev&&ev.data;if(!d)return;if(d.__crxSwConnect&&d.portId){if(d.sender&&d.sender.id&&d.sender.id!==OEID)return;var p=OMakePort(d.portId,d.name,d.sender);try{console.warn('[crx-decl-port] recv connect ext='+OEID+' port='+d.portId+' name='+(d.name||'')+' n='+OLS.length)}catch(_){}var arr;try{arr=OLS.slice()}catch(_){arr=[]}for(var i=0;i<arr.length;i++){try{arr[i](p)}catch(_){}}return}` +
-  `if(d.__crxSwPortPost&&d.portId){var e=OPorts[d.portId];try{console.warn('[crx-transfer] port recv inst='+OIID+' port='+d.portId+' found='+(!!e)+' listeners='+(e&&e.msg&&e.msg.length)+' ports='+Object.keys(OPorts).join(',').slice(0,120)+' msg='+(d.message&&d.message.transfer&&d.message.transfer.type||d.message&&d.message.id||typeof d.message))}catch(_){}if(e){OEmit(e.msg,d.message,e.port);OFinish(d.message)}return}` +
+  `if(d.__crxSwPortPost&&d.portId){var e=OPorts[d.portId];try{if(__crxAutoVerbose)console.warn('[crx-transfer] port recv inst='+OIID+' port='+d.portId+' found='+(!!e)+' listeners='+(e&&e.msg&&e.msg.length)+' ports='+Object.keys(OPorts).join(',').slice(0,120)+' msg='+(d.message&&d.message.transfer&&d.message.transfer.type||d.message&&d.message.id||typeof d.message))}catch(_){}if(e){OEmit(e.msg,d.message,e.port);OFinish(d.message)}return}` +
   `if(d.__crxSwPortDisconnect&&d.portId){var x=OPorts[d.portId];if(x)x.close();return}},false);}}catch(_){}` +
   // Content->background send bridge for declarative content scripts (isolated
   // world). crx-preload runs only in service-worker / chrome-extension:// contexts,
@@ -207,11 +224,10 @@ const SHIM_BODY =
   `XG.__crxCsSendBridgeInstalled=1;var XEID=XC.runtime.id,XSeq=0,XPending={},XPorts={};` +
   `try{console.warn('[crx-decl-send] install ext='+XEID+' tabsTy='+(typeof XC.tabs)+' extTy='+(typeof XC.extension))}catch(_){}` +
   // sendMessage -> __crxCsSend -> view-preload -> crx-runtime-message -> SW onMessage
-  `var XSend=function(){var A=[],i;for(i=0;i<arguments.length;i++)A.push(arguments[i]);var msg,cb;` +
-  `if(typeof A[0]==='string'&&A.length>=2&&typeof A[1]!=='function'){msg=A[1];cb=typeof A[2]==='function'?A[2]:undefined}` +
-  `else{msg=A[0];cb=typeof A[1]==='function'?A[1]:undefined}` +
-  `var mid='cssend-'+(++XSeq);var p=new Promise(function(resolve){XPending[mid]=resolve;` +
-  `try{XW.postMessage({__crxCsSend:true,mid:mid,extId:XEID,message:msg},'*')}catch(e){try{console.warn('[crx-decl-send] post FAIL mid='+mid+' err='+(e&&e.message))}catch(_){}resolve(undefined)}` +
+  `var XSend=function(){var A=[],i;for(i=0;i<arguments.length;i++)A.push(arguments[i]);var cb=typeof A[A.length-1]==='function'?A.pop():undefined;var msg=(typeof A[0]==='string'&&A.length>=2)?A[1]:A[0],wire;` +
+  `try{wire=__crxJsonClone(msg)}catch(e){var bad=Promise.reject(e);if(cb){bad.catch(function(){try{cb(undefined)}catch(_){}});return undefined}return bad}` +
+  `var mid='cssend-'+(++XSeq);try{if(__crxAutoVerbose&&msg&&typeof msg==='object'&&msg.command)console.warn('[crx-autofill] cs.send mid='+mid+' command='+msg.command+' keys='+Object.keys(msg).slice(0,10).join(','))}catch(_){}var p=new Promise(function(resolve){XPending[mid]=resolve;` +
+  `try{if(!__crxPostTop(XW,{__crxCsSend:true,mid:mid,extId:XEID,message:wire}))throw new Error('postMessage failed')}catch(e){try{console.warn('[crx-decl-send] post FAIL mid='+mid+' err='+(e&&e.message))}catch(_){}try{delete XPending[mid]}catch(_){}resolve(undefined)}` +
   `try{setTimeout(function(){var fn=XPending[mid];if(fn){try{delete XPending[mid]}catch(_){}fn(undefined)}},30000)}catch(_){}});` +
   `if(cb){p.then(function(v){try{cb(v)}catch(_){}});return undefined}return p};` +
   `var XApply=function(rt,prop,fn){var ok=false;try{rt[prop]=fn;ok=(rt[prop]===fn)}catch(_){ok=false}if(!ok){try{Object.defineProperty(rt,prop,{value:fn,configurable:true,writable:true});ok=(rt[prop]===fn)}catch(_){}}try{console.warn('[crx-decl-send] apply '+prop+' ok='+ok+' finalTy='+(typeof rt[prop]))}catch(_){}return ok};` +
@@ -221,10 +237,10 @@ const SHIM_BODY =
   `var port={name:name||'',sender:{id:XEID},` +
   `onMessage:{addListener:function(f){if(typeof f==='function'&&mls.indexOf(f)<0)mls.push(f)},removeListener:function(f){var i=mls.indexOf(f);if(i>=0)mls.splice(i,1)},hasListener:function(f){return mls.indexOf(f)>=0}},` +
   `onDisconnect:{addListener:function(f){if(typeof f==='function'&&dls.indexOf(f)<0)dls.push(f)},removeListener:function(f){var i=dls.indexOf(f);if(i>=0)dls.splice(i,1)},hasListener:function(f){return dls.indexOf(f)>=0}},` +
-  `postMessage:function(m){if(closed)return;try{XW.postMessage({__crxCSPortOut:true,connId:connId,message:m},'*')}catch(_){}},` +
-  `disconnect:function(){if(closed)return;closed=true;try{XW.postMessage({__crxCSPortDisOut:true,connId:connId},'*')}catch(_){}emitD()}};` +
+  `postMessage:function(m){if(closed)return;var wire=__crxJsonClone(m);__crxPostTop(XW,{__crxCSPortOut:true,connId:connId,message:wire})},` +
+  `disconnect:function(){if(closed)return;closed=true;try{__crxPostTop(XW,{__crxCSPortDisOut:true,connId:connId})}catch(_){}emitD()}};` +
   `XPorts[connId]={fire:function(m){if(closed)return;var cp=mls.slice();for(var i=0;i<cp.length;i++){try{cp[i](m,port)}catch(_){}}},close:function(){if(closed)return;closed=true;emitD()}};return port};` +
-  `var XConnect=function(){var A=[],i;for(i=0;i<arguments.length;i++)A.push(arguments[i]);var info=null;for(i=0;i<A.length;i++){if(A[i]&&typeof A[i]==='object')info=A[i]}var name=(info&&info.name)||'';var connId='csconn-'+(++XSeq);var port=XMakePort(connId,name);try{console.warn('[crx-decl-send] connect ext='+XEID+' connId='+connId+' name='+name)}catch(_){}try{XW.postMessage({__crxCSConnect:true,connId:connId,extId:XEID,name:name},'*')}catch(e){try{console.warn('[crx-decl-send] connect post FAIL connId='+connId+' err='+(e&&e.message))}catch(_){}}return port};` +
+  `var XConnect=function(){var A=[],i;for(i=0;i<arguments.length;i++)A.push(arguments[i]);var info=null;for(i=0;i<A.length;i++){if(A[i]&&typeof A[i]==='object')info=A[i]}var name=(info&&info.name)||'';var connId='csconn-'+(++XSeq);var port=XMakePort(connId,name);try{console.warn('[crx-decl-send] connect ext='+XEID+' connId='+connId+' name='+name)}catch(_){}try{__crxPostTop(XW,{__crxCSConnect:true,connId:connId,extId:XEID,name:name})}catch(e){try{console.warn('[crx-decl-send] connect post FAIL connId='+connId+' err='+(e&&e.message))}catch(_){}}return port};` +
   `var XConnOk=XApply(XC.runtime,'connect',XConnect);` +
   // single inbound dispatcher: sendMessage responses + port messages/disconnect
   `XW.addEventListener('message',function(ev){var d=ev&&ev.data;if(!d)return;` +
@@ -249,35 +265,41 @@ const SHIM_BODY =
   `var TP=(typeof location!=='undefined'&&location&&location.protocol)||'';if(TC&&TC.runtime&&(TP==='chrome-extension:'||typeof document==='undefined')){` +
   `var TID=function(){try{return(TC&&TC.runtime&&TC.runtime.id)||null}catch(_){return null}};var TTabs=function(){try{if(!TC.tabs)TC.tabs={};return TC.tabs}catch(_){return null}};var TWin=function(){try{if(!TC.windows)TC.windows={};return TC.windows}catch(_){return null}};var TReplace=function(ns){try{var old=TC[ns],next=Object.create(old||null);try{Object.defineProperty(TC,ns,{value:next,configurable:true,enumerable:true,writable:true})}catch(_){try{TC[ns]=next}catch(__){}}return TC[ns]===next?next:null}catch(_){return null}};` +
   `var TList=function(){var HP=false;try{HP=typeof window!=='undefined'&&window.parent&&window.parent!==window}catch(_){HP=false}var read=function(w){var a=null;if(!w)return null;try{var h=(w.location&&w.location.hash)||'',m=h.match(/[?#&]crxbridge=([^&]+)/);a=m?JSON.parse(decodeURIComponent(m[1])):null}catch(_){a=null}if(Array.isArray(a))return a;try{a=w.__crxTabs}catch(_){}if(Array.isArray(a))return a;if(HP){try{var s=w.localStorage;a=s?JSON.parse(s.getItem('__crxTabs_lsinjected')||'[]'):null}catch(_){a=null}if(Array.isArray(a))return a}return null};var ws=[TG],w;try{if(typeof window!=='undefined'){if(window.parent&&window.parent!==window)ws.push(window.parent);if(window.top&&ws.indexOf(window.top)<0)ws.push(window.top)}}catch(_){}for(var i=0;i<ws.length;i++){w=read(ws[i]);if(Array.isArray(w))return w}return[]};` +
-  `var TQuery=function(q){q=q||{};var a=TList(),out=[],is=function(v){return typeof v!=='undefined'};var gm=function(pat,val){if(pat==='<all_urls>')return true;if(typeof pat!=='string')return false;var re='^'+pat.split('*').map(function(s){return s.replace(/[\\\\^$+?.()|[\\]{}]/g,'\\\\$&')}).join('.*')+'$';try{return new RegExp(re).test(val||'')}catch(_){return false}};var ma=function(iv,val){var ps=Array.isArray(iv)?iv:[iv];var v=typeof val==='string'?val.split('#')[0]:'';for(var i=0;i<ps.length;i++){if(gm(ps[i],v))return true}return false};for(var i=0;i<a.length;i++){var t=a[i];if(!t||typeof t.id!=='number')continue;if(is(q.active)&&!!q.active!==!!t.active)continue;if(is(q.pinned)&&!!q.pinned!==!!t.pinned)continue;if(is(q.highlighted)&&!!q.highlighted!==!!t.highlighted)continue;if(is(q.discarded)&&!!q.discarded!==!!t.discarded)continue;if(is(q.muted)&&!!q.muted!==!!(t.mutedInfo&&t.mutedInfo.muted))continue;if(is(q.status)&&q.status!==t.status)continue;if(is(q.windowId)&&q.windowId>=0&&q.windowId!==t.windowId)continue;if(is(q.url)&&!ma(q.url,t.url))continue;if(is(q.title)&&!ma(q.title,t.title))continue;var c={};for(var k in t)c[k]=t[k];c.index=out.length;out.push(c)}return out};` +
+  `var TQuery=function(q){q=q||{};var a=TList(),out=[],is=function(v){return typeof v!=='undefined'};var gm=function(pat,val){if(pat==='<all_urls>')return true;if(typeof pat!=='string')return false;var re='^'+pat.split('*').map(function(s){return s.replace(/[\\\\^$+?.()|[\\]{}]/g,'\\\\$&')}).join('.*')+'$';try{return new RegExp(re).test(val||'')}catch(_){return false}};var ma=function(iv,val){var ps=Array.isArray(iv)?iv:[iv];var v=typeof val==='string'?val.split('#')[0]:'';for(var i=0;i<ps.length;i++){if(gm(ps[i],v))return true}return false};for(var i=0;i<a.length;i++){var t=a[i];if(!t||typeof t.id!=='number')continue;var gid=typeof t.groupId==='number'?t.groupId:-1;if(is(q.active)&&!!q.active!==!!t.active)continue;if(is(q.pinned)&&!!q.pinned!==!!t.pinned)continue;if(is(q.highlighted)&&!!q.highlighted!==!!t.highlighted)continue;if(is(q.discarded)&&!!q.discarded!==!!t.discarded)continue;if(is(q.muted)&&!!q.muted!==!!(t.mutedInfo&&t.mutedInfo.muted))continue;if(is(q.status)&&q.status!==t.status)continue;if(is(q.windowId)&&q.windowId>=0&&q.windowId!==t.windowId)continue;if(is(q.groupId)&&q.groupId!==gid)continue;if(is(q.url)&&!ma(q.url,t.url))continue;if(is(q.title)&&!ma(q.title,t.title))continue;var c={};for(var k in t)c[k]=t[k];c.groupId=gid;c.index=out.length;out.push(c)}return out};` +
   `var TCurTab=function(){var a=TList();for(var i=0;i<a.length;i++){if(a[i]&&(a[i].active||a[i].selected||a[i].highlighted)&&typeof a[i].id==='number')return a[i]}for(var j=0;j<a.length;j++){if(a[j]&&typeof a[j].id==='number')return a[j]}return undefined};` +
   `var TCur=function(){var t=TCurTab();return t&&typeof t.id==='number'?t.id:undefined};` +
   `var TNorm=function(id){if(typeof id!=='number')return TCur();var a=TList();if(!a.length)return id;for(var i=0;i<a.length;i++){if(a[i]&&a[i].id===id)return id}var c=TCur();try{if(typeof c==='number')console.warn('[crx-shim] normalize stale popup tabId '+id+' -> '+c)}catch(_){}return typeof c==='number'?c:id};` +
-  `var TIPC=function(name){var args=[],i,id=TID();for(i=1;i<arguments.length;i++)args.push(arguments[i]);try{var e=TG.electron;if(e&&typeof e.invokeExtension==='function')return e.invokeExtension.apply(e,[id,'tabs.'+name,{}].concat(args));` +
-  `var ip=e&&e.ipcRenderer;if(ip&&typeof ip.invoke==='function')return ip.invoke.apply(ip,['crx-msg',id,'tabs.'+name].concat(args))}catch(_){}try{if(typeof TG.ipcInvoke==='function')return TG.ipcInvoke.apply(TG,['crx-msg',id,'tabs.'+name].concat(args))}catch(_){}return null};` +
-  `var TSend=function(tabId,msg,opt,relay){tabId=TNorm(tabId);var p=TIPC('sendMessage',tabId,msg,opt);if(p&&typeof p.then==='function')return p.catch(function(){return undefined});if(p!==null)return Promise.resolve(p);` +
-  `if(relay&&TC.runtime&&typeof TC.runtime.sendMessage==='function'){return new Promise(function(resolve){var dn=false,fin=function(v){if(dn)return;dn=true;resolve(v)};try{var rq={__crxTabsSendMessage:true,tabId:tabId,message:msg,options:opt};var rp=TC.runtime.sendMessage(rq,function(v){fin(v)});if(rp&&typeof rp.then==='function')rp.then(fin,function(){fin(undefined)})}catch(_){fin(undefined)}try{setTimeout(function(){fin(undefined)},5500)}catch(_){}})}` +
+  `var TIPC=function(name){var args=[],i,id=TID();for(i=1;i<arguments.length;i++)args.push(arguments[i]);try{var e=TG.electron;if(e&&typeof e.invokeExtensionRaw==='function')return e.invokeExtensionRaw.apply(e,[id,'tabs.'+name,{}].concat(args));if(e&&typeof e.invokeExtension==='function')return e.invokeExtension.apply(e,[id,'tabs.'+name,{}].concat(args));` +
+  `var ip=e&&e.ipcRenderer;if(ip&&typeof ip.invoke==='function')return ip.invoke.apply(ip,['crx-msg',id,'tabs.'+name].concat(args))}catch(_){}try{if(typeof TG.ipcInvoke==='function')return TG.ipcInvoke.apply(TG,['crx-msg',id,'tabs.'+name].concat(args))}catch(_){}try{if(TC.runtime&&typeof TC.runtime.sendMessage==='function'){var q=TC.runtime.sendMessage({__crxApiRequest:true,method:'tabs.'+name,args:args});return Promise.resolve(q).then(function(v){if(v&&v.__crxApiResponse){if(v.ok)return v.value;throw new Error(v.error||('Extension API failed: tabs.'+name))}return v})}}catch(_){}return null};` +
+  `var TSend=function(tabId,msg,opt,relay){tabId=TNorm(tabId);var wire;try{wire=__crxJsonClone(msg)}catch(e){return Promise.reject(e)}var p=TIPC('sendMessage',tabId,wire,opt);if(p&&typeof p.then==='function')return p.catch(function(){return undefined});if(p!==null)return Promise.resolve(p);` +
+  `if(relay&&TC.runtime&&typeof TC.runtime.sendMessage==='function'){return new Promise(function(resolve){var dn=false,fin=function(v){if(dn)return;dn=true;resolve(v)};try{var rq={__crxTabsSendMessage:true,tabId:tabId,message:wire,options:opt};var rp=TC.runtime.sendMessage(rq,function(v){fin(v)});if(rp&&typeof rp.then==='function')rp.then(fin,function(){fin(undefined)})}catch(_){fin(undefined)}try{setTimeout(function(){fin(undefined)},5500)}catch(_){}})}` +
   `var TT=TTabs(),TN=TT&&typeof TT.sendMessage==='function'?TT.sendMessage.bind(TT):null;` +
-  `if(TN){try{var r=TN(tabId,msg,opt);return r&&typeof r.then==='function'?r.catch(function(){return undefined}):Promise.resolve(r)}catch(_){}}return Promise.resolve(undefined)};` +
+  `if(TN){try{var r=TN(tabId,wire,opt);return r&&typeof r.then==='function'?r.catch(function(){return undefined}):Promise.resolve(r)}catch(_){}}return Promise.resolve(undefined)};` +
   `var TInstall=function(){var TT=TTabs();if(!TT)return false;` +
-  `if(!TT.getCurrent||!TT.getCurrent.__crxIpcRoute){TT.getCurrent=function(cb){var p=TIPC('getCurrent');if(!p||typeof p.then!=='function')p=Promise.resolve(TCurTab());else p=p.then(function(v){return v===undefined?TCurTab():v}).catch(function(){return TCurTab()});if(typeof cb==='function'){p.then(function(v){try{cb(v)}catch(_){}});return undefined}return p};try{Object.defineProperty(TT.getCurrent,'__crxIpcRoute',{value:true,configurable:true})}catch(_){}}` +
+  `if(!TT.getCurrent||!TT.getCurrent.__crxIpcRoute){TT.getCurrent=function(cb){var p=TIPC('getCurrent');if(!p||typeof p.then!=='function')p=Promise.resolve(p===null?undefined:p);p=Promise.resolve(p).catch(function(){return undefined});if(typeof cb==='function'){p.then(function(v){try{cb(v)}catch(_){}});return undefined}return p};try{Object.defineProperty(TT.getCurrent,'__crxIpcRoute',{value:true,configurable:true})}catch(_){}}` +
   `if(!TT.query||!TT.query.__crxIpcRoute){TT.query=function(q,cb){q=q||{};var live=typeof q==='object'&&(typeof q.url!=='undefined'||typeof q.title!=='undefined');var fb=function(){return live?[]:TQuery(q)};var p=TIPC('query',q);if(!p||typeof p.then!=='function')p=Promise.resolve(fb());else p=p.then(function(v){return Array.isArray(v)&&v.length?v:fb()}).catch(function(){return fb()});if(typeof cb==='function'){p.then(function(v){try{cb(v)}catch(_){}});return undefined}return p};try{Object.defineProperty(TT.query,'__crxIpcRoute',{value:true,configurable:true})}catch(_){}}` +
   `if(!TT.connect||!TT.connect.__crxIpcRoute){TT.connect=function(a,b){var has=typeof a==='number',tabId=TNorm(has?a:undefined),ci=has?b:a,nm=(ci&&ci.name)||(typeof ci==='string'?ci:''),fid=ci&&typeof ci.frameId==='number'?ci.frameId:undefined,ls=[],ds=[],buf=[],closed=false,bound=false,cid='shimtab-'+Date.now()+'-'+Math.random(),hasParent=false;try{hasParent=typeof window!=='undefined'&&window.parent&&window.parent!==window}catch(_){hasParent=false}var emit=function(arr,arg){var cp=arr.slice();for(var i=0;i<cp.length;i++){try{cp[i](arg,port)}catch(_){}}},post=function(m){if(closed)return;if(hasParent){if(bound){try{window.parent.postMessage({__crxTabsPortOut:true,connId:cid,message:m},'*')}catch(_){}}else buf.push(m)}else if(!bound){buf.push(m)}},disc=function(){if(closed)return;closed=true;if(hasParent){try{window.parent.postMessage({__crxTabsPortDisOut:true,connId:cid},'*')}catch(_){}}emit(ds,port)},bindReal=function(send,close){bound=true;post=function(m){if(closed)return;try{send(m)}catch(_){}};disc=function(){if(closed)return;closed=true;try{close&&close()}catch(_){}emit(ds,port)};var q=buf.splice(0);for(var i=0;i<q.length;i++)post(q[i])},port={name:nm,onMessage:{addListener:function(f){if(typeof f==='function'&&ls.indexOf(f)<0)ls.push(f)},removeListener:function(f){var i=ls.indexOf(f);if(i>=0)ls.splice(i,1)},hasListener:function(f){return ls.indexOf(f)>=0}},onDisconnect:{addListener:function(f){if(typeof f==='function'&&ds.indexOf(f)<0)ds.push(f)},removeListener:function(f){var i=ds.indexOf(f);if(i>=0)ds.splice(i,1)},hasListener:function(f){return ds.indexOf(f)>=0}},postMessage:function(m){return post(m)},disconnect:function(){return disc()}};try{console.warn('[crx-shim] tabs.connect ext='+TID()+' tab='+(tabId===undefined?'current':tabId)+' name='+nm+' frameId='+(fid===undefined?'':fid)+' iframe='+hasParent)}catch(_){}if(hasParent){try{var on=function(ev){var d=ev&&ev.data;if(!d||d.connId!==cid)return;if(d.__crxTabsPortIn){bound=true;emit(ls,d.message)}else if(d.__crxTabsPortDisIn){try{window.removeEventListener('message',on,false)}catch(_){}disc()}};window.addEventListener('message',on,false);window.parent.postMessage({__crxTabsConnect:true,connId:cid,extId:TID(),tabId:tabId,info:{name:nm,frameId:fid}},'*');setTimeout(function(){bound=true;var q=buf.splice(0);for(var i=0;i<q.length;i++)post(q[i])},0);return port}catch(_){}}try{var ee=TG.electron;if(ee&&typeof ee.tabsPortConnect==='function'){ee.tabsPortConnect(TID(),tabId,{name:nm,frameId:fid},function(m){emit(ls,m)},function(){disc()},function(send,close){bindReal(send,close)});return port}}catch(_){}try{var p=TIPC('connect',tabId,{name:nm,frameId:fid});if(p&&typeof p.then==='function'){p.then(function(pid){if(!pid){disc();return}try{var e=TG.electron;if(e&&typeof e.portAccept==='function'){e.portAccept(pid,function(m){emit(ls,m)},function(){disc()},function(send,close){bindReal(send,close)});return}}catch(_){}bound=true},function(){disc()});return port}}catch(_){}setTimeout(function(){disc()},0);return port};try{Object.defineProperty(TT.connect,'__crxIpcRoute',{value:true,configurable:true})}catch(_){}}` +
   `if(!TT.sendMessage||!TT.sendMessage.__crxIpcRoute){TT.sendMessage=function(){var A=[],i;for(i=0;i<arguments.length;i++)A.push(arguments[i]);var cb=typeof A[A.length-1]==='function'?A.pop():undefined;var has=typeof A[0]==='number';var tabId=has?A[0]:TCur();var msg=has?A[1]:A[0];var opt=has?(typeof A[2]==='object'?A[2]:undefined):(typeof A[1]==='object'?A[1]:undefined);` +
   `var p=TSend(tabId,msg,opt,true);if(cb){p.then(function(v){try{cb(v)}catch(_){}}).catch(function(){try{cb(undefined)}catch(_){}});return undefined}return p};` +
   `try{Object.defineProperty(TT.sendMessage,'__crxIpcRoute',{value:true,configurable:true})}catch(_){}}` +
-  // tabs.create must use the real main-process handler first. In MV3 the shim is
-  // prepended to the service worker itself; a worker has no `window`, so the old
-  // window.open-only fallback silently returned a fake Tab without opening
-  // anything (Tampermonkey's popup Dashboard action exposed this). The IPC
-  // handler creates and registers a real host tab and returns its real id. Keep
-  // window.open only as a degraded extension-page fallback when no transport is
-  // available; it must never replace the worker path.
-  `if(!TT.create||!TT.create.__crxIpcRoute){TT.create=function(){var A=[],i;for(i=0;i<arguments.length;i++)A.push(arguments[i]);var cb=typeof A[A.length-1]==='function'?A.pop():undefined;var P=(typeof A[0]==='object'&&A[0])||{};var u=typeof P.url==='string'?P.url:'';var fake=function(){var opened=false;if(typeof window!=='undefined'&&window&&typeof window.open==='function'){try{window.open(u||'about:blank','_blank');opened=true}catch(_){}}if(!opened)throw new Error('Extension API transport unavailable: tabs.create');return{id:-1,index:-1,url:u||undefined,active:P.active!==false,pinned:!!P.pinned,windowId:-2}};var p=TIPC('create',P),v;if(p&&typeof p.then==='function')v=p.then(function(tab){return tab&&typeof tab==='object'&&typeof tab.id==='number'?tab:fake()},function(){return fake()});else{try{v=Promise.resolve(p!==null&&p!==undefined&&p&&typeof p==='object'&&typeof p.id==='number'?p:fake())}catch(e){v=Promise.reject(e)}}if(typeof cb==='function'){v.then(function(r){try{cb(r)}catch(_){}},function(err){var rt=TC.runtime,old;try{old=Object.getOwnPropertyDescriptor(rt,'lastError');Object.defineProperty(rt,'lastError',{value:{message:String(err&&err.message||err||'Unknown error')},configurable:true})}catch(_){}try{cb(undefined)}catch(_){}try{if(old)Object.defineProperty(rt,'lastError',old);else delete rt.lastError}catch(_){}});return undefined}return v};try{Object.defineProperty(TT.create,'__crxIpcRoute',{value:true,configurable:true})}catch(_){}}` +
+  // tabs.create must return the real main-process Tab. A degraded popup may
+  // have no crx-preload, but it can still reach the SW through the crxreq API
+  // proxy above. Never call window.open or return a fabricated id: both violate
+  // Chrome's tabs.create contract and steal focus from the popup.
+  `if(!TT.create||!TT.create.__crxIpcRoute){var TCreate=function(){var A=[],i;for(i=0;i<arguments.length;i++)A.push(arguments[i]);var cb=typeof A[A.length-1]==='function'?A.pop():undefined;var P=(typeof A[0]==='object'&&A[0])||{};var fail=function(){return Promise.reject(new Error('Extension API transport unavailable: tabs.create'))};var p=TIPC('create',P),v;if(p&&typeof p.then==='function')v=p.then(function(tab){if(tab&&typeof tab==='object'&&typeof tab.id==='number'&&tab.id>=0)return tab;throw new Error('tabs.create returned an invalid Tab')});else{v=p!==null&&p!==undefined?Promise.resolve(p):fail()}if(typeof cb==='function'){v.then(function(r){try{cb(r)}catch(_){}},function(err){var rt=TC.runtime,old;try{old=Object.getOwnPropertyDescriptor(rt,'lastError');Object.defineProperty(rt,'lastError',{value:{message:String(err&&err.message||err||'Unknown error')},configurable:true})}catch(_){}try{cb(undefined)}catch(_){}try{if(old)Object.defineProperty(rt,'lastError',old);else delete rt.lastError}catch(_){}});return undefined}return v},TCOK=false;try{Object.defineProperty(TT,'create',{value:TCreate,configurable:true,enumerable:true,writable:true});TCOK=TT.create===TCreate}catch(_){}if(!TCOK){try{TT.create=TCreate;TCOK=TT.create===TCreate}catch(_){}}if(TCOK){try{Object.defineProperty(TCreate,'__crxIpcRoute',{value:true,configurable:true})}catch(_){}}}` +
+  // chrome.tabs 的变更类方法(update/get/reload/remove/goBack/goForward/duplicate)
+  // 也必须强制走我们的 crx-msg 路由。crx-preload 在某些扩展页(典型:chrome_url_overrides
+  // 的 newtab 页)因 runtime.id 未就绪而提前 return,且页面侧无重投机制 → __crxPatched 永远
+  // 为假 → Chromium 原生 chrome.tabs.update 等留存。原生 tab 模型不认我们的标签(标签在
+  // vendor store,不在 Chromium 原生 tab 列表),故 newtab 上点图标走 chrome.tabs.update({url})
+  // 导航当前标签时,原生抛 "No such tab" → 点击无反应。这里把这些方法像 query/create 一样
+  // 强制覆写到 TIPC(经 ipcRenderer 'crx-msg' → vendor handler,后者认得我们的标签,且省略
+  // tabId 时回落到当前活动标签)。仅覆写 vendor 已实现的方法,避免转发到不存在的 handler。
+  `var TFwd=function(name){return function(){var A=[],i;for(i=0;i<arguments.length;i++)A.push(arguments[i]);var cb=typeof A[A.length-1]==='function'?A.pop():undefined;var p=TIPC.apply(null,[name].concat(A));if(!p||typeof p.then!=='function')p=p===null?Promise.reject(new Error('Extension API transport unavailable: tabs.'+name)):Promise.resolve(p);if(typeof cb!=='function')return p;p.then(function(v){try{cb(v)}catch(_){}},function(err){var rt=TC.runtime,old;try{old=Object.getOwnPropertyDescriptor(rt,'lastError');Object.defineProperty(rt,'lastError',{value:{message:String((err&&err.message)||err||'Unknown error')},configurable:true})}catch(_){}try{cb(undefined)}catch(_){}try{if(old)Object.defineProperty(rt,'lastError',old);else delete rt.lastError}catch(_){}});return undefined}};var TMOK=true;['update','get','reload','remove','goForward','goBack','duplicate'].forEach(function(m){if(TT[m]&&TT[m].__crxIpcRoute)return;var fn=TFwd(m),ok=false;try{Object.defineProperty(TT,m,{value:fn,configurable:true,enumerable:true,writable:true});ok=TT[m]===fn}catch(_){}if(!ok){try{TT[m]=fn;ok=TT[m]===fn}catch(_){}}if(ok){try{Object.defineProperty(fn,'__crxIpcRoute',{value:true,configurable:true})}catch(_){}}else TMOK=false});` +
   // windows.create 同上,但放进 TInstall 内联(绝不能写成独立 (function(){...})();
   // IIFE —— strip 正则 [\s\S]*?}\)()(); 非贪婪到第一个 })(); 会把它误当 SHIM 终止
   // 符,留下 SHIM 后半段成 orphan 破坏宿主 JS。用 TWin() helper 取 windows 对象即可。
-  `var WIN=TWin();if(WIN&&(!WIN.create||!WIN.create.__crxIpcRoute)){WIN.create=function(){var A=[],i;for(i=0;i<arguments.length;i++)A.push(arguments[i]);var cb=typeof A[A.length-1]==='function'?A.pop():undefined;var P=(typeof A[0]==='object'&&A[0])||{};var urls=Array.isArray(P.url)?P.url:(typeof P.url==='string'?[P.url]:[]);var e=TG.electron;var ip=e&&e.ipcRenderer;var ipc=function(){var id=TID();try{if(e&&typeof e.invokeExtension==='function')return e.invokeExtension(id,'windows.create',{},P);if(ip&&typeof ip.invoke==='function')return ip.invoke('crx-msg',id,'windows.create',P)}catch(_){}try{if(typeof TG.ipcInvoke==='function')return TG.ipcInvoke('crx-msg',id,'windows.create',P)}catch(_){}return null};var p=ipc();var fin=function(win){if(win&&typeof win==='object'&&(typeof win.id==='number'||typeof win.id==='string'))return win;if(urls.length){try{console.warn('[crx-popup] windows.create IPC fallback -> window.open n='+urls.length)}catch(_){}for(var j=0;j<urls.length;j++){try{window.open(urls[j],'_blank')}catch(_){}}}return win};var v=(p&&typeof p.then==='function')?p.then(fin).catch(function(){return fin(null)}):Promise.resolve(fin(p));if(typeof cb==='function'){v.then(function(r){try{cb(r)}catch(_){}});return undefined}return v};try{Object.defineProperty(WIN.create,'__crxIpcRoute',{value:true,configurable:true})}catch(_){}}var OK=!!(TT&&typeof TT.create==='function'&&TT.create.__crxIpcRoute);if(!OK&&!TInstall.__facade){TInstall.__facade=1;var NT=TReplace('tabs');TInstall.__facade=0;if(NT&&NT!==TT)return TInstall()}return OK};TInstall();if(typeof setTimeout==='function'){var TRI=0,TRUN=function(){TInstall();if(++TRI<=160)setTimeout(TRUN,25)};setTimeout(TRUN,0)}` +
+  `var WIN=TWin();if(WIN&&(!WIN.create||!WIN.create.__crxIpcRoute)){WIN.create=function(){var A=[],i;for(i=0;i<arguments.length;i++)A.push(arguments[i]);var cb=typeof A[A.length-1]==='function'?A.pop():undefined;var P=(typeof A[0]==='object'&&A[0])||{};var urls=Array.isArray(P.url)?P.url:(typeof P.url==='string'?[P.url]:[]);var e=TG.electron;var ip=e&&e.ipcRenderer;var ipc=function(){var id=TID();try{if(e&&typeof e.invokeExtension==='function')return e.invokeExtension(id,'windows.create',{},P);if(ip&&typeof ip.invoke==='function')return ip.invoke('crx-msg',id,'windows.create',P)}catch(_){}try{if(typeof TG.ipcInvoke==='function')return TG.ipcInvoke('crx-msg',id,'windows.create',P)}catch(_){}return null};var p=ipc();var fin=function(win){if(win&&typeof win==='object'&&(typeof win.id==='number'||typeof win.id==='string'))return win;if(urls.length){try{console.warn('[crx-popup] windows.create IPC fallback -> window.open n='+urls.length)}catch(_){}for(var j=0;j<urls.length;j++){try{window.open(urls[j],'_blank')}catch(_){}}}return win};var v=(p&&typeof p.then==='function')?p.then(fin).catch(function(){return fin(null)}):Promise.resolve(fin(p));if(typeof cb==='function'){v.then(function(r){try{cb(r)}catch(_){}});return undefined}return v};try{Object.defineProperty(WIN.create,'__crxIpcRoute',{value:true,configurable:true})}catch(_){}}var OK=!!(TT&&typeof TT.create==='function'&&TT.create.__crxIpcRoute&&TMOK);if(!OK&&!TInstall.__facade){TInstall.__facade=1;var NT=TReplace('tabs');TInstall.__facade=0;if(NT&&NT!==TT)return TInstall()}return OK};TInstall();if(typeof setTimeout==='function'){var TRI=0,TRUN=function(){TInstall();if(++TRI<=160)setTimeout(TRUN,25)};setTimeout(TRUN,0)}` +
   `if(typeof document==='undefined'&&TC.runtime&&TC.runtime.onMessage&&typeof TC.runtime.onMessage.addListener==='function'&&!TG.__crxTabsRelayInstalled){TG.__crxTabsRelayInstalled=1;` +
   `TC.runtime.onMessage.addListener(function(req,sender,sendResponse){if(!req||!req.__crxTabsSendMessage)return;TSend(req.tabId,req.message,req.options,false).then(function(v){try{sendResponse(v)}catch(_){}}).catch(function(){try{sendResponse(undefined)}catch(_){}});return true})}` +
   `}}catch(_){}` +
@@ -304,7 +326,7 @@ const SHIM_BODY =
   // sendMessage resolves undefined (BewlyBewly). So in a web-page context, drop
   // any tabs/windows (native or from a prior block) and skip installing them.
   `var AISCS=(typeof location!=='undefined'&&location&&/^(https?|file|about):/.test(location.protocol||''));if(AISCS){try{AC.tabs=undefined}catch(_){}try{delete AC.tabs}catch(_){}try{Object.defineProperty(AC,'tabs',{value:undefined,configurable:true})}catch(_){}try{AC.windows=undefined}catch(_){}try{delete AC.windows}catch(_){}}` +
-  `if(!AISCS){AM('tabs',['get','getCurrent','getAllInWindow','query','create','update','remove','reload','duplicate','move','highlight','discard','insertCSS','removeCSS','captureVisibleTab','detectLanguage','getZoom','setZoom','getZoomSettings','setZoomSettings','goBack','goForward','group','ungroup']);AV('tabs',['onCreated','onUpdated','onRemoved','onActivated','onMoved','onAttached','onDetached','onReplaced','onHighlighted','onZoomChange']);var AT=AN('tabs'),AQ=function(q,cb){q=q||{};var fb=function(){try{return typeof TQuery==='function'?TQuery(q):[]}catch(_){return[]}},p=AI('tabs.query',[q]);if(!p||typeof p.then!=='function')p=p===null?Promise.resolve(fb()):Promise.resolve(p);p=p.then(function(v){return Array.isArray(v)&&v.length?v:fb()},function(){return fb()});if(typeof cb==='function'){p.then(function(v){try{cb(v)}catch(_){}});return undefined}return p};AP(AT,'query',AQ);` +
+  `if(!AISCS){AM('tabs',['get','getCurrent','getAllInWindow','query','create','update','remove','reload','duplicate','move','highlight','discard','insertCSS','removeCSS','captureVisibleTab','detectLanguage','getZoom','setZoom','getZoomSettings','setZoomSettings','goBack','goForward','group','ungroup']);AV('tabs',['onCreated','onUpdated','onRemoved','onActivated','onMoved','onAttached','onDetached','onReplaced','onHighlighted','onZoomChange']);var AT=AN('tabs'),AQ=function(q,cb){q=q||{};var fb=function(){try{return typeof TQuery==='function'?TQuery(q):[]}catch(_){return[]}},p=AI('tabs.query',[q]);if(!p||typeof p.then!=='function')p=p===null?Promise.resolve(fb()):Promise.resolve(p);p=p.then(function(v){if(q&&typeof q==='object'&&typeof q.groupId==='number')return Array.isArray(v)?v:[];return Array.isArray(v)&&v.length?v:fb()},function(){return q&&typeof q==='object'&&typeof q.groupId==='number'?[]:fb()});if(typeof cb==='function'){p.then(function(v){try{cb(v)}catch(_){}});return undefined}return p};AP(AT,'query',AQ);` +
   `AM('windows',['get','getCurrent','getLastFocused','getAll','create','update','remove']);try{AC.windows.WINDOW_ID_NONE=-1;AC.windows.WINDOW_ID_CURRENT=-2}catch(_){}AV('windows',['onCreated','onRemoved','onFocusChanged','onBoundsChanged']);}` +
   `AM('permissions',['contains','getAll','request','remove']);AV('permissions',['onAdded','onRemoved']);var PN=AN('permissions'),PME=['contains','getAll','request','remove'];for(var pi=0;pi<PME.length;pi++)AP(PN,PME[pi],AR('permissions.'+PME[pi]));AP(PN,'onAdded',AE());AP(PN,'onRemoved',AE());AM('alarms',['create','get','getAll','clear','clearAll']);AV('alarms',['onAlarm']);AM('commands',['getAll']);AV('commands',['onCommand']);` +
   `AM('contextMenus',['create','update','remove','removeAll']);AV('contextMenus',['onClicked']);AM('cookies',['get','getAll','set','remove','getAllCookieStores']);AV('cookies',['onChanged']);` +
@@ -312,17 +334,33 @@ const SHIM_BODY =
   `AM('history',['search','getVisits','addUrl','deleteUrl','deleteRange','deleteAll']);AV('history',['onVisited','onVisitRemoved']);AM('downloads',['download','search','pause','resume','cancel','erase','getFileIcon','open','show','showDefaultFolder','removeFile','acceptDanger','setUiOptions','setShelfEnabled','drag']);AV('downloads',['onChanged','onCreated','onDeterminingFilename','onErased']);` +
   `AM('notifications',['clear','create','getAll','getPermissionLevel','update']);AV('notifications',['onClicked','onButtonClicked','onClosed']);AM('topSites',['get']);AM('idle',['queryState','setDetectionInterval']);AV('idle',['onStateChanged']);AM('power',['requestKeepAwake','releaseKeepAwake']);` +
   `AM('management',['get','getAll','getSelf','getPermissionWarningsById','getPermissionWarningsByManifest','setEnabled','uninstall','uninstallSelf']);AV('management',['onInstalled','onUninstalled','onEnabled','onDisabled']);AM('sessions',['getRecentlyClosed','restore','getDevices']);AV('sessions',['onChanged']);try{AC.sessions.MAX_SESSION_RESULTS=25}catch(_){};` +
-  `AM('search',['query','queryInTab']);AM('tabGroups',['get','query','update','move']);AV('tabGroups',['onCreated','onUpdated','onRemoved']);AM('browsingData',['remove','removeAppcache','removeCache','removeCookies','removeDownloads','removeFileSystems','removeFormData','removeHistory','removeIndexedDB','removeLocalStorage','removePluginData','removePasswords','removeWebSQL','removeServiceWorkers','settings']);` +
+  `AM('search',['query','queryInTab']);AM('tabGroups',['get','query','update','move']);var TGN=AN('tabGroups');AP(TGN,'TAB_GROUP_ID_NONE',-1);['get','query','update','move'].forEach(function(m){AP(TGN,m,AR('tabGroups.'+m))});AV('tabGroups',['onCreated','onMoved','onUpdated','onRemoved']);AM('browsingData',['remove','removeAppcache','removeCache','removeCookies','removeDownloads','removeFileSystems','removeFormData','removeHistory','removeIndexedDB','removeLocalStorage','removePluginData','removePasswords','removeWebSQL','removeServiceWorkers','settings']);` +
   `AM('webNavigation',['getFrame','getAllFrames']);var WN=AN('webNavigation'),WNE=['onBeforeNavigate','onCommitted','onCompleted','onCreatedNavigationTarget','onDOMContentLoaded','onErrorOccurred','onHistoryStateUpdated','onReferenceFragmentUpdated','onTabReplaced'];for(var wi=0;wi<WNE.length;wi++)AP(WN,WNE[wi],AX('webNavigation.'+WNE[wi]));` +
   `var OF=AN('offscreen');if(OF&&!OF.Reason)AP(OF,'Reason',{TESTING:'TESTING',AUDIO_PLAYBACK:'AUDIO_PLAYBACK',IFRAME_SCRIPTING:'IFRAME_SCRIPTING',DOM_SCRAPING:'DOM_SCRAPING',BLOBS:'BLOBS',DOM_PARSER:'DOM_PARSER',USER_MEDIA:'USER_MEDIA',DISPLAY_MEDIA:'DISPLAY_MEDIA',WEB_RTC:'WEB_RTC',CLIPBOARD:'CLIPBOARD',LOCAL_STORAGE:'LOCAL_STORAGE',WORKERS:'WORKERS',BATTERY_STATUS:'BATTERY_STATUS',MATCH_MEDIA:'MATCH_MEDIA',GEOLOCATION:'GEOLOCATION'});` +
   `if(AC.runtime&&!AC.runtime.ContextType)AP(AC.runtime,'ContextType',${JSON.stringify(RUNTIME_CONTEXT_TYPE)});` +
   `AM('action',['setTitle','getTitle','setIcon','setPopup','getPopup','setBadgeText','getBadgeText','setBadgeBackgroundColor','getBadgeBackgroundColor','setBadgeTextColor','getBadgeTextColor','getUserSettings','isEnabled','enable','disable','openPopup']);AV('action',['onClicked','onUserSettingsChanged']);AM('browserAction',['setTitle','getTitle','setIcon','setPopup','getPopup','setBadgeText','getBadgeText','setBadgeBackgroundColor','getBadgeBackgroundColor','enable','disable']);AV('browserAction',['onClicked']);` +
   `if(!AC.proxy)AC.proxy={};if(!AC.proxy.settings)AC.proxy.settings={};['set','clear','get'].forEach(function(m){if(typeof AC.proxy.settings[m]!=='function')AC.proxy.settings[m]=AF('proxy.settings.'+m)});if(!AC.proxy.settings.onChange)AC.proxy.settings.onChange=AE();if(!AC.proxy.onProxyError)AC.proxy.onProxyError=AE();` +
+  // chrome.privacy.{network,services,websites}.<setting> — each leaf is a
+  // chrome.types.ChromeSetting (get/set/clear + onChange). The renderer factory
+  // (renderer/index.ts) only runs in the chrome-extension main world, so SW /
+  // sandboxed popup / content-script contexts never got chrome.privacy.network
+  // populated → uBlock Origin's webext.js:144 (`chrome.privacy[cat][setting]`)
+  // crashed. This block installs the full nested surface up-front in EVERY
+  // context (same unconditional placement as proxy/system); get/set/clear route
+  // over AF → crx-msg to PrivacyAPI (browser/api/privacy.ts), onChange is a
+  // local no-op event (cross-extension change broadcast is renderer-only, as for
+  // proxy). Settings list MUST stay in sync with PRIVACY_SETTINGS in privacy.ts.
+  `if(!AC.privacy)AC.privacy={};var PRV={network:['networkPredictionEnabled','webRTCIPHandlingPolicy','globalPrivacyControl'],services:['alternateErrorPagesEnabled','autofillAddressEnabled','autofillCreditCardEnabled','passwordSavingEnabled','safeBrowsingEnabled','safeBrowsingExtendedReportingEnabled','searchSuggestEnabled','spellingServiceEnabled','translationServiceEnabled'],websites:['hyperlinkAuditingEnabled','referrersEnabled','thirdPartyCookiesAllowed','cookieControlsEnabled','protectedContentEnabled']};for(var pc in PRV){if(!AC.privacy[pc])AC.privacy[pc]={};PRV[pc].forEach(function(n){if(!AC.privacy[pc][n])AC.privacy[pc][n]={};['get','set','clear'].forEach(function(m){if(typeof AC.privacy[pc][n][m]!=='function')AC.privacy[pc][n][m]=AF('privacy.'+pc+'.'+n+'.'+m)});if(!AC.privacy[pc][n].onChange)AC.privacy[pc][n].onChange=AE()})}` +
   `if(!AC.system)AC.system={};['cpu','memory','display'].forEach(function(k){if(!AC.system[k])AC.system[k]={}});if(typeof AC.system.cpu.getInfo!=='function')AC.system.cpu.getInfo=AF('system.cpu.getInfo');if(typeof AC.system.memory.getInfo!=='function')AC.system.memory.getInfo=AF('system.memory.getInfo');['getInfo','getDisplayLayout','setDisplayProperties','setEnabledDisplays','setDisplayLayout'].forEach(function(m){if(typeof AC.system.display[m]!=='function')AC.system.display[m]=AF('system.display.'+m)});if(!AC.system.display.onDisplayChanged)AC.system.display.onDisplayChanged=AE();` +
   // Electron's native DNR in a sandboxed popup bypasses the framework's rule
   // validation and omits onRuleMatchedDebug. Force the same main-process route
   // used by crx-preload. identity is entirely absent in that degraded context.
   `var APM=[];try{var AMF=AC.runtime.getManifest?AC.runtime.getManifest()||{}:{};APM=(AMF.permissions||[]).concat(AMF.optional_permissions||[])}catch(_){};` +
+  // Electron drops the native sidePanel namespace because it does not yet
+  // recognize the MV3 permission. Sandboxed popups therefore need the same
+  // explicit main-process route as DNR and identity; otherwise extensions
+  // incorrectly fall back to their in-page sidebar implementation.
+  `if(APM.indexOf('sidePanel')>=0){var SP=AN('sidePanel');['open','setOptions','setPanelBehavior','getOptions','getPanelBehavior'].forEach(function(m){AP(SP,m,AR('sidePanel.'+m))})}` +
   `if(APM.indexOf('declarativeNetRequest')>=0||APM.indexOf('declarativeNetRequestWithHostAccess')>=0){var DN=AN('declarativeNetRequest'),DM=['updateDynamicRules','getDynamicRules','updateSessionRules','getSessionRules','getEnabledRulesets','updateEnabledRulesets','getAvailableStaticRuleCount','getMatchedRules','isRegexSupported','setExtensionActionOptions'];for(var di=0;di<DM.length;di++)AP(DN,DM[di],AR('declarativeNetRequest.'+DM[di]));AP(DN,'onRuleMatchedDebug',AE());var DC={ResourceType:{MAIN_FRAME:'main_frame',SUB_FRAME:'sub_frame',STYLESHEET:'stylesheet',SCRIPT:'script',IMAGE:'image',FONT:'font',OBJECT:'object',XMLHTTPREQUEST:'xmlhttprequest',PING:'ping',CSP_REPORT:'csp_report',MEDIA:'media',WEBSOCKET:'websocket',WEBTRANSPORT:'webtransport',WEBBUNDLE:'webbundle',OTHER:'other'},RuleActionType:{BLOCK:'block',REDIRECT:'redirect',ALLOW:'allow',UPGRADE_SCHEME:'upgradeScheme',MODIFY_HEADERS:'modifyHeaders',ALLOW_ALL_REQUESTS:'allowAllRequests'},RequestMethod:{CONNECT:'connect',DELETE:'delete',GET:'get',HEAD:'head',OPTIONS:'options',PATCH:'patch',POST:'post',PUT:'put'},DomainType:{FIRST_PARTY:'firstParty',THIRD_PARTY:'thirdParty'},HeaderOperation:{APPEND:'append',SET:'set',REMOVE:'remove'},UnsupportedRegexReason:{SYNTAX_ERROR:'syntaxError',MEMORY_LIMIT_EXCEEDED:'memoryLimitExceeded'},GUARANTEED_MINIMUM_STATIC_RULES:30000,MAX_NUMBER_OF_DYNAMIC_RULES:30000,MAX_NUMBER_OF_SESSION_RULES:5000,MAX_NUMBER_OF_DYNAMIC_AND_SESSION_RULES:5000,MAX_NUMBER_OF_ENABLED_STATIC_RULESETS:50,MAX_NUMBER_OF_STATIC_RULESETS:100,MAX_NUMBER_OF_REGEX_RULES:1000,MAX_NUMBER_OF_UNSAFE_DYNAMIC_RULES:5000,MAX_NUMBER_OF_UNSAFE_SESSION_RULES:5000,GETMATCHEDRULES_QUOTA_INTERVAL:600,MAX_GETMATCHEDRULES_CALLS_PER_INTERVAL:20,DYNAMIC_RULESET_ID:'_dynamic',SESSION_RULESET_ID:'_session'};for(var dk in DC)AP(DN,dk,DC[dk])}` +
   `if(APM.indexOf('identity')>=0){var ID=AN('identity');AP(ID,'getRedirectURL',function(p){var r='https://'+(AIDFN()||'')+'.chromiumapp.org/';return p?r+String(p).replace(/^\\/+/, ''):r});['launchWebAuthFlow','getAuthToken','removeCachedAuthToken','clearAllCachedAuthTokens','getProfileUserInfo'].forEach(function(m){AP(ID,m,AR('identity.'+m))});AP(ID,'onSignInChanged',AE())}` +
   // userScripts (MV3): the sandboxed popup boots without crx-preload, so it is
@@ -340,7 +378,22 @@ const SHIM_BODY =
   // pure spec constant (like the DNR MAX_* constants above) so callers that
   // reference chrome.userScripts.ExecutionWorld.USER_SCRIPT resolve correctly.
   `if(APM.indexOf('userScripts')>=0){var US=AN('userScripts');['register','update','unregister','getScripts','configureWorld','getWorldConfigurations','resetWorldConfiguration'].forEach(function(m){AP(US,m,AR('userScripts.'+m))});if(!US.ExecutionWorld)AP(US,'ExecutionWorld',{MAIN:'MAIN',USER_SCRIPT:'USER_SCRIPT'})}` +
-  `if(AG.browser===AC){try{['tabs','windows','permissions','alarms','commands','contextMenus','cookies','bookmarks','history','downloads','notifications','topSites','idle','power','management','sessions','search','tabGroups','browsingData','webNavigation','action','browserAction','proxy','system','declarativeNetRequest','identity','userScripts'].forEach(function(k){if(AC[k]&&!AG.browser[k])AG.browser[k]=AC[k]})}catch(_){}}}}catch(e){}` +
+  `if(AG.browser===AC){try{['tabs','windows','permissions','alarms','commands','contextMenus','cookies','bookmarks','history','downloads','notifications','topSites','idle','power','management','sessions','search','tabGroups','browsingData','webNavigation','action','browserAction','proxy','system','sidePanel','declarativeNetRequest','identity','userScripts'].forEach(function(k){if(AC[k]&&!AG.browser[k])AG.browser[k]=AC[k]})}catch(_){}}}}catch(e){}` +
+  // A popup that missed crx-preload still has Electron's native event objects,
+  // but those objects are not connected to ExtensionRouter. Replace only that
+  // degraded extension-page surface with a local multi-listener facade. The
+  // facade subscribes over the long-lived page Port installed below; normal
+  // preloaded pages keep renderer/event.ts and the regular IPC route.
+  `try{var APageDegraded=typeof window!=='undefined'&&typeof location!=='undefined'&&location&&location.protocol==='chrome-extension:'&&!(AG&&AG.electron&&typeof AG.electron.addExtensionListener==='function');` +
+  `if(APageDegraded){var APageEvents={};var APageSubscribe=function(n){var s=APageEvents[n]||(APageEvents[n]={listeners:[],subscribed:false});if(s.subscribed)return;var f=AG.__crxPageEventSubscribe;if(typeof f==='function'){try{f(n);s.subscribed=true;return}catch(_){} }s.pending=true};` +
+  `var APageUnsubscribe=function(n){var s=APageEvents[n];if(!s||!s.subscribed)return;var f=AG.__crxPageEventUnsubscribe;if(typeof f==='function'){try{f(n)}catch(_){} }s.subscribed=false};` +
+  `var APageMake=function(n){var s=APageEvents[n]||(APageEvents[n]={listeners:[],subscribed:false});if(s.api)return s.api;var api={addListener:function(f){if(typeof f!=='function'||s.listeners.indexOf(f)>=0)return;s.listeners.push(f);if(s.listeners.length===1)APageSubscribe(n)},removeListener:function(f){var i=s.listeners.indexOf(f);if(i>=0)s.listeners.splice(i,1);if(s.listeners.length===0)APageUnsubscribe(n)},hasListener:function(f){return s.listeners.indexOf(f)>=0},hasListeners:function(){return s.listeners.length>0}};s.api=api;return api};` +
+  `var APageDispatch=function(n,a){var s=APageEvents[n];if(!s||!s.listeners.length)return;var ls=s.listeners.slice();for(var i=0;i<ls.length;i++){try{ls[i].apply(null,Array.isArray(a)?a:[])}catch(_) {}}};` +
+  `var APageReady=function(){var f;for(var n in APageEvents){if(!Object.prototype.hasOwnProperty.call(APageEvents,n))continue;var s=APageEvents[n];if(s&&s.listeners.length&&!s.subscribed){f=AG.__crxPageEventSubscribe;if(typeof f==='function'){try{f(n);s.subscribed=true}catch(_){}}}}};` +
+  `var APageInstallEvents=function(){var APageEventNames={tabs:['onCreated','onUpdated','onRemoved','onActivated','onMoved','onAttached','onDetached','onReplaced','onHighlighted','onZoomChange'],windows:['onCreated','onRemoved','onFocusChanged','onBoundsChanged'],alarms:['onAlarm'],commands:['onCommand'],contextMenus:['onClicked'],cookies:['onChanged'],bookmarks:['onCreated','onRemoved','onChanged','onMoved','onChildrenReordered','onImportBegan','onImportEnded'],history:['onVisited','onVisitRemoved'],downloads:['onChanged','onCreated','onDeterminingFilename','onErased'],notifications:['onClicked','onButtonClicked','onClosed'],idle:['onStateChanged'],management:['onInstalled','onUninstalled','onEnabled','onDisabled'],sessions:['onChanged'],tabGroups:['onCreated','onMoved','onUpdated','onRemoved'],webNavigation:['onBeforeNavigate','onCommitted','onCompleted','onCreatedNavigationTarget','onDOMContentLoaded','onErrorOccurred','onHistoryStateUpdated','onReferenceFragmentUpdated','onTabReplaced'],action:['onClicked','onUserSettingsChanged'],browserAction:['onClicked'],permissions:['onAdded','onRemoved'],identity:['onSignInChanged'],declarativeNetRequest:['onRuleMatchedDebug'],system:['onDisplayChanged']};for(var AEN in APageEventNames){var AEO=AC[AEN];if(!AEO)continue;var AEL=APageEventNames[AEN];for(var AEI=0;AEI<AEL.length;AEI++){var AEK=AEL[AEI],AENm=AEN+'.'+AEK,AEE=APageMake(AENm);if(!AP(AEO,AEK,AEE)){try{var AEC=Object.create(AEO);if(AP(AEC,AEK,AEE))AP(AC,AEN,AEC)}catch(_) {}}}}};` +
+  `try{AG.__crxPageEventDispatch=APageDispatch;AG.__crxPageEventReady=APageReady;AG.__crxPageEventInstall=APageInstallEvents}catch(_){};` +
+  `APageInstallEvents();if(typeof setTimeout==='function'){var APageRetry=0,APageTick=function(){try{APageInstallEvents()}catch(_){}if(++APageRetry>80)return;try{setTimeout(APageTick,25)}catch(_){} };try{setTimeout(APageTick,0)}catch(_){}}}` +
+  `}catch(e){}` +
   // ---- runtime.sendMessage Port-broker (sandboxed-popup recovery) ----------
   // When the popup renderer is co-sited with the MV3 service worker, the
   // process boots sandboxed (binding.startupData===null → "sandboxed_renderer
@@ -405,27 +458,44 @@ const SHIM_BODY =
       var SBOC = SBC.runtime.onConnect;
       if (SBOC && typeof SBOC.addListener === 'function') {
         var SBLSOC = [];
+        var SBLSOCW = [];
         try { SBG.__crxPortBrokerOnConnect = SBLSOC; } catch (_) {}
         var SBOCoA = SBOC.addListener.bind(SBOC);
+        var SBInternalPort = function (port) {
+          var name = '';
+          try { name = '' + ((port && port.name) || ''); } catch (_) {}
+          return name.indexOf('crxreq') === 0 || name.indexOf('crx-page-listen') === 0;
+        };
         SBOC.addListener = function (fn) {
+          if (typeof fn !== 'function') return SBOCoA(fn);
+          for (var wi = 0; wi < SBLSOCW.length; wi++) { if (SBLSOCW[wi].fn === fn) return; }
+          var wrapped = function (port) { if (SBInternalPort(port)) return; return fn(port); };
           SBLSOC.push(fn);
+          SBLSOCW.push({ fn: fn, wrapped: wrapped });
           try { console.warn('[crx-portbroker-sw] capOC n=' + SBLSOC.length); } catch (_) {}
-          return SBOCoA(fn);
+          return SBOCoA(wrapped);
         };
         if (typeof SBOC.removeListener === 'function') {
           var SBOCoR = SBOC.removeListener.bind(SBOC);
           SBOC.removeListener = function (fn) {
             for (var i = SBLSOC.length - 1; i >= 0; i--) { if (SBLSOC[i] === fn) SBLSOC.splice(i, 1); }
-            return SBOCoR(fn);
+            for (var j = SBLSOCW.length - 1; j >= 0; j--) {
+              if (SBLSOCW[j].fn !== fn) continue;
+              var wrapped = SBLSOCW[j].wrapped;
+              SBLSOCW.splice(j, 1);
+              return SBOCoR(wrapped);
+            }
           };
         }
+        try { SBOC.hasListener = function (fn) { for (var i = 0; i < SBLSOCW.length; i++) { if (SBLSOCW[i].fn === fn) return true; } return false; }; } catch (_) {}
+        try { SBOC.hasListeners = function () { return SBLSOCW.length > 0; }; } catch (_) {}
         // crxreq broker handler — registered via the ORIGINAL addListener so it
         // is NOT captured into SBLSOC (infrastructure, not an extension listener).
         SBOCoA(function (port) {
           if (!port || ('' + (port.name || '')).indexOf('crxreq') !== 0) return;
-          try { console.warn('[crx-portbroker-sw] connect name=' + port.name); } catch (_) {}
-           port.onMessage.addListener(function (req) {
-             if (!req || !req.__crxBrokerReq) return;
+             try { console.warn('[crx-portbroker-sw] connect name=' + port.name); } catch (_) {}
+             port.onMessage.addListener(function (req) {
+               if (!req || !req.__crxBrokerReq) return;
              var mid = req.mid, msg = req.message;
              var resp = false;
             var back = function (r) {
@@ -439,7 +509,32 @@ const SHIM_BODY =
              // so page-side Promise/callback semantics match Chrome.
               if (msg && msg.__crxApiRequest && typeof msg.method === 'string') {
                 try {
-                  var sbe = SBG.electron;
+                 // A degraded extension page reaches the worker through a
+                 // native Port. Chrome attaches sender.tab only when that page
+                 // is itself hosted in a browser tab. Preserve that identity
+                 // for getCurrent instead of invoking the API as the worker,
+                 // which correctly has no current tab. Popups, side panels and
+                 // workers have no sender.tab and therefore stay undefined.
+                 if (msg.method === 'tabs.getCurrent') {
+                   var sbSenderTab = port && port.sender && port.sender.tab;
+                   if (!sbSenderTab || typeof sbSenderTab.id !== 'number') {
+                     back({ __crxApiResponse: true, ok: true, value: undefined });
+                     return;
+                   }
+                   var sbGet = SBG.electron;
+                   var sbGetFn = sbGet && (sbGet.invokeExtensionRaw || sbGet.invokeExtension);
+                   if (typeof sbGetFn !== 'function') {
+                     back({ __crxApiResponse: true, ok: true, value: sbSenderTab });
+                     return;
+                   }
+                   Promise.resolve(sbGetFn.call(sbGet, SBID, 'tabs.get', {}, sbSenderTab.id)).then(function (value) {
+                     back({ __crxApiResponse: true, ok: true, value: value && typeof value.id === 'number' && value.id >= 0 ? value : sbSenderTab });
+                   }, function () {
+                     back({ __crxApiResponse: true, ok: true, value: sbSenderTab });
+                   });
+                   return;
+                 }
+                 var sbe = SBG.electron;
                  var sbf = sbe && (sbe.invokeExtensionRaw || sbe.invokeExtension);
                  if (typeof sbf !== 'function') {
                    back({ __crxApiResponse: true, ok: false, error: 'Extension API transport unavailable' });
@@ -464,7 +559,12 @@ const SHIM_BODY =
               // it to extension listeners, which correctly ignore the envelope.
               if (msg && msg.__crxTabsSendMessage && typeof TSend === 'function') {
                 try {
-                  Promise.resolve(TSend(msg.tabId, msg.message, msg.options, false)).then(back, function () { back(undefined); });
+                  var relayCommand = msg.message && typeof msg.message === 'object' ? (msg.message.command || '') : '';
+                  try { if (__crxAutoVerbose) console.warn('[crx-portbroker-sw] tabs-relay mid=' + mid + ' tabId=' + msg.tabId + ' command=' + (relayCommand || '?')); } catch (_) {}
+                  Promise.resolve(TSend(msg.tabId, msg.message, msg.options, false)).then(function (value) {
+                    try { if (__crxAutoVerbose) console.warn('[crx-portbroker-sw] tabs-relay-response mid=' + mid + ' command=' + (relayCommand || '?') + ' response=' + (value === undefined ? 'undefined' : value === null ? 'null' : typeof value)); } catch (_) {}
+                    back(value);
+                  }, function () { back(undefined); });
                 } catch (_) {
                   back(undefined);
                 }
@@ -472,7 +572,11 @@ const SHIM_BODY =
               }
               var rr = [];
             for (var i = 0; i < SBLS.length; i++) {
-              try { rr.push(SBLS[i](msg, { id: SBID, url: (req.senderUrl || ''), origin: ('chrome-extension://' + SBID), tab: null }, back)); }
+              // Chrome omits MessageSender.tab for extension pages. Supplying
+              // tab:null is observably different: extensions that use
+              // hasOwn(sender, 'tab') treat the message as tab-backed and then
+              // dereference null (KeePassXC-Browser does this in onMessage).
+              try { rr.push(SBLS[i](msg, { id: SBID, url: (req.senderUrl || ''), origin: ('chrome-extension://' + SBID) }, back)); }
               catch (_) { rr.push(undefined); }
             }
             var pr = [], ht = false;
@@ -481,7 +585,10 @@ const SHIM_BODY =
               if (rv && typeof rv.then === 'function') pr.push(rv);
               else if (rv === true) ht = true;
             }
-            try { console.warn('[crx-portbroker-sw] dispatch mid=' + mid + ' L=' + SBLS.length + ' P=' + pr.length + ' T=' + ht); } catch (_) {}
+            try {
+              var dispatchCommand = msg && typeof msg === 'object' ? (msg.command || msg.type || msg.method || '') : '';
+              if (__crxAutoVerbose) console.warn('[crx-portbroker-sw] dispatch mid=' + mid + ' command=' + (dispatchCommand || '?') + ' L=' + SBLS.length + ' P=' + pr.length + ' T=' + ht);
+            } catch (_) {}
             if (pr.length) {
               pr[0].then(function (v) { back(v); }, function () { back(undefined); });
             } else if (!ht && !resp) {
@@ -497,10 +604,44 @@ const SHIM_BODY =
           if (!port || ('' + (port.name || '')).indexOf('crx-page-listen') !== 0) return;
           try {
             var SBPLP = SBG.__crxPageListenPorts;
+            var SBPageEventHandlers = {};
+            var SBPageEventSubscribe = function (eventName) {
+              if (!eventName || SBPageEventHandlers[eventName]) return;
+              var el = SBG.electron;
+              if (!el || typeof el.addExtensionListener !== 'function') return;
+              var cb = function () {
+                var args = [];
+                try { args = Array.prototype.slice.call(arguments); } catch (_) { args = []; }
+                try { port.postMessage({ __crxPageEvent: true, eventName: eventName, args: args }); } catch (_) {}
+              };
+              try {
+                el.addExtensionListener(SBID, eventName, cb);
+                SBPageEventHandlers[eventName] = cb;
+                try { console.warn('[crx-portbroker-sw] event subscribed name=' + eventName); } catch (_) {}
+              } catch (_) {}
+            };
+            var SBPageEventUnsubscribe = function (eventName) {
+              var cb = SBPageEventHandlers[eventName];
+              if (!cb) return;
+              try {
+                var el = SBG.electron;
+                if (el && typeof el.removeExtensionListener === 'function') el.removeExtensionListener(SBID, eventName, cb);
+              } catch (_) {}
+              try { delete SBPageEventHandlers[eventName]; } catch (_) {}
+            };
             if (!SBPLP) { SBPLP = []; try { SBG.__crxPageListenPorts = SBPLP; } catch (_) {} }
             try { port.__crxOffscreenPage = ('' + (port.name || '')).indexOf(':offscreen') > 0; } catch (_) {}
             if (SBPLP.indexOf(port) < 0) SBPLP.push(port);
+            try { port.postMessage({ __crxPageListenReady: true }); } catch (_) {}
             if (port.onMessage) port.onMessage.addListener(function (msg) {
+              if (msg && msg.__crxPageEventSubscribe && typeof msg.eventName === 'string') {
+                SBPageEventSubscribe(msg.eventName);
+                return;
+              }
+              if (msg && msg.__crxPageEventUnsubscribe && typeof msg.eventName === 'string') {
+                SBPageEventUnsubscribe(msg.eventName);
+                return;
+              }
               if (!msg || !msg.__crxOffscreenPageResponse || !msg.requestId) return;
               var pending = SBOffPending[msg.requestId];
               if (!pending) return;
@@ -508,9 +649,10 @@ const SHIM_BODY =
               try { if (pending.timer) clearTimeout(pending.timer); } catch (_) {}
               try { pending.sendResponse(msg.response); } catch (_) {}
             });
-            if (port.onDisconnect) port.onDisconnect.addListener(function () {
-              try { var a = SBG.__crxPageListenPorts || []; var ix = a.indexOf(port); if (ix >= 0) a.splice(ix, 1); } catch (_) {}
-            });
+             if (port.onDisconnect) port.onDisconnect.addListener(function () {
+               try { for (var eventName in SBPageEventHandlers) { if (Object.prototype.hasOwnProperty.call(SBPageEventHandlers, eventName)) SBPageEventUnsubscribe(eventName); } } catch (_) {}
+               try { var a = SBG.__crxPageListenPorts || []; var ix = a.indexOf(port); if (ix >= 0) a.splice(ix, 1); } catch (_) {}
+             });
             try { console.warn('[crx-portbroker-sw] page-listen saved n=' + SBPLP.length); } catch (_) {}
           } catch (_) {}
         });
@@ -605,7 +747,11 @@ const SHIM_BODY =
             fin(undefined); return cb ? undefined : p;
           }
           try { if (typeof PBG.setTimeout === 'function') PBG.setTimeout(function () { if (!dn) { try { console.warn('[crx-portbroker-page] timeout mid=' + mid); } catch (_) {} fin(undefined); clean(); } }, 8000); } catch (_) {}
-          try { console.warn('[crx-portbroker-page] send mid=' + mid + ' type=' + ((msg && msg.type) || '?')); } catch (_) {}
+          try {
+            var pbCommand = msg && typeof msg === 'object' ? (msg.command || msg.type || msg.method || '') : '';
+            var pbKeys = msg && typeof msg === 'object' ? Object.keys(msg).slice(0, 10).join(',') : '';
+            if (__crxAutoVerbose) console.warn('[crx-portbroker-page] send mid=' + mid + ' command=' + (pbCommand || '?') + ' keys=' + pbKeys);
+          } catch (_) {}
         } catch (e) {
           try { console.warn('[crx-portbroker-page] port-err ' + ((e && e.message) || e)); } catch (_) {}
           if (typeof PBnsend === 'function') { try { return PBnsend.apply(PBC.runtime, arguments); } catch (_) {} }
@@ -661,15 +807,66 @@ const SHIM_BODY =
       // executeJavaScript hangs, native MV3 SW→popup doesn't deliver) — it
       // delivers bg→popup runtime.sendMessage pushes to __crxPageOnMsg.
       try {
-        if (typeof PBconn === 'function' && !PBG.__crxPageListenArmed) {
-          try { PBG.__crxPageListenArmed = true; } catch (_) {}
-          var isOffscreenPage = false;
-          try { isOffscreenPage = location && location.pathname === '/offscreen.html'; } catch (_) {}
-          var pListen = PBconn.call(PBC.runtime, { name: 'crx-page-listen' + (isOffscreenPage ? ':offscreen' : '') });
-          if (pListen && pListen.onMessage) {
+        if (typeof PBconn === 'function') {
+          var pageEventSubscriptions = PBG.__crxPageEventSubscriptions || {};
+          try { PBG.__crxPageEventSubscriptions = pageEventSubscriptions; } catch (_) {}
+          var PBarmPageListen = null;
+          var PBschedulePageListenReconnect = function () {
+            if (PBG.__crxPageListenRetryTimer || typeof PBG.setTimeout !== 'function') return;
+            var attempts = Number(PBG.__crxPageListenRetryCount) || 0;
+            if (attempts >= 8) return;
+            try { PBG.__crxPageListenRetryCount = attempts + 1; } catch (_) {}
+            var delay = Number(PBG.__crxPageListenRetryDelay) || 100;
+            delay = Math.max(100, Math.min(2000, delay));
+            try {
+              PBG.__crxPageListenRetryTimer = PBG.setTimeout(function () {
+                try { PBG.__crxPageListenRetryTimer = null; } catch (_) {}
+                try { PBG.__crxPageListenRetryDelay = Math.min(2000, delay * 2); } catch (_) {}
+                try { if (typeof PBarmPageListen === 'function') PBarmPageListen(); } catch (_) { PBschedulePageListenReconnect(); }
+              }, delay);
+            } catch (_) {
+              try { PBG.__crxPageListenRetryTimer = null; } catch (_) {}
+            }
+          };
+          try { PBG.__crxPageEventSubscribe = function (eventName) {
+            if (!eventName || pageEventSubscriptions[eventName]) return;
+            pageEventSubscriptions[eventName] = true;
+            var currentPort = PBG.__crxPageListenPort;
+            try { if (currentPort) currentPort.postMessage({ __crxPageEventSubscribe: true, eventName: eventName }); } catch (_) {}
+          }; } catch (_) {}
+          try { PBG.__crxPageEventUnsubscribe = function (eventName) {
+            if (!eventName || !pageEventSubscriptions[eventName]) return;
+            try { delete pageEventSubscriptions[eventName]; } catch (_) {}
+            var currentPort = PBG.__crxPageListenPort;
+            try { if (currentPort) currentPort.postMessage({ __crxPageEventUnsubscribe: true, eventName: eventName }); } catch (_) {}
+          }; } catch (_) {}
+          PBarmPageListen = function () {
+            if (PBG.__crxPageListenArmed) return;
+            try { PBG.__crxPageListenArmed = true; } catch (_) {}
+            var isOffscreenPage = false;
+            try { isOffscreenPage = location && location.pathname === '/offscreen.html'; } catch (_) {}
+            var pListen = null;
+            try { pListen = PBconn.call(PBC.runtime, { name: 'crx-page-listen' + (isOffscreenPage ? ':offscreen' : '') }); } catch (_) {}
+            if (!pListen || !pListen.onMessage) {
+              try { PBG.__crxPageListenArmed = false; } catch (_) {}
+              PBschedulePageListenReconnect();
+              return;
+            }
+            try { PBG.__crxPageListenPort = pListen; } catch (_) {}
+            for (var subscribedEventName in pageEventSubscriptions) {
+              if (!Object.prototype.hasOwnProperty.call(pageEventSubscriptions, subscribedEventName)) continue;
+              try { pListen.postMessage({ __crxPageEventSubscribe: true, eventName: subscribedEventName }); } catch (_) {}
+            }
             pListen.onMessage.addListener(function (msg) {
-              try {
-                var L = PBG.__crxPageOnMsg || [];
+               try {
+                 try { PBG.__crxPageListenRetryCount = 0; PBG.__crxPageListenRetryDelay = 100; } catch (_) {}
+                 if (msg && msg.__crxPageListenReady) return;
+                 if (msg && msg.__crxPageEvent && typeof msg.eventName === 'string') {
+                   var dispatch = PBG.__crxPageEventDispatch;
+                   if (typeof dispatch === 'function') dispatch(msg.eventName, Array.isArray(msg.args) ? msg.args : []);
+                   return;
+                 }
+                 var L = PBG.__crxPageOnMsg || [];
                 var m = (msg && typeof msg === 'object' && msg.message !== undefined) ? msg.message : msg;
                 var s = (msg && typeof msg === 'object' && msg.sender) ? msg.sender : { id: PBC.runtime.id };
                 if (msg && msg.__crxOffscreenPageRequest && msg.requestId) {
@@ -697,9 +894,20 @@ const SHIM_BODY =
                 }
               } catch (_) {}
             });
+            if (pListen.onDisconnect) pListen.onDisconnect.addListener(function () {
+              if (PBG.__crxPageListenPort !== pListen) return;
+              try { PBG.__crxPageListenPort = null; } catch (_) {}
+              try { PBG.__crxPageListenArmed = false; } catch (_) {}
+              try { void PBC.runtime.lastError; } catch (_) {}
+              try { if (__crxAutoVerbose) console.warn('[crx-portbroker-page] page-listen disconnected; reconnecting'); } catch (_) {}
+              PBschedulePageListenReconnect();
+            });
+            try { if (typeof PBG.__crxPageEventReady === 'function') PBG.__crxPageEventReady(); } catch (_) {}
+            try { if (typeof PBG.__crxPageEventInstall === 'function') PBG.__crxPageEventInstall(); } catch (_) {}
             try { console.warn('[crx-portbroker-page] page-listen armed'); } catch (_) {}
+          };
+          PBarmPageListen();
           }
-        }
       } catch (_) {}
     }
   } catch (_) {}` +
@@ -719,11 +927,28 @@ const SHIM_BODY =
   `if(!NInstallI18n()&&NP==='chrome-extension:'&&!NG.__crxI18nRetry){try{Object.defineProperty(NG,'__crxI18nRetry',{value:1,configurable:true,writable:true})}catch(_){NG.__crxI18nRetry=1}var NTry=0,NLoop=function(){if(NInstallI18n()||++NTry>40){try{delete NG.__crxI18nRetry}catch(_){NG.__crxI18nRetry=0}return}try{setTimeout(NLoop,50)}catch(_){}};try{setTimeout(NLoop,50)}catch(_){}}}catch(_){}` +
   // Electron exposes storage.sync/managed as present-but-throwing areas. Map
   // them to local so extensions degrade like a single-profile Chrome build.
+  // Also delay successful set completion by one task. Electron can resolve a
+  // frame's storage.set Promise before another extension context receives the
+  // matching storage.onChanged event. A foreground page that immediately sends
+  // a runtime message can therefore make the background observe stale state
+  // (Bitwarden's loggedIn message raced its active-account write). Chrome makes
+  // that write visible before the dependent message path continues.
+  // Electron 43 can omit both global and StorageArea onChanged events entirely.
+  // Synthesize the standard records and relay page writes to the MV3 worker so
+  // long-lived extension state services observe login/account changes.
+  // Electron can also briefly report an empty local area while a new MV3 worker
+  // is hydrating its persistent store. Share a bounded startup probe and retain
+  // relayed values briefly, avoiding repeated full-area reads on large stores.
   `try{` +
   `var c=(typeof chrome!=='undefined'&&chrome)||(typeof self!=='undefined'&&self.chrome)||(typeof globalThis!=='undefined'&&globalThis.chrome);` +
   `if(!c||!c.storage)return;` +
   `var st=c.storage,local;try{local=st.local}catch(e){return}if(!local)return;` +
   `var ses;try{ses=st.session}catch(e){}var onc;try{onc=st.onChanged}catch(e){}` +
+  `var fire=function(changes,areaName){var area;try{area=st[areaName]}catch(_){}try{var getter=area&&area.get;if(getter&&typeof getter.__crxApplyChanges==='function')getter.__crxApplyChanges(changes)}catch(_){}try{if(area&&area.onChanged&&typeof area.onChanged.dispatch==='function')area.onChanged.dispatch(changes)}catch(_){}try{if(onc&&typeof onc.dispatch==='function')onc.dispatch(changes,areaName)}catch(_){}};` +
+  `var worker=typeof document==='undefined',relay=function(changes,areaName){if(worker)return;try{var rt=c.runtime;if(!rt||typeof rt.sendMessage!=='function')return;var out=rt.sendMessage({__crxStorageSyntheticChange:true,area:areaName,changes:changes});if(out&&typeof out.then==='function')out.catch(function(){return undefined})}catch(_){}};` +
+  `try{var rt=c.runtime,G=(typeof globalThis!=='undefined'&&globalThis)||(typeof self!=='undefined'&&self)||this;if(worker&&rt&&rt.onMessage&&typeof rt.onMessage.addListener==='function'&&!G.__crxStorageSyntheticReceiver){try{Object.defineProperty(G,'__crxStorageSyntheticReceiver',{value:1,configurable:true})}catch(_){G.__crxStorageSyntheticReceiver=1}rt.onMessage.addListener(function(message,sender,respond){if(!message||message.__crxStorageSyntheticChange!==true)return;fire(message.changes||{},message.area||'local');try{respond({__crxStorageSyntheticAck:true})}catch(_){}})}}catch(_){}` +
+  `var guardGet=function(area){if(!area||typeof area.get!=='function'||area.get.__crxHydrationGuard)return;var orig=area.get.bind(area),started=Date.now(),hydration,hydrated=false,overlayTimer,overlay=Object.create(null),read=function(keys){try{var out=orig(keys);return out&&typeof out.then==='function'?Promise.resolve(out):Promise.resolve(out||{})}catch(e){return Promise.reject(e)}},canFull=function(){return new Promise(function(resolve){var fn=area.getBytesInUse;if(typeof fn!=='function'){resolve(false);return}var settled=false,timer,finish=function(bytes){if(settled)return;settled=true;try{clearTimeout(timer)}catch(_){}resolve(typeof bytes==='number'&&Number.isFinite(bytes)&&bytes<=8388608)};timer=setTimeout(function(){finish(undefined)},100);try{var out=fn.call(area,null,finish);if(out&&typeof out.then==='function')out.then(finish,function(){finish(undefined)});else if(typeof out==='number')finish(out)}catch(_){finish(undefined)}})},empty=function(value){return !!value&&typeof value==='object'&&Object.keys(value).length===0},merge=function(keys,result,source){var list=typeof keys==='string'?[keys]:keys,out=result,added=false;for(var i=0;i<list.length;i++){var key=list[i];if(!Object.prototype.hasOwnProperty.call(result,key)&&Object.prototype.hasOwnProperty.call(source,key)){if(!added){out={};for(var k in result)if(Object.prototype.hasOwnProperty.call(result,k))out[k]=result[k]}out[key]=source[key];added=true}}return out},overlayValues=function(){var now=Date.now(),values=Object.create(null);for(var key in overlay)if(Object.prototype.hasOwnProperty.call(overlay,key)){if(overlay[key].expiresAt<=now)delete overlay[key];else values[key]=overlay[key].value}return values},cleanup=function(){overlayTimer=undefined;var now=Date.now(),next=Infinity;for(var key in overlay)if(Object.prototype.hasOwnProperty.call(overlay,key)){if(overlay[key].expiresAt<=now)delete overlay[key];else next=Math.min(next,overlay[key].expiresAt)}if(next!==Infinity)overlayTimer=setTimeout(cleanup,Math.max(0,next-now))},probe=function(){if(hydration)return hydration;if(hydrated)return Promise.resolve({});var attempts=0,run=function(){return canFull().then(function(allowed){if(!allowed)return {};return read(null).then(function(all){if(!empty(all)||++attempts>=3)return all;return new Promise(function(resolve){setTimeout(resolve,50)}).then(run)})})};hydration=run().then(function(all){hydrated=true;hydration=undefined;return all},function(error){hydration=undefined;throw error});return hydration},load=function(keys){return read(keys).then(function(result){var specific=typeof keys==='string'||(Array.isArray(keys)&&keys.length>0);if(!specific)return result;var list=typeof keys==='string'?[keys]:keys,missing=false;for(var i=0;i<list.length;i++)if(!Object.prototype.hasOwnProperty.call(result,list[i])){missing=true;break}if(!missing)return result;var recovered=merge(keys,result,overlayValues());if(recovered!==result||Date.now()-started>500)return recovered;return probe().then(function(all){return merge(keys,result,all)})})},next=function(keys,cb){var out=load(keys);if(typeof cb==='function'){out.then(function(value){try{cb(value)}catch(_){}},function(){try{cb({})}catch(_){}});return undefined}return out};try{Object.defineProperty(next,'__crxHydrationGuard',{value:true,configurable:true});Object.defineProperty(next,'__crxRawGet',{value:read,configurable:true});Object.defineProperty(next,'__crxApplyChanges',{value:function(changes){var expiresAt=Date.now()+2000;for(var key in changes)if(Object.prototype.hasOwnProperty.call(changes,key)){var change=changes[key];if(change&&Object.prototype.hasOwnProperty.call(change,'newValue'))overlay[key]={value:change.newValue,expiresAt:expiresAt};else delete overlay[key]}if(!overlayTimer&&Object.keys(overlay).length)overlayTimer=setTimeout(cleanup,2000)},configurable:true})}catch(_){}try{area.get=next}catch(_){}if(area.get!==next){try{Object.defineProperty(area,'get',{value:next,configurable:true,writable:true})}catch(_){}}};guardGet(local);` +
+  `var wrap=function(area,areaName){if(!area||typeof area.set!=='function'||area.set.__crxVisibilityBarrier)return;var orig=area.set.bind(area),call=function(items){return new Promise(function(resolve,reject){var done=false,ok=function(value){if(done)return;done=true;resolve(value)},bad=function(error){if(done)return;done=true;reject(error)};try{var out=orig(items,function(){ok(undefined)});if(out&&typeof out.then==='function')out.then(ok,bad);else if(out!==undefined)ok(out)}catch(e){bad(e)}})},perform=function(items){var keys=[];try{keys=Object.keys(items||{})}catch(_){}var before=Promise.resolve({});try{if(keys.length&&typeof area.get==='function'){var getter=typeof area.get.__crxRawGet==='function'?area.get.__crxRawGet:area.get.bind(area),got=getter(keys);if(got&&typeof got.then==='function')before=got.catch(function(){return {}});else before=Promise.resolve(got||{})}}catch(_){}return before.then(function(old){return call(items).then(function(value){var changes={};for(var i=0;i<keys.length;i++){var key=keys[i],change={newValue:items[key]};if(old&&Object.prototype.hasOwnProperty.call(old,key))change.oldValue=old[key];changes[key]=change}if(keys.length)fire(changes,areaName);relay(changes,areaName);return new Promise(function(resolve){setTimeout(function(){resolve(value)},0)})})})},next=function(items,cb){var out=perform(items);if(typeof cb==='function'){out.then(function(){try{cb()}catch(_){}},function(){try{cb()}catch(_){}});return undefined}return out};try{Object.defineProperty(next,'__crxVisibilityBarrier',{value:true,configurable:true})}catch(_){}try{area.set=next}catch(_){}if(area.set!==next){try{Object.defineProperty(area,'set',{value:next,configurable:true,writable:true})}catch(_){}}};wrap(local,'local');wrap(ses,'session');` +
   `var need=false;` +
   `['sync','managed'].forEach(function(a){` +
   `var cur;try{cur=st[a]}catch(e){cur=undefined}` +
@@ -751,7 +976,7 @@ const SHIM_BODY =
   `try{crxBLS(document.documentElement||document)}catch(_){}` +
   `try{var crxBLO=new MutationObserver(function(ms){for(var i=0;i<ms.length;i++){var m=ms[i];if(m.type==='childList'){for(var j=0;j<m.addedNodes.length;j++)crxBLS(m.addedNodes[j])}else if(m.type==='attributes'&&m.target&&m.target.nodeType===1&&crxBLT.indexOf(m.target.localName)>=0){crxBLD(m.target)}}});crxBLO.observe(document.documentElement||document,{childList:true,subtree:true,attributes:true,attributeFilter:['src','data']})}catch(_){}` +
   `}}catch(_){}` +
-  `})();\n`;
+  `})();\n`).replace(/console\.warn/g, '__crxWarn');
 // Marker = prefix + short hash of the shim body. Because it's derived from the
 // body, editing SHIM_BODY automatically changes the marker, so the
 // `startsWith(MARKER)` idempotency check below re-patches any file carrying an
@@ -760,8 +985,16 @@ const SHIM_VERSION = createHash('sha256')
   .update(SHIM_BODY)
   .digest('hex')
   .slice(0, 12);
+// Increment when the on-disk layout/injection algorithm changes without a
+// SHIM_BODY edit. Version 3 normalizes extension-root paths such as
+// "/js/background.js" before path.resolve; on Windows those previously escaped
+// to the drive root and the MV3 service worker was silently left unpatched.
+const PATCH_FORMAT_VERSION = 3;
+const PATCH_STATE_VERSION = `${SHIM_VERSION}:${PATCH_FORMAT_VERSION}`;
 const MARKER = `${MARKER_PREFIX}_${SHIM_VERSION}__*/`;
-const SHIM = `${MARKER}${SHIM_BODY}`;
+// The separator belongs to the shim block so stripping a patched file cannot
+// leave an extra semicolon behind before the next repatch.
+const SHIM = `${MARKER};${SHIM_BODY}`;
 
 // Match one leading shim block so the patcher can strip ALL of them (current,
 // any prior version, AND orphaned bodies). A shim is `(function(){…})();\n`,
@@ -784,14 +1017,14 @@ const SHIM = `${MARKER}${SHIM_BODY}`;
 // IIFEs inside the body (sendMessage/connect are `(function(){…})()`) terminate
 // with `})()` followed by `,`/`}`, never `})();`, so they are never matched.
 const SHIM_BLOCK_MARKER_LED =
-  /^\/\*__crx_storage_sync_shim_[^*]*\*\/\s*\(function\s*\(\s*\)\s*\{[\s\S]*?\}\s*\)\s*\(\s*\)\s*;\r?\n/;
+  /^\/\*__crx_storage_sync_shim_[^*]*\*\/\s*;?\s*\(function\s*\(\s*\)\s*\{[\s\S]*?\}\s*\)\s*\(\s*\)\s*;\r?\n/;
 // Unanchored + global: strips marker-led shim blocks ANYWHERE in the file, not
 // just at the start. Older line-based patchers removed only the marker line and
 // left a prior-version shim BODY embedded mid-file (pretty-printed) — that
 // orphan is unreachable by a leading-only stripper. The marker is unique to our
 // shim, so this never touches real extension code.
 const SHIM_BLOCK_MARKER_ANYWHERE =
-  /\/\*__crx_storage_sync_shim_[^*]*\*\/\s*\(function\s*\(\s*\)\s*\{[\s\S]*?\}\s*\)\s*\(\s*\)\s*;\r?\n/g;
+  /\/\*__crx_storage_sync_shim_[^*]*\*\/\s*;?\s*\(function\s*\(\s*\)\s*\{[\s\S]*?\}\s*\)\s*\(\s*\)\s*;\r?\n/g;
 // Historical bug chain, newest to oldest:
 //   1. marker-only strip left a full pretty-printed shim body at the file start;
 //   2. later regexes stripped the marker-led current shim, but could still leave
@@ -853,6 +1086,140 @@ function stripLeadingShims(s: string): string {
   // Then strip any leading marker-less shim body remnants left by older
   // patchers. These only ever survive at the file start.
   return stripLeadingShimOrphans(s);
+}
+
+// Keep a source file's directive prologue (most importantly "use strict") at
+// the beginning of the script. A prepended shim would otherwise turn the
+// original bundle into sloppy mode, which changes the `this` value observed by
+// its helper functions and can make extension state recursively contain the
+// global object. This scanner intentionally handles only the lexical forms
+// needed at the start of a JavaScript file; it does not attempt to parse the
+// rest of the program.
+function injectShimPreservingDirectives(source: string): string {
+  const findLineEnd = (from: number): number => {
+    const match = /[\r\n]/u.exec(source.slice(from));
+    return match ? from + match.index : -1;
+  };
+  let offset = source.charCodeAt(0) === 0xfeff ? 1 : 0;
+
+  // A hashbang must remain the first line of a script. Node-style extension
+  // bundles occasionally retain one even though Chromium normally ignores it.
+  if (source.slice(offset, offset + 2) === '#!') {
+    const lineEnd = findLineEnd(offset + 2);
+    if (lineEnd < 0) return source + `\n` + SHIM;
+    offset = lineEnd;
+    if (source[offset] === '\r' && source[offset + 1] === '\n') offset += 2;
+    else offset += 1;
+  }
+
+  let cursor = offset;
+  let directiveEnd = -1;
+
+  for (;;) {
+    // Whitespace and comments are allowed between directive statements.
+    while (cursor < source.length) {
+      const ch = source[cursor];
+      if (ch === '/' && source[cursor + 1] === '/') {
+        const lineEnd = findLineEnd(cursor + 2);
+        cursor = lineEnd < 0 ? source.length : lineEnd;
+        continue;
+      }
+      if (ch === '/' && source[cursor + 1] === '*') {
+        const end = source.indexOf('*/', cursor + 2);
+        if (end < 0) return source.slice(0, offset) + SHIM + source.slice(offset);
+        cursor = end + 2;
+        continue;
+      }
+      if (/\s/u.test(ch)) {
+        cursor += 1;
+        continue;
+      }
+      break;
+    }
+
+    const quote = source[cursor];
+    if (quote !== '"' && quote !== "'") break;
+
+    let end = cursor + 1;
+    let closed = false;
+    for (; end < source.length; end += 1) {
+      const ch = source[end];
+      if (ch === '\\') {
+        end += 1; // escaped character or a line continuation
+        continue;
+      }
+      if (ch === quote) {
+        end += 1;
+        closed = true;
+        break;
+      }
+      if (ch === '\r' || ch === '\n' || ch === '\u2028' || ch === '\u2029') break;
+    }
+    if (!closed) break;
+
+    // A directive ends at a semicolon, a line terminator (ASI), or EOF. A
+    // block/comment sequence without a line break still belongs to the same
+    // statement, so `"a" /*x*/ "b"` is correctly rejected as a directive.
+    let probe = end;
+    let statementEnd = -1;
+    for (;;) {
+      if (probe >= source.length) {
+        statementEnd = source.length;
+        cursor = source.length;
+        break;
+      }
+      const ch = source[probe];
+      if (ch === ';') {
+        probe += 1;
+        statementEnd = probe;
+        cursor = probe;
+        break;
+      }
+      if (ch === '\r' || ch === '\n' || ch === '\u2028' || ch === '\u2029') {
+        if (ch === '\r' && source[probe + 1] === '\n') probe += 2;
+        else probe += 1;
+        statementEnd = probe;
+        cursor = probe;
+        break;
+      }
+      if (ch === '/' && source[probe + 1] === '/') {
+        const lineEnd = findLineEnd(probe + 2);
+        if (lineEnd < 0) {
+          statementEnd = source.length;
+          cursor = source.length;
+          break;
+        }
+        probe = lineEnd;
+        continue;
+      }
+      if (ch === '/' && source[probe + 1] === '*') {
+        const commentEnd = source.indexOf('*/', probe + 2);
+        if (commentEnd < 0) {
+          break;
+        }
+        if (/[\r\n\u2028\u2029]/u.test(source.slice(probe, commentEnd + 2))) {
+          statementEnd = commentEnd + 2;
+          cursor = statementEnd;
+          break;
+        }
+        probe = commentEnd + 2;
+        continue;
+      }
+      if (ch === ' ' || ch === '\t' || ch === '\v' || ch === '\f') {
+        probe += 1;
+        continue;
+      }
+      // No statement terminator: this is ordinary code, not a directive.
+      break;
+    }
+
+    if (statementEnd < 0) break;
+    directiveEnd = statementEnd;
+    if (cursor >= source.length) break;
+  }
+
+  const insertionPoint = directiveEnd >= 0 ? directiveEnd : offset;
+  return source.slice(0, insertionPoint) + SHIM + source.slice(insertionPoint);
 }
 
 // ---- HTML <head> injection via external crx-shim.js -----------------------
@@ -1109,7 +1476,9 @@ async function collectPatchTargets(
 ): Promise<{ js: string[]; html: string[] }> {
   const jsSet = new Set<string>();
   const addRel = (r: any) => {
-    if (typeof r === 'string' && r) jsSet.add(resolve(extDir, r));
+    if (typeof r === 'string' && r) {
+      jsSet.add(resolve(extDir, r.replace(/^[\\/]+/, '')));
+    }
   };
 
   OFFSCREEN_FALLBACK.forEach(addRel);
@@ -1142,7 +1511,9 @@ async function collectPatchTargets(
   const htmlSet = new Set<string>();
   if (manifest) {
     for (const p of collectHtmlPages(manifest)) {
-      if (typeof p === 'string' && p) htmlSet.add(resolve(extDir, p));
+      if (typeof p === 'string' && p) {
+        htmlSet.add(resolve(extDir, p.replace(/^[\\/]+/, '')));
+      }
     }
   }
   for (const h of await collectHtmlFilesInDir(extDir)) htmlSet.add(h);
@@ -1182,9 +1553,9 @@ async function collectPatchTargets(
  * extension loading.
  *
  * On full success (manifest exclusions + shim file + every JS AND HTML file)
- * writes PATCH_STATE_FILE = SHIM_VERSION; on any per-file failure removes it,
- * so isExtensionStoragePatched reports "needs patch" and the next startup scan
- * retries.
+ * writes PATCH_STATE_FILE = PATCH_STATE_VERSION; on any per-file failure
+ * removes it, so isExtensionStoragePatched reports "needs patch" and the next
+ * startup scan retries.
  */
 export async function patchExtensionStorage(extDir: string): Promise<void> {
   const manifestResult = await patchInternalContentScriptExcludes(extDir);
@@ -1209,12 +1580,15 @@ export async function patchExtensionStorage(extDir: string): Promise<void> {
         // the old line-based stripper (a prior SHIM_BODY was multi-line, so only
         // its marker line was removed — the body stayed embedded and re-defined
         // chrome.tabs WITHOUT connect, clobbering our fixes). Idempotent: if the
-        // file is already exactly <our shim><real content> with no orphans, the
-        // rebuilt string equals the original and we skip the write.
+        // file is already exactly <directives><our shim><real content> with no
+        // orphans, the rebuilt string equals the original and we skip the
+        // write. Keeping directives before the shim preserves strict-mode
+        // semantics in bundles such as Violentmonkey's background script.
         const stripped = stripLeadingShims(original);
-        if (SHIM + stripped === original) return true; // already exactly current
+        const next = injectShimPreservingDirectives(stripped);
+        if (next === original) return true; // already exactly current
 
-        await fs.writeFile(file, SHIM + stripped, 'utf8');
+        await fs.writeFile(file, next, 'utf8');
         return true;
       } catch {
         return false; // present but couldn't rewrite — retry next startup
@@ -1246,7 +1620,7 @@ export async function patchExtensionStorage(extDir: string): Promise<void> {
   const stateFile = resolve(extDir, PATCH_STATE_FILE);
   try {
     if ([manifestResult, shimResult, ...jsResults, ...htmlResults].every(Boolean)) {
-      await fs.writeFile(stateFile, SHIM_VERSION, 'utf8');
+      await fs.writeFile(stateFile, PATCH_STATE_VERSION, 'utf8');
     } else {
       // Drop a stale/partial success record so the next scan re-patches.
       await fs.rm(stateFile, { force: true });
@@ -1267,7 +1641,7 @@ export async function isExtensionStoragePatched(
 ): Promise<boolean> {
   try {
     const v = await fs.readFile(resolve(extDir, PATCH_STATE_FILE), 'utf8');
-    if (v.trim() !== SHIM_VERSION) return false;
+    if (v.trim() !== PATCH_STATE_VERSION) return false;
     await fs.access(resolve(extDir, SHIM_FILE));
     try {
       await fs.access(resolve(extDir, LEGACY_SHIM_FILE));

@@ -31,7 +31,7 @@ export class TabGroupPreviewDialog extends PersistentDialog {
 
   public async show(browserWindow: BrowserWindow, payload: any) {
     this.payload = payload || {};
-    await super.show(browserWindow, false);
+    if (!(await super.show(browserWindow, false))) return;
     this.send('visible', true, payload);
   }
 }

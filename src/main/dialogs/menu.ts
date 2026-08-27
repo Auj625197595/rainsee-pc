@@ -47,8 +47,7 @@ export class MenuDialog extends PersistentDialog {
   public async open(browserWindow: BrowserWindow, x: number, y: number) {
     this.pos = {x, y};
 
-    // 弹窗已在启动时预加载，waitForLoad=false：立即 addBrowserView+定位，秒开
-    await super.show(browserWindow, true, false);
+    if (!(await super.show(browserWindow, true))) return;
 
     browserWindow.removeListener('resize', this.onBoundsUpdate);
     browserWindow.removeListener('move', this.onBoundsUpdate);
@@ -56,7 +55,9 @@ export class MenuDialog extends PersistentDialog {
     browserWindow.on('move', this.onBoundsUpdate);
 
     // 通知渲染层刷新每次显示需更新的状态（alwaysOnTop / updateAvailable）
-    this.send('visible', true);
+    this.send('visible', true, {
+      alwaysOnTop: browserWindow.isAlwaysOnTop(),
+    });
   }
 
   public hide(bringToTop = false, hideVisually = true) {

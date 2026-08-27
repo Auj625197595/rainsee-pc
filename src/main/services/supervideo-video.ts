@@ -121,6 +121,13 @@ export const recordUrlRequest = (details: Electron.OnBeforeSendHeadersListenerDe
       const view = findViewById(webContentsId);
       if (view) {
         view.requestRecord.set(url, requestHeaders);
+        // Polling URLs often contain cache-busting parameters. Bound the
+        // request-header window so a long-lived SPA cannot grow it forever.
+        while (view.requestRecord.size > 2048) {
+          const oldest = view.requestRecord.keys().next().value;
+          if (oldest === undefined) break;
+          view.requestRecord.delete(oldest);
+        }
       }
     }
   } catch (e) {
@@ -160,6 +167,12 @@ const detectMediaType = (url: string, contentType: string): string | null => {
 export const filterVideo = (details: OnHeadersReceivedListenerDetails) => {
   try {
     const {webContentsId, url, frame, referrer, resourceType, responseHeaders} = details;
+    const view = findViewById(webContentsId);
+    const requestHeaders = view?.requestRecord.get(url);
+    // onBeforeSendHeaders records every request so media responses can reuse
+    // their headers. Consume every completed response instead of retaining
+    // non-media and whitelisted requests until eviction.
+    view?.requestRecord.delete(url);
     const contentType = readContentType(responseHeaders);
     // 诊断日志：对疑似视频请求打印 resourceType / contentType，
     // 用来定位 m3u8 为何没命中（resourceType 被闸掉 / content-type 不是 mpegurl / url 不含 .m3u8 等）。
@@ -169,7 +182,6 @@ export const filterVideo = (details: OnHeadersReceivedListenerDetails) => {
     if (resourceType == 'xhr' || resourceType == "object" || resourceType == "media" || resourceType == "other") {
       const mediaType = detectMediaType(url, contentType);
       if (mediaType) {
-        const view = findViewById(webContentsId);
         if (!view) {
           console.log("[video-sniff] match-but-no-view", JSON.stringify({mediaType, contentType, url}));
           return
@@ -183,7 +195,7 @@ export const filterVideo = (details: OnHeadersReceivedListenerDetails) => {
           url,
           referrer,
           frameUrl: (frame || {}).url,
-          requestHeaders: view.requestRecord.get(url),
+          requestHeaders,
           responseHeaders: flattenResponseHeaders(responseHeaders),
           contentType,
           mediaType,
@@ -204,7 +216,7 @@ export const filterVideo = (details: OnHeadersReceivedListenerDetails) => {
 const findViewById = (webContentsId: number) => {
   const windows = Application.instance.windows;
   for (const win of windows.list) {
-    const view = win.viewManager.views.get(webContentsId);
+    const view = win.viewManager.findViewByWebContentsId(webContentsId);
     if (view) return view;
   }
   return undefined;
@@ -433,15 +445,16 @@ export const hookClickCode = `
           //console.log('injectJS2', location.href);
           if(typeof originalAddEventListener == 'undefined') {
             originalAddEventListener = EventTarget.prototype.addEventListener;
-            let clickEventMap000 = new Map();
+            // Keep membership without retaining detached DOM nodes.
+            let clickEventSet000 = new WeakSet();
             EventTarget.prototype.addEventListener = function(type, listener, options) {
               if (type === 'click') {
-                clickEventMap000.set(this, 1);
+                clickEventSet000.add(this);
               }
               originalAddEventListener.call(this, type, listener, options);
             };
             hasClickEvent000 = function(element) {
-              return clickEventMap000.has(element);
+              return clickEventSet000.has(element);
             };
           }
         } catch(e) {
@@ -453,6 +466,11 @@ export const hookClickCode = `
 //监听页面中的视频链接和组件
 export const watchVideoCode = `
     (() => {
+        const observerKey = '__rainseeVideoObserver';
+        const previousObserver = window[observerKey];
+        if (previousObserver && typeof previousObserver.disconnect === 'function') {
+          previousObserver.disconnect();
+        }
         function getParentWindow00(w) {
           // 如果当前窗口是最顶层窗口，则停止递归
           if (w === w.parent) {
@@ -499,6 +517,9 @@ export const watchVideoCode = `
           }
         }
       });
-      if(document.body) observer.observe(document.body, { childList: true, subtree: true });
+      if(document.body) {
+        observer.observe(document.body, { childList: true, subtree: true });
+        window[observerKey] = observer;
+      }
     })();true
       `

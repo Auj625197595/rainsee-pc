@@ -19,6 +19,10 @@ interface ILayout {
   viewH: number; // 内容总高
 }
 
+export interface BookmarkOverflowOpenOptions {
+  align?: 'start' | 'end';
+}
+
 // 按「向左生长」算多列布局。
 // anchorX/anchorY = 菜单右边界(紧贴更多按钮左侧)/顶边的窗口坐标;
 // winH = 窗口内容区高度,用以夹可用高度。
@@ -44,19 +48,22 @@ export function computeLayout(
   const cols = Math.min(needCols, maxCols);
   const overflow = needCols > maxCols; // 装不下 → 最左列滚动
   const totalW = cols * COL_WIDTH + (cols - 1) * COL_GAP + 2 * PADDING;
-  const contentH = rowsPerCol * ROW_HEIGHT + 2 * PADDING;
+  // 单列无需为潜在行数预留高度，应随实际条目数收紧；多列保持满列高度，
+  // 使列间行高一致。溢出时则保留可用满高以提供内部滚动空间。
+  const contentRows = cols === 1 ? count : rowsPerCol;
+  const contentH = contentRows * ROW_HEIGHT + 2 * PADDING;
   // 溢出时满高(给最左列滚动空间);否则收紧到实际内容高,不留大段空白。
   const viewH = overflow ? availH : contentH;
   return { cols, rowsPerCol, overflow, totalW, viewH };
 }
 
-// 书签栏「更多按钮」多列溢出菜单浮层。全屏透明 Backdrop + absolute 定位的 Panel,
-// 点窗口任意非菜单区域即关闭(modal)。子文件夹不再用二级浮层,而是沿用最初的
-// 原生单列菜单(createDropdown + popup),由 messaging 的 folder-menu IPC 触发。
+// 书签栏文件夹/「更多按钮」共用的书签浮层。全屏透明 Backdrop + absolute 定位
+// 的 Panel,点窗口任意非菜单区域即关闭(modal)。
 export class BookmarkOverflowDialog extends PersistentDialog {
-  // 菜单右边界(紧贴更多按钮)的窗口坐标。布局固定「右边贴锚点、向左生长」。
-  protected anchorRight = 0;
+  // 更多菜单以右边界为锚点向左生长；文件夹菜单以左边界为锚点向右展开。
+  protected anchorX = 0;
   protected anchorTop = 0;
+  protected openOptions: BookmarkOverflowOpenOptions = {};
   protected layout: ILayout = {
     cols: 1,
     rowsPerCol: 1,
@@ -65,6 +72,7 @@ export class BookmarkOverflowDialog extends PersistentDialog {
     viewH: 0,
   };
   private currentItems: IBookmark[] = [];
+  private allItems: IBookmark[] = [];
 
   public constructor() {
     super({ name: 'bookmark-overflow' });
@@ -77,10 +85,18 @@ export class BookmarkOverflowDialog extends PersistentDialog {
     const winBounds = browserWindow.getContentBounds();
     this.layout = computeLayout(
       items.length,
-      this.anchorRight,
+      this.openOptions.align === 'start'
+        ? winBounds.width - this.anchorX
+        : this.anchorX,
       this.anchorTop,
       winBounds.height,
     );
+    if (this.openOptions.align === 'start') {
+      this.anchorX = Math.max(
+        0,
+        Math.min(this.anchorX, winBounds.width - this.layout.totalW),
+      );
+    }
     // BV 全屏:透明 Backdrop 覆盖整个窗口内容区,捕获任意处点击关闭(modal 行为)。
     // 实际菜单 Panel 由渲染页 absolute 定位到锚点(见 sendData)。
     super.rearrange({
@@ -93,13 +109,19 @@ export class BookmarkOverflowDialog extends PersistentDialog {
 
   // 把当前 layout + items + Panel 锚点推给渲染页。
   private sendData() {
+    const panelX =
+      this.openOptions.align === 'start'
+        ? this.anchorX
+        : this.anchorX - this.layout.totalW;
     this.send('data', {
       items: this.currentItems,
+      allItems: this.allItems,
       cols: this.layout.cols,
       rowsPerCol: this.layout.rowsPerCol,
       overflow: this.layout.overflow,
+      reverseColumns: this.openOptions.align !== 'start',
       // Panel 左上角窗口坐标 + 尺寸(渲染页 absolute 定位)
-      panelX: this.anchorRight - this.layout.totalW,
+      panelX,
       panelY: this.anchorTop,
       panelW: this.layout.totalW,
       panelH: this.layout.viewH,
@@ -113,16 +135,17 @@ export class BookmarkOverflowDialog extends PersistentDialog {
     anchorX: number,
     anchorY: number,
     items: IBookmark[],
+    allItems: IBookmark[],
+    options: BookmarkOverflowOpenOptions = {},
   ) {
-    this.anchorRight = anchorX;
+    this.anchorX = anchorX;
     this.anchorTop = anchorY;
+    this.openOptions = options;
     this.currentItems = items;
+    this.allItems = allItems;
 
-    // waitForLoad=true:首次(未预热完)时等渲染页 dom-ready 再 addBrowserView 显示,
-    // 避免白屏 + send('data') 时 store 还没注册监听导致 items 丢失(只剩空面板);
-    // 已预热(loaded=true)时 show 会跳过等待,照样秒开。
     // focus=false:不抢焦点。鼠标交互不依赖 focus。
-    await super.show(browserWindow, false, true);
+    if (!(await super.show(browserWindow, false))) return;
 
     this.relayout(items, browserWindow);
 

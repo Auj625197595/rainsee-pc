@@ -1,5 +1,7 @@
 import { TLD_LIST } from './tld-list';
 
+import { getDomain as getRegistrableDomain } from 'tldts';
+
 // 已知协议前缀:命中即视为完整 URL,直接导航(对应安卓 UrlUtils.isUrl 的协议分支)。
 // javascript: 列入:否则地址栏输入 javascript:alert(1) 会被 isSpecialChar(含 "()")
 // 判为搜索词转走搜索引擎,导致用地址栏收藏 bookmarklet 时存成搜索 URL(中毒)。
@@ -8,6 +10,22 @@ const WELL_KNOWN_PROTOCOL_RE =
 
 const isWellKnownUrl = (thing: string): boolean =>
   WELL_KNOWN_PROTOCOL_RE.test(thing);
+
+// 地址栏输入常来自中文输入法或复制粘贴。URL 的分隔符使用全角/日文形式时，
+// URL 构造器不会把它们识别为协议、域名或端口分隔符。先只在 URL 解析路径中
+// 做 NFKC 归一化，并补齐 NFKC 未覆盖的几类「点号」。搜索词仍保留用户原始输入。
+const URL_DOT_VARIANTS_RE = /[\u3002\uff0e\uff61\ufe52\u2024]/g;
+
+export const normalizeUrlInput = (input: string): string => {
+  const normalized = (input || '')
+    .trim()
+    .normalize('NFKC')
+    .replace(URL_DOT_VARIANTS_RE, '.');
+
+  // 常见的粘贴/手输错误：https:\\example.com。仅修正 URL 协议，避免影响
+  // Windows 路径（C:\\...）和普通搜索词。
+  return normalized.replace(/^((?:https?|ftp|file):)\\+(?=[^\\])/i, '$1//');
+};
 
 // 浏览器自身可加载/处理的"内部协议":命中时在页内导航,不外发给系统默认应用。
 // 除 WELL_KNOWN_PROTOCOL_RE 列举的之外,还包括 ktllq(伪协议,view.ts 内部动作)
@@ -33,7 +51,7 @@ const EXTERNAL_SINGLE_COLON_SCHEMES = new Set([
 // 关键:host:port 形式(localhost:3000、192.168.1.1:8080)无 "//" 且 scheme 不在
 // 单冒号白名单 → 返回 null,交由 isLocalhost/isIPv4 处理,不会被误派给系统。
 export const getExternalProtocol = (input: string): string | null => {
-  const thing = (input || '').trim();
+  const thing = normalizeUrlInput(input);
   if (!thing) return null;
 
   // 带 "//" 的协议 URL:scheme://...
@@ -50,6 +68,18 @@ export const getExternalProtocol = (input: string): string | null => {
     if (EXTERNAL_SINGLE_COLON_SCHEMES.has(scheme)) return scheme;
   }
   return null;
+};
+
+// 会话恢复只接受浏览器可安全自行恢复的页面。此处故意不把所有内部协议都放行：
+// 扩展、DevTools、about、data 等页面缺少稳定的恢复语义，统一走新标签页兜底。
+const SESSION_RESTORABLE_SCHEMES = new Set(['http', 'https', 'file', 'yjllq']);
+
+export const isSessionRestorableUrl = (input: string): boolean => {
+  const value = normalizeUrlInput(input);
+  const match = /^([a-z][a-z0-9+.-]*):/i.exec(value);
+  if (!match || !WELL_KNOWN_PROTOCOL_RE.test(value)) return false;
+  const scheme = match[1].toLowerCase();
+  return INTERNAL_SCHEMES.has(scheme) && SESSION_RESTORABLE_SCHEMES.has(scheme);
 };
 
 // Windows 本地绝对路径(盘符路径或 UNC 路径):地址栏输入这类内容应直开本地文件,
@@ -110,13 +140,14 @@ const getHostOf = (url: string): string => {
 // 返回该后缀及"是否应按搜索词处理":后缀不在末尾、其后又无路径/锚点/查询/端口时视为搜索词。
 const pickTld = (
   thing: string,
-): { tld: string | null; isKeyword: boolean } => {
+): { tld: string | null; tldIndex: number; isKeyword: boolean } => {
   let tld: string | null = null;
   let tldIndex = -1;
+  const lowerThing = thing.toLowerCase();
 
   for (const candidate of TLD_LIST) {
-    if (thing.includes(candidate) && thing !== candidate) {
-      const idx = thing.lastIndexOf(candidate);
+    if (lowerThing.includes(candidate) && lowerThing !== candidate) {
+      const idx = lowerThing.lastIndexOf(candidate);
       if (
         tld === null ||
         idx > tldIndex ||
@@ -125,26 +156,39 @@ const pickTld = (
         tld = candidate;
         tldIndex = idx;
       }
-      if (thing.endsWith(tld)) break;
+      if (lowerThing.endsWith(tld)) break;
     }
   }
 
-  if (!tld) return { tld: null, isKeyword: true };
+  if (!tld) return { tld: null, tldIndex: -1, isKeyword: true };
 
-  let isKeyword = false;
-  if (!thing.endsWith(tld)) {
-    if (
-      thing.includes(tld + '/') ||
-      thing.includes(tld + '#') ||
-      thing.includes(tld + '?') ||
-      thing.includes(tld + ':')
-    ) {
-      // TLD 后紧跟路径/锚点/查询/端口 → 仍是网址。
-    } else {
-      isKeyword = true;
-    }
+  // TLD 后可接根域点、端口、路径、查询或锚点。其余内容（如
+  // "example.computer" 命中 .com）仍按搜索词处理，避免误跳转。
+  const suffix = thing.slice(tldIndex + tld.length);
+  const isKeyword =
+    suffix !== '' && suffix !== '.' && !/^\.?(?:[/#?:])/.test(suffix);
+  return { tld, tldIndex, isKeyword };
+};
+
+const toHttpUrl = (thing: string, tldIndex: number): string => {
+  // 保持旧逻辑对 ".example.com" 的兼容：补齐 www 后再校验。
+  const hostPrefix = thing.slice(0, tldIndex);
+  return hostPrefix.startsWith('.') ? `http://www${thing}` : `http://${thing}`;
+};
+
+// "//example.com/path" 是常见的协议相对 URL；但 "//server/share" 同时也是
+// Windows UNC 路径。仅在主机具备有效已知 TLD 时将前者转为网页地址，UNC 保持
+// 原有的 file:// 打开逻辑。
+const toProtocolRelativeUrl = (thing: string): string | null => {
+  if (!thing.startsWith('//')) return null;
+
+  const candidate = thing.slice(2);
+  const { tld, tldIndex, isKeyword } = pickTld(candidate);
+  if (!tld || isKeyword || getHostOf(toHttpUrl(candidate, tldIndex)) === '') {
+    return null;
   }
-  return { tld, isKeyword };
+
+  return `http:${thing}`;
 };
 
 // 用搜索引擎模板把搜索词拼成搜索 URL(对应安卓 getSearch)。
@@ -159,7 +203,7 @@ const getSearchUrl = (text: string, searchEngineUrl: string): string => {
 // 才视为域名,据此排除版本号(v1.2.3)、日期(2024.06.29)、中文(哈哈)等被误判为网址的普通文本。
 export const isURL = (input: string): boolean => {
   if (!input) return false;
-  const thing = input.trim();
+  const thing = normalizeUrlInput(input);
   if (thing === '') return false;
 
   if (isWellKnownUrl(thing)) return true;
@@ -167,6 +211,8 @@ export const isURL = (input: string): boolean => {
   // 外部协议(motrixnext://、thunder://、magnet:、mailto: 等)也算 URL:
   // 这样地址栏输入时不会被当搜索词,联想/补全也按网址呈现。
   if (getExternalProtocol(thing)) return true;
+
+  if (toProtocolRelativeUrl(thing)) return true;
 
   if (isWindowsAbsolutePath(thing)) return true;
 
@@ -176,20 +222,10 @@ export const isURL = (input: string): boolean => {
 
   if (isSpecialChar(thing)) return false;
 
-  const { tld, isKeyword } = pickTld(thing);
+  const { tld, tldIndex, isKeyword } = pickTld(thing);
   if (!tld || isKeyword) return false;
 
-  // 按后缀在输入中的位置决定补 www 还是不补,再用 host 校验整体合法性。
-  const temp = thing.split(tld).join('');
-  let url: string;
-  if (temp.includes('.') && !temp.startsWith('.')) {
-    url = `http://${thing}`;
-  } else if (temp.includes('.') && temp.startsWith('.')) {
-    url = `http://www${thing}`;
-  } else {
-    url = `http://${thing}`;
-  }
-  return getHostOf(url) !== '';
+  return getHostOf(toHttpUrl(thing, tldIndex)) !== '';
 };
 
 // 把地址栏输入解析为最终要加载的 URL:是域名/IP/完整 URL 则补 http:// 直达,
@@ -198,13 +234,17 @@ export const realurl = (
   input: string,
   searchEngineUrl: string,
 ): string => {
-  const thing = (input || '').trim();
+  const raw = (input || '').trim();
+  const thing = normalizeUrlInput(raw);
   if (thing === '') return searchEngineUrl || '';
 
   if (isWellKnownUrl(thing)) return thing;
 
   // 外部协议原样返回:交由调用方(openExternal)派发给系统应用,既不补 http:// 也不搜索。
   if (getExternalProtocol(thing)) return thing;
+
+  const protocolRelativeUrl = toProtocolRelativeUrl(thing);
+  if (protocolRelativeUrl) return protocolRelativeUrl;
 
   if (isWindowsAbsolutePath(thing)) return toFileUrl(thing);
 
@@ -213,26 +253,18 @@ export const realurl = (
   }
 
   if (isSpecialChar(thing)) {
-    return getSearchUrl(thing, searchEngineUrl);
+    return getSearchUrl(raw, searchEngineUrl);
   }
 
-  const { tld, isKeyword } = pickTld(thing);
+  const { tld, tldIndex, isKeyword } = pickTld(thing);
   if (!tld || isKeyword) {
-    return getSearchUrl(thing, searchEngineUrl);
+    return getSearchUrl(raw, searchEngineUrl);
   }
 
-  const temp = thing.split(tld).join('');
-  let url: string;
-  if (temp.includes('.') && !temp.startsWith('.')) {
-    url = `http://${thing}`;
-  } else if (temp.includes('.') && temp.startsWith('.')) {
-    url = `http://www${thing}`;
-  } else {
-    url = `http://${thing}`;
-  }
+  const url = toHttpUrl(thing, tldIndex);
 
   if (getHostOf(url) === '') {
-    return getSearchUrl(thing, searchEngineUrl);
+    return getSearchUrl(raw, searchEngineUrl);
   }
   return url;
 };
@@ -264,8 +296,8 @@ export const matchesPattern = (pattern: string, url: string) => {
   return url.match(regexp) != null;
 };
 
-export const getDomain = (url: string): string => {
-  let hostname = url;
+export const getDomain = (url: string | null | undefined): string => {
+  let hostname = typeof url === 'string' ? url : '';
 
   if (hostname.includes('http://') || hostname.includes('https://')) {
     hostname = hostname.split('://')[1];
@@ -327,38 +359,47 @@ export const extractSearchQuery = (
   }
 };
 
-// 取注册主域(去端口、去子域),对齐安卓 UrlUtils.getSingledianHost / 鸿蒙 UrlUtil。
-// 仅用于密码填充的"同站"判断,不追求 PSL 精度。
-export const getSingledHost = (raw: string): string => {
+// 规范化密码记录保存的站点。旧数据或导入数据可能保留完整 URL，
+// 而新记录保存的是 hostname，因此两种格式都需要支持。
+const normalizeHostname = (raw: string): string => {
+  const value = (raw || '').trim();
+  if (!value) return '';
+
   try {
-    let host = raw;
-    // 允许传入完整 url 或纯 host
-    if (host.includes('://')) host = new URL(host).hostname;
-    else host = host.split('/')[0];
-    host = host.split(':')[0].toLowerCase();
-    if (!host) return '';
-    // IP 直接返回
-    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return host;
-    // 去掉前导子域,保留主域(与安卓/鸿蒙逻辑逐字对应:最多去两级)
-    if (host.indexOf('.') !== host.lastIndexOf('.')) {
-      host = host.substring(host.indexOf('.') + 1);
-    }
-    if (host.indexOf('.') !== host.lastIndexOf('.')) {
-      host = host.substring(host.indexOf('.') + 1);
-    }
-    return host;
-  } catch (e) {
+    const url = new URL(value.includes('://') ? value : `https://${value}`);
+    return url.hostname.toLowerCase();
+  } catch {
     return '';
   }
+};
+
+// 取注册主域(去端口、去子域)。tldts 基于 Public Suffix List，
+// 能正确区分 example.co.uk 等多级后缀。
+export const getSingledHost = (raw: string): string => {
+  const host = normalizeHostname(raw);
+  if (!host) return '';
+
+  // IP 和 localhost 没有注册主域，只能精确匹配。
+  if (host === 'localhost' || /^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
+    return host;
+  }
+
+  return getRegistrableDomain(host, { allowPrivateDomains: true }) || host;
+};
+
+export const hasSameHostname = (stored: string, current: string): boolean => {
+  const a = normalizeHostname(stored);
+  const b = normalizeHostname(current);
+  return !!a && a === b;
 };
 
 // 密码填充的"同站"匹配:精确 host 相等,或注册主域相同(passport.x.com ↔ x.com)。
 // stored 是入库时存的 url(通常是 hostname),current 是当前页 hostname。
 export const hostMatches = (stored: string, current: string): boolean => {
-  if (!stored || !current) return false;
-  const a = stored.split(':')[0].toLowerCase();
-  const b = current.split(':')[0].toLowerCase();
-  if (a === b) return true;
+  if (hasSameHostname(stored, current)) return true;
+  const a = normalizeHostname(stored);
+  const b = normalizeHostname(current);
+  if (!a || !b) return false;
   const da = getSingledHost(a);
   const db = getSingledHost(b);
   return !!da && da === db;
@@ -372,58 +413,16 @@ const getHost = (url: string): string => {
   }
 };
 
-const toBase64 = (str: string): string => {
-  return btoa(unescape(encodeURIComponent(str)));
-};
-
 export const getIconByUrlNet = (url: string): string => {
+  // 扩展页不走网络图标服务:host 会被解析成扩展 ID 必败,
+  // 还会在 <img onError> 触发灰地球闪烁。扩展页 favicon 由 view.ts 直接填充。
+  if (url.startsWith('chrome-extension://')) return '';
   try {
-    let host = getHost(url);
-
-    if (url.startsWith('chrome://')) {
-      if (url.includes('://bookmarks')) {
-        host = 'bookmarks2.yjllq.com';
-      } else if (url.includes('://download')) {
-        host = 'download.yjllq.com';
-      } else if (url.includes('://history')) {
-        host = 'history.yjllq.com';
-      } else if (url.includes('://flags')) {
-        host = 'flags.yjllq.com';
-      }
-    } else {
-      if (url.includes('://bookmarks')) {
-        host = 'bookmarks.yjllq.com';
-      } else if (url.includes('://download')) {
-        host = 'download.yjllq.com';
-      } else if (url.includes('://history')) {
-        host = 'history.yjllq.com';
-      } else if (url.includes('://flags')) {
-        host = 'flags.yjllq.com';
-      }
-    }
-
-    let protocol: string = null;
-    let name = host;
-
-    try {
-      const parsed = new URL(url);
-      protocol = parsed.protocol.replace(':', '');
-
-      if (parsed.port !== '') {
-        name = `${name}:${parsed.port}`;
-      }
-    } catch (e) {
-      name = host;
-    }
-
-    let iconTarget = `http://${name}`;
-
-    if (protocol === 'https') {
-      iconTarget = iconTarget.replace('http://', 'https://');
-    }
-
-    return `https://icon.rainsee.cn/iconv2.php?base=${toBase64(iconTarget)}`.trim();
+    const host = getHost(url);
+    if (!host) return '';
+    // 公共图标服务:DuckDuckGo favicon 服务
+    return `https://icons.duckduckgo.com/ip3/${host}.ico`;
   } catch (e) {
-    return `http://icon.yjllq.com/get.php?url=${url}`;
+    return '';
   }
 };

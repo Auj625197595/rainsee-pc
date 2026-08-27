@@ -11,7 +11,7 @@
 // 该模块在被 import 时自初始化,需在 ./application 之前 import,以便捕获
 // Application 构造(Settings 等)期间的异常。
 
-import { app, crashReporter } from 'electron';
+import { app, crashReporter, ipcMain } from 'electron';
 import {
   createWriteStream,
   mkdirSync,
@@ -20,14 +20,32 @@ import {
   unlinkSync,
   appendFileSync,
 } from 'fs';
-import { join } from 'path';
+import { basename, join } from 'path';
 
 // 日志保留份数(按修改时间最新的 N 份,超出自动删除)。
-const MAX_LOG_FILES = 10;
+const MAX_LOG_FILES = 30;
 
 let stream: ReturnType<typeof createWriteStream> | null = null;
 let logFilePath = '';
 let terminalConsoleAvailable = true;
+
+const MAX_RENDERER_DIAGNOSTICS = 32;
+const rendererDiagnostics = new Map<number, string[]>();
+
+const recordRendererDiagnostic = (webContentsId: number, detail: string) => {
+  const entries = rendererDiagnostics.get(webContentsId) || [];
+  entries.push(`[${timestamp()}] ${detail.replace(/[\r\n]+/g, ' ').slice(0, 800)}`);
+  if (entries.length > MAX_RENDERER_DIAGNOSTICS) {
+    entries.splice(0, entries.length - MAX_RENDERER_DIAGNOSTICS);
+  }
+  rendererDiagnostics.set(webContentsId, entries);
+};
+
+const formatExitCode = (value: unknown) => {
+  const exitCode = Number(value);
+  if (!Number.isInteger(exitCode)) return String(value ?? '?');
+  return `${exitCode} (0x${(exitCode >>> 0).toString(16).toUpperCase()})`;
+};
 
 // 保留原始 console,镜像的同时仍输出到终端(开发态可见)。
 const origConsole = {
@@ -101,6 +119,20 @@ const writeSync = (line: string) => {
     appendFileSync(logFilePath, line);
   } catch {
     // 尽力而为
+  }
+};
+
+const recentCrashDumps = (): string[] => {
+  try {
+    const crashDir = app.getPath('crashDumps');
+    return readdirSync(crashDir)
+      .filter((name) => /\.(dmp|mdmp)$/i.test(name))
+      .map((name) => ({ name, time: statSync(join(crashDir, name)).mtimeMs }))
+      .sort((a, b) => b.time - a.time)
+      .slice(0, 5)
+      .map(({ name }) => basename(name));
+  } catch {
+    return [];
   }
 };
 
@@ -199,6 +231,18 @@ export const initLogger = () => {
     write('error', args);
   };
 
+  ipcMain.on('renderer-diagnostic', (event: any, payload: any) => {
+    const phase = typeof payload?.phase === 'string' ? payload.phase.slice(0, 80) : 'unknown';
+    const detail = typeof payload?.detail === 'string' ? payload.detail.slice(0, 400) : '';
+    const url = typeof payload?.url === 'string' ? payload.url.slice(0, 600) : '';
+    const readyState = typeof payload?.readyState === 'string' ? payload.readyState : '';
+    const visibility = typeof payload?.visibility === 'string' ? payload.visibility : '';
+    recordRendererDiagnostic(
+      event.sender.id,
+      `renderer ${phase} url=${url} readyState=${readyState} visibility=${visibility} detail=${detail}`,
+    );
+  });
+
   // 崩溃信息同步落盘,防止缓冲丢失。
   process.on('uncaughtException', (err: any) => {
     write('FATAL', [err?.stack || err]);
@@ -206,6 +250,12 @@ export const initLogger = () => {
   });
   process.on('unhandledRejection', (reason: any) => {
     write('PROMISE', [reason?.stack || reason]);
+  });
+  process.on('exit', (code) => {
+    // `exit` also observes direct app.exit() paths that skip before-quit.
+    // It cannot run after a native main-process crash; Crashpad minidumps and
+    // the lack of this marker then distinguish that case in a reproduction.
+    writeSync(`[${timestamp()}] [EXIT] process exit code=${code}\n`);
   });
 
   // 关键点:整窗“秒退”类故障排查。此前日志在崩溃处戛然而止、既无 [FATAL] 也无
@@ -249,7 +299,38 @@ export const initLogger = () => {
   // 渲染进程:加载失败 / 进程崩溃 / console warn+error 转发到主日志。
   app.on('web-contents-created', (_e: any, wc: any) => {
     try {
+      const webContentsId = Number(wc.id);
+      const describeProcess = () => {
+        let osProcessId = '?';
+        let frameProcessId = '?';
+        try {
+          osProcessId = wc.getOSProcessId();
+        } catch {}
+        try {
+          frameProcessId = wc.mainFrame?.processId ?? '?';
+        } catch {}
+        return `wc=${webContentsId} type=${wc.getType()} osPid=${osProcessId} framePid=${frameProcessId}`;
+      };
+      recordRendererDiagnostic(webContentsId, `created ${describeProcess()}`);
+      wc.on('did-start-navigation', (_ev: any, url: string, isInPlace: boolean, isMainFrame: boolean) => {
+        if (isMainFrame) {
+          recordRendererDiagnostic(
+            webContentsId,
+            `did-start-navigation url=${url} inPlace=${Boolean(isInPlace)}`,
+          );
+        }
+      });
+      wc.on('did-navigate', (_ev: any, url: string) => {
+        recordRendererDiagnostic(webContentsId, `did-navigate url=${url}`);
+      });
+      wc.on('dom-ready', () => {
+        recordRendererDiagnostic(webContentsId, `dom-ready ${describeProcess()}`);
+      });
+      wc.on('did-finish-load', () => {
+        recordRendererDiagnostic(webContentsId, `did-finish-load ${describeProcess()}`);
+      });
       wc.on('did-fail-load', (_ev: any, code: number, desc: string, url: string) => {
+        recordRendererDiagnostic(webContentsId, `did-fail-load code=${code} desc=${desc} url=${url}`);
         write('RENDERER', [`did-fail-load code=${code} desc=${desc} url=${url}`]);
       });
       wc.on('render-process-gone', (_ev: any, details: any) => {
@@ -260,16 +341,19 @@ export const initLogger = () => {
         } catch {
           // 忽略
         }
+        const diagnosticTrail = rendererDiagnostics.get(webContentsId) || [];
+        const exitCode = formatExitCode(details?.exitCode);
         try {
           writeSync(
-            `[${timestamp()}] [PROC-GONE] render-process-gone url=${url} ` +
-              `reason=${details?.reason} exitCode=${details?.exitCode}\n`,
+            `[${timestamp()}] [PROC-GONE] render-process-gone ${describeProcess()} url=${url} ` +
+              `reason=${details?.reason} exitCode=${exitCode}\n` +
+              `[${timestamp()}] [RENDERER-TRAIL] wc=${webContentsId} ${JSON.stringify(diagnosticTrail)}\n`,
           );
         } catch {
           // 忽略
         }
         write('RENDERER', [
-          `render-process-gone reason=${details?.reason} exitCode=${details?.exitCode}`,
+          `render-process-gone ${describeProcess()} reason=${details?.reason} exitCode=${exitCode}`,
         ]);
       });
       wc.on('console-message', (...a: any[]) => {
@@ -284,9 +368,18 @@ export const initLogger = () => {
         } catch {
           // 忽略
         }
+        recordRendererDiagnostic(
+          webContentsId,
+          `console-${level >= 3 ? 'error' : 'warn'} ${message} (${sourceId}:${line})`,
+        );
         write(level >= 3 ? 'RENDERER-ERR' : 'RENDERER-WARN', [
           `${message} (${url} ${sourceId}:${line})`,
         ]);
+      });
+      wc.once('destroyed', () => {
+        recordRendererDiagnostic(webContentsId, 'destroyed');
+        const cleanup = setTimeout(() => rendererDiagnostics.delete(webContentsId), 60_000);
+        cleanup.unref?.();
       });
     } catch {
       // 忽略单个 webContents 挂载失败
@@ -304,6 +397,13 @@ export const initLogger = () => {
   ]);
   write('INFO', [`userData=${app.getPath('userData')}`]);
   write('INFO', [`logFile=${logFilePath}`]);
+  try {
+    write('INFO', [`crashDumps=${app.getPath('crashDumps')}`]);
+    write('INFO', [`recentCrashDumps=${JSON.stringify(recentCrashDumps())}`]);
+  } catch {
+    // Electron may reject crashDumps before a platform-specific crash handler
+    // is available. The main log remains useful in that case.
+  }
   writeToOrigConsole('log', [`[logger] writing to ${logFilePath}`]);
 };
 

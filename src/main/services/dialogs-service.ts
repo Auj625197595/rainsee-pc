@@ -11,12 +11,19 @@ import { UpdateDialog } from '../dialogs/update';
 import { ShareDialog } from '../dialogs/share';
 import { ScreenshotDialog } from '../dialogs/screenshot';
 import { SearchEnginesDialog } from '../dialogs/search-engines';
+import { SiteInfoDialog } from '../dialogs/site-info';
 import { TranslateDialog } from '../dialogs/translate';
 import { InstallAppDialog } from '../dialogs/install-app';
 import { TabGroupPreviewDialog } from '../dialogs/tabgroup-preview';
 import { SidebarPanelDialog } from '../dialogs/sidebar-panel';
+// 开源版：手机互联(phone tabs)弹窗已移除。
 import { BookmarkOverflowDialog } from '../dialogs/bookmark-overflow';
 import { PersistentDialog } from '../dialogs/dialog';
+import { ClearBrowsingDataDialog } from '../dialogs/clear-browsing-data';
+import { HistoryBookmarksDialog } from '../dialogs/history-bookmarks';
+import { DownloadPromptDialog } from '../dialogs/download-prompt';
+import { CredentialsDialog } from '../dialogs/credentials';
+import { FormFillDialog } from '../dialogs/form-fill';
 import { Application } from '../application';
 import { IRectangle } from '~/interfaces';
 
@@ -41,6 +48,7 @@ interface IDialogShowOptions {
 
 interface IDialog {
   name: string;
+  browserWindow: Electron.BrowserWindow;
   browserView: BrowserView;
   id: number;
   tabIds: number[];
@@ -67,56 +75,27 @@ export class DialogsService {
   public persistentDialogs: PersistentDialog[] = [];
 
   // 懒加载工厂:每个 PersistentDialog 的构造会立刻 new BrowserView() 并 loadURL
-  // 一个完整的 React+mobx 包,代价不小。run() 在 onReady 的关键路径上(紧挨着
-  // windows.open()),若在此一次性构造全部弹窗,5 个额外的包加载会与主窗口抢占
-  // GPU/IO,拖慢启动。故只即时创建必需的 search/preview,其余登记为工厂,
-  // 首次访问时(getPersistent)按需创建;并在主窗口外壳加载完成后「逐个」预热
-  // (上一个 dom-ready 再造下一个),既不与启动争抢,也不一次性突发占用 CPU,
-  // 兼顾「启动快」与「打开即时」。
-  private persistentDialogFactories: { [name: string]: () => PersistentDialog } = {};
+  // 一个完整的 React+mobx 包,代价不小。构造阶段只登记工厂,除 search 外均在
+  // 用户真正打开时才创建,避免隐藏页面占用内存和启动资源。
+  // 用户若在 run() 前操作,getPersistent 也能从已登记工厂即时创建所需弹窗。
+  private persistentDialogFactories: {
+    [name: string]: () => PersistentDialog;
+  } = {};
 
-  // 默认预热顺序:仅保留高频/关键弹窗(menu/add-bookmark/show-block),它们常驻不回收。
-  // 其余弹窗分两类:
-  //  - 完全取消预加载(update/share/screenshot/translate/install-app):首次触发时
-  //    由 getPersistent→ensurePersistent 即时创建;install-app 另由 warmUpInstallAppDialog
-  //    在检测到可安装 PWA 时条件预热。
-  //  - hover 预加载 + hide 后 60s 销毁(disposableSet):启动不预热,首次 hover/click
-  //    创建,用完自动回收,见 scheduleDispose/disposePersistent。
-  // 默认预热顺序:现为空。所有持久弹窗要么即时构造(search),要么按需 / hover 预加载。
-  // menu/add-bookmark/show-block 改 hover 预加载(见 disposableSet);preview 首次 hover
-  // 标签创建;update/share/screenshot/translate/install-app 完全按需。warmUpPersistentDialogs
-  // 保留骨架供 phone-tabs 条件预热复用。
-  private warmUpOrder: string[] = [];
-
-  // 纳入「hide 后 60s 自动销毁」的弹窗。走 hover 预加载(或本就 hover 显示),
-  // 用完即回收 BrowserView + React 包内存,下次 hover/click 重建。
-  private disposableSet = new Set([
-    'tabgroup-preview',
-    'sidebar-panel',
-    'search-engines',
-    'bookmark-overflow',
-    'extensions-list',
-    // 这三个原为默认预热,现改为 hover 预加载(对应按钮 hover 触发)+ hide 60s 销毁。
-    'menu',
-    'add-bookmark',
-    'show-block',
-    // 标签 hover 预览:首次 hover 创建,移开后 60s 销毁(高频但常驻太占内存)。
-    'preview',
-  ]);
+  // search 是地址栏输入关键路径,保持常驻。其余工厂弹窗默认全部进入回收机制,
+  // 新增弹窗不再依赖人工维护白名单。
+  private readonly persistentDialogNames = new Set<string>();
   private disposeTimers = new Map<string, NodeJS.Timeout>();
   private readonly DISPOSE_DELAY = 60_000;
 
-  private warmedUp = false;
+  private started = false;
 
-  public run() {
-    this.createBrowserView();
-
-    // search 与地址栏输入联想强相关,保持即时创建。
-    // preview 改为首次 hover 标签时按需创建(工厂注册在下面),不再启动即构造。
-    this.persistentDialogs.push(new SearchDialog());
-
-    // 其余弹窗仅在用户交互时才会用到,登记为懒加载工厂,移出启动关键路径。
+  public constructor() {
+    // Factory registration is cheap and must be available as soon as a window
+    // can emit UI IPC. BrowserViews remain lazy, so this closes the early-click
+    // window without moving renderer work back onto the native-window path.
     this.persistentDialogFactories = {
+      search: () => new SearchDialog(),
       'show-block': () => new ShowBlockDialog(),
       'add-bookmark': () => new AddBookmarkDialog(),
       menu: () => new MenuDialog(),
@@ -125,60 +104,34 @@ export class DialogsService {
       share: () => new ShareDialog(),
       screenshot: () => new ScreenshotDialog(),
       'search-engines': () => new SearchEnginesDialog(),
-      'translate': () => new TranslateDialog(),
-      // 地址栏 PWA 安装图标点击后的安装确认弹窗(Edge 风格)。
+      'site-info': () => new SiteInfoDialog(),
+      'clear-browsing-data': () => new ClearBrowsingDataDialog(),
+      'download-prompt': () => new DownloadPromptDialog(),
+      credentials: () => new CredentialsDialog(),
+      'form-fill': () => new FormFillDialog(),
+      translate: () => new TranslateDialog(),
       'install-app': () => new InstallAppDialog(),
-      // 标签组悬停列表:用户悬停标签组芯片才用到,懒加载 + 预热。
       'tabgroup-preview': () => new TabGroupPreviewDialog(),
-      // 侧边栏缩放模式悬停浮层:仅缩放模式下悬停窄轨才用到,懒加载 + 预热。
       'sidebar-panel': () => new SidebarPanelDialog(),
-      // 书签栏「更多按钮」多列溢出菜单(子文件夹沿用原生单列菜单,故只需一级浮层)。
       'bookmark-overflow': () => new BookmarkOverflowDialog(),
-      // 标签 hover 缩略图预览:首次 hover 标签才创建,之后常驻(高频,不纳入销毁)。
+      'history-bookmarks-popup': () => new HistoryBookmarksDialog(),
       preview: () => new PreviewDialog(),
     };
+    Object.keys(this.persistentDialogFactories).forEach((name) =>
+      this.persistentDialogNames.add(name),
+    );
   }
 
-  // 逐个预热剩余持久弹窗。由主窗口外壳「加载完成」后触发(见 AppWindow),
-  // 只跑一次。每个弹窗等上一个 dom-ready(或超时兜底)再创建,避免突发并发。
-  public warmUpPersistentDialogs() {
-    if (this.warmedUp) return;
-    this.warmedUp = true;
+  public run() {
+    if (this.started) return;
 
-    const queue = this.warmUpOrder.filter((n) => this.persistentDialogFactories[n]);
-
-    const next = () => {
-      const name = queue.shift();
-      if (!name) return;
-
-      const dialog = this.ensurePersistent(name);
-      if (!dialog) {
-        next();
-        return;
-      }
-
-      // 已加载完成则直接进入下一个;否则等 dom-ready,并设超时兜底防止卡住队列。
-      let advanced = false;
-      const advance = () => {
-        if (advanced) return;
-        advanced = true;
-        // 让出一帧再造下一个,进一步摊平 CPU 占用。
-        setTimeout(next, 200);
-      };
-
-      const wc = dialog.webContents;
-      if (!wc || wc.isDestroyed()) {
-        advance();
-        return;
-      }
-      wc.once('dom-ready', advance);
-      setTimeout(advance, 1500);
-    };
-
-    next();
+    // search 与地址栏输入联想强相关,保持即时创建。
+    // 其余持久弹窗以及动态弹窗 BrowserView 都在实际打开时创建。
+    this.ensurePersistent('search');
+    this.started = true;
   }
 
-  // 按需(或预热时)从工厂创建持久弹窗;已存在则直接返回。
+  // 首次真正打开时从工厂创建持久弹窗;已存在则直接返回。
   private ensurePersistent(name: string): PersistentDialog | undefined {
     const existing = this.persistentDialogs.find((x) => x.name === name);
     if (existing) return existing;
@@ -191,32 +144,29 @@ export class DialogsService {
     // 不 delete 工厂(原实现是一次性 delete):disposable 弹窗销毁后需要靠工厂重建,
     // 工厂必须常驻。几个函数引用的内存开销可忽略。
 
-    // 接入「show 取消销毁 / hide 调度销毁」生命周期。仅 disposable 名单生效;
-    // 其余弹窗的 shown/hidden 事件无监听器,行为不变。
-    if (this.disposableSet.has(name)) {
+    // 除 search 外所有工厂弹窗统一接入回收生命周期。
+    if (this.isDisposable(name)) {
+      dialog.on('showing', () => this.cancelDispose(name));
       dialog.on('shown', () => this.cancelDispose(name));
       dialog.on('hidden', () => this.scheduleDispose(name));
+      this.scheduleDispose(name);
     }
+    dialog.once('load-failed', (error) => {
+      console.error(`[dialog] ${name} load failed`, error);
+      this.destroyPersistentInstance(name, dialog);
+    });
 
     return dialog;
   }
 
-  // 检测到页面可安装 PWA 时,预热安装确认弹窗(若尚未创建)。
-  // 由渲染端收到 pwa-installable(canInstall=true)后经 IPC 触发;未访问可安装页面
-  // 的用户不会浪费一个 React 包的加载。
-  public warmUpInstallAppDialog() {
-    this.ensurePersistent('install-app');
+  private isDisposable(name: string) {
+    return name !== 'search' && this.persistentDialogNames.has(name);
   }
 
-  // hover 预加载:按钮 hover 时后台创建弹窗(不显示),click 时秒开。已存在则 no-op。
-  public preloadOnHover(name: string) {
-    this.ensurePersistent(name);
-  }
-
-  // 安排弹窗在 hide 后 DISPOSE_DELAY 销毁。仅 disposable 名单生效。已有计时器先清,
+  // 安排弹窗在 hide 后 DISPOSE_DELAY 销毁。除 search 外统一生效。已有计时器先清,
   // 保证只保留最近一次 hide 的调度(防止快速 show/hide 反复 setTimeout)。
   public scheduleDispose(name: string) {
-    if (!this.disposableSet.has(name)) return;
+    if (!this.isDisposable(name)) return;
     // dialog 已不在(销毁中或已销毁),不要(重新)挂计时器,避免残留无谓计时器。
     if (!this.persistentDialogs.some((x) => x.name === name)) return;
     const existing = this.disposeTimers.get(name);
@@ -254,8 +204,16 @@ export class DialogsService {
       return;
     }
 
-    // 先从数组移除:这样后续 hide() 触发的 onHidden → scheduleDispose 会因
-    // some() 检查失败而不再重设计时器,避免销毁后还挂一个无谓的 60s 计时器。
+    this.destroyPersistentInstance(name, dialog);
+  }
+
+  private destroyPersistentInstance(name: string, dialog: PersistentDialog) {
+    this.cancelDispose(name);
+    const idx = this.persistentDialogs.indexOf(dialog);
+    if (idx === -1) return;
+
+    // 先从数组移除:这样后续 hide() 触发的 hidden → scheduleDispose 会因
+    // some() 检查失败而不再重设计时器,避免销毁后残留计时器。
     this.persistentDialogs.splice(idx, 1);
 
     // hide 确保 removeBrowserView + 清子类的 window resize/move listener,
@@ -285,7 +243,7 @@ export class DialogsService {
         allowRunningInsecureContent: true,
       },
     });
-    require("@electron/remote/main").enable(view.webContents);
+    require('@electron/remote/main').enable(view.webContents);
 
     // 透明背景：让弹窗圆角外/毛玻璃面板能透出底层页面(实现真实背景模糊)
     try {
@@ -293,8 +251,6 @@ export class DialogsService {
     } catch (e) {
       console.error('setBackgroundColor transparent failed', e);
     }
-
-    view.webContents.loadURL(`about:blank`);
 
     this.browserViews.push(view);
 
@@ -327,13 +283,16 @@ export class DialogsService {
       browserView = this.createBrowserView();
     }
 
-    const appWindow = Application.instance.windows.fromBrowserWindow(
-      browserWindow,
-    );
+    const appWindow =
+      Application.instance.windows.fromBrowserWindow(browserWindow);
 
     if (foundDialog && tabAssociation) {
       foundDialog.tabIds.push(tabAssociation.tabId);
       foundDialog._sendTabInfo(tabAssociation.tabId);
+    }
+
+    if (foundDialog) {
+      foundDialog.browserWindow = browserWindow;
     }
 
     browserWindow.webContents.send('dialog-visibility-change', name, true);
@@ -367,6 +326,7 @@ export class DialogsService {
 
     const dialog: IDialog = {
       browserView,
+      browserWindow,
       id: browserView.webContents.id,
       name,
       tabIds: [tabAssociation?.tabId],
@@ -402,10 +362,16 @@ export class DialogsService {
         this.browserViewDetails.set(browserView.webContents.id, false);
 
         if (this.browserViews.length > 1) {
-          // TODO: garbage collect unused BrowserViews?
-          // this.browserViewDetails.delete(browserView.id);
-          // browserView.destroy();
-          // this.browserViews.splice(1, 1);
+          // 并发弹窗临时扩出的 BrowserView 在关闭后立即回收，只保留一个空白槽位
+          // 供下一次动态弹窗复用。
+          this.browserViewDetails.delete(browserView.webContents.id);
+          const index = this.browserViews.indexOf(browserView);
+          if (index !== -1) this.browserViews.splice(index, 1);
+          try {
+            (browserView as any).destroy();
+          } catch {
+            // ignore
+          }
         } else {
           browserView.webContents.loadURL('about:blank');
         }
@@ -487,9 +453,10 @@ export class DialogsService {
       browserWindow.on('move', windowEvents.move);
     }
 
-    browserView.webContents.once('dom-ready', () => {
+    const onLoaded = () => {
+      if (browserView.webContents.isDestroyed()) return;
       // 重涂透明底色:--process-per-site 合并进程后,构造期设的透明会被继承的
-      // 不透明底色覆盖,dom-ready 后重涂确保浮层透明(否则背景变白)。
+      // 不透明底色覆盖,页面加载后重涂确保浮层透明(否则背景变白)。
       try {
         browserView.setBackgroundColor('#00000000');
       } catch {
@@ -497,15 +464,25 @@ export class DialogsService {
       }
       dialog.rearrange();
       browserView.webContents.focus();
-    });
+    };
 
+    let loadPromise: Promise<void>;
     if (process.env.NODE_ENV === 'development') {
-      browserView.webContents.loadURL(`http://localhost:4444/${name}.html`);
+      loadPromise = browserView.webContents.loadURL(
+        `http://localhost:4444/${name}.html`,
+      );
     } else {
-      browserView.webContents.loadURL(
+      loadPromise = browserView.webContents.loadURL(
         pathToFileURL(join(app.getAppPath(), 'build', `${name}.html`)).href,
       );
     }
+    loadPromise.then(onLoaded).catch((error) => {
+      // hide() 可能用 about:blank 主动取消尚未完成的加载，此时 dialog 已从
+      // dialogs 移除，不应记录成加载异常。
+      if (!this.dialogs.some((item) => item.id === dialog.id)) return;
+      console.error(`[dialog] ${name} load failed`, error);
+      dialog.hide();
+    });
 
     ipcMain.on(`hide-${browserView.webContents.id}`, () => {
       dialog.hide();
@@ -534,11 +511,34 @@ export class DialogsService {
     );
   };
 
+  // BrowserView 的后添加项位于 z 序顶部。沉浸头部在内容视图重挂载后需要回到
+  // 内容之上时，调用方会先重挂头部；这里再按原有显示顺序恢复页面弹窗，保证它们
+  // 始终位于头部之上。
+  public bringVisibleToTop(browserWindow: Electron.BrowserWindow) {
+    for (const dialog of this.persistentDialogs) {
+      if (dialog.visible && dialog.browserWindow === browserWindow) {
+        dialog.bringToTop();
+      }
+    }
+
+    for (const dialog of this.dialogs) {
+      if (dialog.browserWindow !== browserWindow) continue;
+      browserWindow.removeBrowserView(dialog.browserView);
+      browserWindow.addBrowserView(dialog.browserView);
+    }
+  }
+
   public destroy = () => {
     // 清所有挂起的销毁计时器,避免 fire 时访问已 destroy 的 webContents。
     for (const t of this.disposeTimers.values()) clearTimeout(t);
     this.disposeTimers.clear();
-    this.getBrowserViews().forEach((x) => (x.webContents as any).destroy());
+    this.browserViews.forEach((view) => {
+      if (!view.webContents.isDestroyed()) (view.webContents as any).destroy();
+    });
+    this.persistentDialogs.forEach((dialog) => dialog.destroy());
+    this.browserViews = [];
+    this.persistentDialogs = [];
+    this.browserViewDetails.clear();
   };
 
   public sendToAll = (channel: string, ...args: any[]) => {
@@ -557,12 +557,20 @@ export class DialogsService {
   }
 
   public getPersistent(name: string) {
-    // 首次访问时若尚未创建(预热未到/用户提前操作),按工厂即时创建。
+    // 首次打开时若尚未创建,按工厂即时创建。
     return this.ensurePersistent(name);
   }
 
+  // 仅查询现有实例。后台状态广播和幂等 hide 不应为了“可能存在”的弹窗创建
+  // 一个完整 React BrowserView。
+  public getExistingPersistent(name: string) {
+    return this.persistentDialogs.find((dialog) => dialog.name === name);
+  }
+
   public isVisible = (name: string) => {
-    return this.getDynamic(name) || this.getPersistent(name)?.visible;
+    return !!(
+      this.getDynamic(name) || this.getExistingPersistent(name)?.visible
+    );
   };
 
   // 关闭本窗口所有仍可见的持久弹窗。

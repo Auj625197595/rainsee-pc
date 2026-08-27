@@ -39,6 +39,8 @@ export interface IExtItem {
   hostPermissions: string[];
   optionalPermissions: string[];
   enabled: boolean;
+  // Chrome 主题没有后台脚本或工具栏动作，管理页据此显示“主题”而非 MV 标签。
+  type?: 'extension' | 'theme';
   // 是否允许在无痕模式运行(白名单 incognitoAllowedExtensions)。
   incognitoAllowed?: boolean;
   // data url 或 chrome-extension://<id>/<相对路径>,前端可直接用作 <img src>
@@ -51,4 +53,47 @@ export interface IExtItem {
   // 扩展选项页(options_ui.page / options_page)的完整 chrome-extension:// URL;
   // 无则为空字符串,代表该扩展没有选项页(地址栏扩展列表里不显示设置入口)。
   optionsUrl?: string;
+}
+
+// 管理页扩展分组。extensionIds 的顺序同时作为组内卡片顺序。
+export interface IExtensionGroup {
+  id: string;
+  name: string;
+  extensionIds: string[];
+}
+
+export type BrowserExtensionSourceType = 'chrome' | 'edge' | 'browser';
+
+// 从本机 Chrome / Edge 配置目录中发现、可迁移的扩展。
+export interface IBrowserExtensionImportItem {
+  key: string;
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  icon: string;
+  browser: BrowserExtensionSourceType;
+  browserName: string;
+  profileName: string;
+}
+
+export interface IBrowserExtensionImportSource {
+  browser: BrowserExtensionSourceType;
+  browserName: string;
+  profileName: string;
+  path: string;
+}
+
+export interface IBrowserExtensionImportScan {
+  canceled: boolean;
+  detected: boolean;
+  duplicateCount: number;
+  items: IBrowserExtensionImportItem[];
+  sources: IBrowserExtensionImportSource[];
+}
+
+export interface IBrowserExtensionImportResult {
+  imported: Array<{ id: string; name: string }>;
+  skipped: number;
+  failed: Array<{ key: string; name: string; message: string }>;
 }

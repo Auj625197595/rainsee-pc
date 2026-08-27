@@ -5,7 +5,7 @@ import {PersistentDialog} from './dialog';
 import {IBookmark} from '~/interfaces';
 
 const WIDTH = 436;
-const HEIGHT = 344;
+const HEIGHT = 408;
 
 export class AddBookmarkDialog extends PersistentDialog {
   private pos = {x: 0, y: 0};
@@ -20,7 +20,9 @@ export class AddBookmarkDialog extends PersistentDialog {
     });
 
     // 渲染层根据折叠/展开测量到的高度回报，重排弹窗
-    ipcMain.on(`resize-dialog-${this.id}`, (e, nextHeight: number) => {
+    const resizeChannel = `resize-dialog-${this.id}`;
+    this.ipcChannels.push(resizeChannel);
+    ipcMain.on(resizeChannel, (e, nextHeight: number) => {
       super.rearrange({height: nextHeight});
     });
   }
@@ -44,6 +46,7 @@ export class AddBookmarkDialog extends PersistentDialog {
       title: string;
       bookmark?: IBookmark;
       favicon?: string;
+      folderId?: string;
     },
   ) {
     this.pos = {x, y};
@@ -58,8 +61,18 @@ export class AddBookmarkDialog extends PersistentDialog {
       data = {url, title, bookmark, favicon};
     }
 
-    // 弹窗已在启动时预加载，waitForLoad=false：立即 addBrowserView+定位，秒开
-    await super.show(browserWindow, true, false);
+    // 地址栏星标(view.updateBookmark)有意把移动域排除在「已收藏」外。同 URL
+    // 已存在于移动设备目录时回退找到那条记录,让弹窗进编辑模式而不是重复新建
+    // (否则会移动域一条 + 桌面书签栏一条)。
+    if (!data.bookmark && data.url) {
+      data.bookmark = Application.instance.storage.bookmarks.find(
+        (x) =>
+          x.url === data.url &&
+          Application.instance.storage.isUnderMobileFolder(x),
+      );
+    }
+
+    if (!(await super.show(browserWindow, true))) return;
 
     browserWindow.removeListener('resize', this.onBoundsUpdate);
     browserWindow.removeListener('move', this.onBoundsUpdate);

@@ -1,6 +1,7 @@
 import { extname } from 'path';
 import { dialog, clipboard } from 'electron';
 import { Application } from '../application';
+import { showPrintPreview } from '../print-preview';
 
 export const saveAs = async () => {
   const {
@@ -655,13 +656,20 @@ export const viewSource = async () => {
   );
 };
 
-export const printPage = () => {
+export const printPage = async () => {
   const { viewManager } = Application.instance.windows.current;
   const view = viewManager.selected;
   if (!view) return;
 
-  // 直接唤起系统原生打印对话框(与 Chrome 一致):用户选打印机/页码后即打印。
-  // 不要走「生成 PDF → 新标签打开查看器」那条路——file:// PDF 会被 file-nav
-  // 重定向到 koodoreader,且其同步 stop() 曾触发 Chromium CHECK 崩溃主进程。
-  view.webContents.print();
+  try {
+    const pdf = await view.webContents.printToPDF({
+      printBackground: true,
+      preferCSSPageSize: true,
+    });
+    showPrintPreview(view.webContents, pdf);
+  } catch (error) {
+    console.error('[print-preview] failed to create PDF:', error);
+    // 预览生成失败时仍保证用户能完成打印。
+    view.webContents.print();
+  }
 };

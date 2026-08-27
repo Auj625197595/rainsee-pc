@@ -1,7 +1,5 @@
 import {BrowserWindow, ipcMain, dialog} from 'electron';
-import * as https from 'https';
 import * as fs from 'fs';
-import {createHash} from 'crypto';
 import * as QRCode from 'qrcode';
 import {Application} from '../application';
 import {PersistentDialog} from './dialog';
@@ -9,40 +7,7 @@ import {PersistentDialog} from './dialog';
 const WIDTH = 392;
 const HEIGHT = 620;
 
-// 短链签名:与安卓/boxv8 原版一致 sign=MD5(url), key=MD5(sign+"jiangyuting")
-const md5 = (text: string) => createHash('md5').update(text).digest('hex');
-
-// 主进程发起 POST(application/x-www-form-urlencoded),规避弹窗 file:// 的 CORS
-const postForm = (url: string, form: Record<string, string>): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const body = Object.keys(form)
-      .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(form[k])}`)
-      .join('&');
-    const req = https.request(
-      url,
-      {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/x-www-form-urlencoded',
-          'content-length': Buffer.byteLength(body),
-        },
-      },
-      (res) => {
-        let data = '';
-        res.setEncoding('utf8');
-        res.on('data', (chunk) => (data += chunk));
-        res.on('end', () => resolve(data));
-        res.on('error', reject);
-      },
-    );
-    req.on('error', reject);
-    req.write(body);
-    req.end();
-  });
-
-const API = 'https://api.yjllq.com/index.php/api';
-
-// 二维码:本地离线生成 PNG data URL(引入 qrcode 库,不再联网调 QrcodeByNet)
+// 二维码:本地离线生成 PNG data URL
 const createQrcode = (text: string): Promise<string> =>
   QRCode.toDataURL(text, {
     margin: 2,
@@ -51,16 +16,6 @@ const createQrcode = (text: string): Promise<string> =>
     color: {dark: '#000000', light: '#ffffff'},
   });
 
-// 短链:POST Initv3/getDuanLian {key,url,sign} -> 直接返回短链字符串
-const createShortUrl = async (url: string): Promise<string> => {
-  const sign = md5(url);
-  const key = md5(`${sign}jiangyuting`);
-  const raw = await postForm(`${API}/Initv3/getDuanLian`, {key, url, sign});
-  const short = `${raw}`.replace(/"/g, '').replace(/\\/g, '').trim();
-  if (!short || !/^https?:\/\//.test(short)) throw new Error('short_url_failed');
-  return short;
-};
-
 export class ShareDialog extends PersistentDialog {
   public constructor() {
     super({
@@ -68,22 +23,32 @@ export class ShareDialog extends PersistentDialog {
       bounds: {width: WIDTH, height: HEIGHT},
     });
 
-    // 渲染层请求生成二维码 + 短链(主进程发起,结果回推)
-    ipcMain.on(`share-generate-${this.id}`, async (e, url: string) => {
-      const [qr, short] = await Promise.allSettled([
-        createQrcode(url),
-        createShortUrl(url),
-      ]);
-      this.send('share-result', {
-        qrUrl: qr.status === 'fulfilled' ? qr.value : '',
-        qrError: qr.status === 'rejected',
-        shortUrl: short.status === 'fulfilled' ? short.value : '',
-        shortError: short.status === 'rejected',
-      });
+    const generateChannel = `share-generate-${this.id}`;
+    const downloadChannel = `share-download-qr-${this.id}`;
+    this.ipcChannels.push(generateChannel, downloadChannel);
+
+    // 渲染层请求生成二维码(本地离线生成,结果回推)
+    ipcMain.on(generateChannel, async (e, url: string) => {
+      try {
+        const qr = await createQrcode(url);
+        this.send('share-result', {
+          qrUrl: qr,
+          qrError: false,
+          shortUrl: '',
+          shortError: false,
+        });
+      } catch (err) {
+        this.send('share-result', {
+          qrUrl: '',
+          qrError: true,
+          shortUrl: '',
+          shortError: false,
+        });
+      }
     });
 
-    // 渲染层请求下载二维码:qrUrl 现为本地生成的 data URL,直接解码 base64 写盘(不联网)
-    ipcMain.on(`share-download-qr-${this.id}`, async (e, qrUrl: string) => {
+    // 渲染层请求下载二维码:qrUrl 为本地生成的 data URL,直接解码 base64 写盘(不联网)
+    ipcMain.on(downloadChannel, async (e, qrUrl: string) => {
       try {
         if (!qrUrl) throw new Error('empty');
         const m = /^data:image\/(\w+);base64,(.+)$/.exec(qrUrl);
@@ -130,7 +95,7 @@ export class ShareDialog extends PersistentDialog {
     const url = (payload && payload.url) || selected.url;
     const title = (payload && payload.title) || selected.title;
 
-    await super.show(browserWindow, true, false);
+    if (!(await super.show(browserWindow, true))) return;
 
     browserWindow.removeListener('resize', this.onBoundsUpdate);
     browserWindow.removeListener('move', this.onBoundsUpdate);

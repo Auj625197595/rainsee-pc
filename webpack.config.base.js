@@ -87,16 +87,22 @@ const config = {
 
   resolve: {
     modules: ['node_modules'],
-    extensions: ['.js', '.jsx', '.tsx', '.ts', '.json'],
+    extensions: ['.js', '.es.js', '.jsx', '.tsx', '.ts', '.json'],
     alias: {
       '~': INCLUDE,
-      // Force the ESM build of phosphor-icons; its package.json "exports"
-      // resolves bare imports to a CJS file that breaks under webpack's
-      // ESM context ("exports is not defined"). The `$` matches the bare
-      // specifier only, leaving deep imports untouched.
+      // Keep existing imports ergonomic without bundling Phosphor's complete
+      // icon catalog. The local entry re-exports only icons used by Rainsee,
+      // each from its independently tree-shakeable CSR module.
       '@phosphor-icons/react$': resolve(
         __dirname,
-        'node_modules/@phosphor-icons/react/dist/index.es.js',
+        'src/renderer/phosphor-icons.ts',
+      ),
+      // Phosphor maps CommonJS deep imports back to its complete CJS index.
+      // Resolve the selective entry's deep requests to physical ESM modules
+      // so ts-loader's CommonJS output cannot trigger that fallback.
+      '@phosphor-icons/react/dist/csr': resolve(
+        __dirname,
+        'node_modules/@phosphor-icons/react/dist/csr',
       ),
     },
     plugins: [new TsconfigPathsPlugin()],
@@ -136,19 +142,12 @@ const config = {
   },
 };
 
-if (dev) {
-  config.module.rules[1].use.splice(0, 0, {
-    loader: 'babel-loader',
-    options: { plugins: ['react-refresh/babel'] },
-  });
-}
-
 function getConfig(...cfg) {
   return merge(config, ...cfg);
 }
 
 const getHtml = (name) => {
-  // newtab 单独模板:head 预连接 pcapp.rainsee.cn,缩短内嵌 iframe 的握手白屏。
+  // newtab 单独模板:head 预连接 pcv2.rainsee.cn,缩短内嵌 iframe 的握手白屏。
   // 其余 webui 页(settings/history/bookmarks 等)继续共用 app.html,不受污染。
   const templateMap = {
     app: 'static/pages/main-app.html',
@@ -159,6 +158,10 @@ const getHtml = (name) => {
     template: templateMap[name] || 'static/pages/app.html',
     filename: `${name}.html`,
     chunks: [name],
+    // app.html owns a tiny inline startup shell. It loads the generated
+    // scripts itself after that shell has painted once; all other pages keep
+    // HtmlWebpackPlugin's normal injection path.
+    inject: name === 'app' ? false : true,
   });
 };
 

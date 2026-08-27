@@ -32,6 +32,27 @@ const appConfig = getConfig(getBaseConfig('app'), {
     : [],
 });
 
+if (dev) {
+  // Fast Refresh belongs to renderer React code only. Injecting this loader in
+  // the shared config also instruments Electron main/preload modules, where
+  // the refresh runtime globals do not exist.
+  appConfig.module = {
+    ...appConfig.module,
+    rules: appConfig.module.rules.map((rule) => ({
+      ...rule,
+      use: (rule.use || []).some((use) => use && use.loader === 'ts-loader')
+        ? [
+            {
+              loader: 'babel-loader',
+              options: { plugins: ['react-refresh/babel'] },
+            },
+            ...rule.use,
+          ]
+        : rule.use,
+    })),
+  };
+}
+
 const extPopupConfig = getConfig({
   target: 'web',
 
@@ -43,6 +64,7 @@ applyEntries(appConfig, [
   ...(process.env.ENABLE_AUTOFILL ? ['form-fill', 'credentials'] : []),
   'app',
   'permissions',
+  'bluetooth',
   'auth',
   'find',
   'menu',
@@ -54,6 +76,7 @@ applyEntries(appConfig, [
   'tabgroup-preview',
   'sidebar-panel',
   'downloads-dialog',
+  'download-prompt',
   'extensions-list',
   'add-bookmark',
   'show-block',
@@ -61,12 +84,16 @@ applyEntries(appConfig, [
   'update',
   'zoom',
   'search-engines',
+  'site-info',
+  'clear-browsing-data',
   'translate',
   'install-app',
   'bookmark-overflow',
+  'history-bookmarks-popup',
   'settings',
   'history',
   'flags',
+  'memory',
   'newtab',
   'image-viewer',
   'bookmarks',

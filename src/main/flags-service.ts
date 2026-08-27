@@ -68,7 +68,9 @@ const getPersistedSelections = (): Record<string, FlagSelection> => {
   return result;
 };
 
-const getFlagsMarkdownPath = () => resolve(process.cwd(), FLAGS_MARKDOWN_FILE);
+// main.bundle.js 和构建时复制的 flasg.md 始终位于同一目录。不能依赖
+// process.cwd()：安装包从桌面快捷方式启动时，工作目录并非应用目录。
+const getFlagsMarkdownPath = () => resolve(__dirname, FLAGS_MARKDOWN_FILE);
 
 const parsePlatforms = (descriptionLine: string): string[] => {
   const idx = descriptionLine.lastIndexOf(' – ');
@@ -109,8 +111,8 @@ const parseFlagsMarkdown = (): IFlagItem[] => {
 
   const filePath = getFlagsMarkdownPath();
   if (!existsSync(filePath)) {
-    cachedFlags = [];
-    return cachedFlags;
+    console.error(`[flags] data file not found: ${filePath}`);
+    return [];
   }
 
   const raw = readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');

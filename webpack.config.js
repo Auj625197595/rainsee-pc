@@ -17,10 +17,25 @@ const mainConfig = getConfig({
 
   devtool: dev ? 'inline-source-map' : false,
 
+  output: {
+    // Main-process lazy chunks share build/ with renderer chunks. Keep them in
+    // a dedicated namespace so concurrent compilers cannot overwrite them.
+    chunkFilename: 'main-chunks/[name].[contenthash:8].js',
+  },
+
+  optimization: {
+    // package.json marks source files side-effect-free for renderer shaking.
+    // The main process has intentional registration imports, so keep every
+    // imported module while still allowing import() to form lazy chunks.
+    sideEffects: false,
+    usedExports: false,
+  },
+
   watch: dev,
 
   entry: {
     main: './src/main',
+    'database-worker': './src/main/services/database-worker',
   },
 
   plugins: [
@@ -36,7 +51,7 @@ const mainConfig = getConfig({
       patterns: [
         {
           from:
-            'node_modules/@cliqz/adblocker-electron-preload/dist/preload.cjs.js',
+            'node_modules/@cliqz/adblocker-electron-preload/dist/index.cjs',
           to: 'preload.js',
           transform: async (fileContent, path) => {
             return (
@@ -44,13 +59,61 @@ const mainConfig = getConfig({
             ).code.toString();
           },
         },
-        // 注:koodoreader 阅读器静态资源(web.koodoreader.com/)在开源版不随仓库分发。
-        // 如需 PDF/epub 阅读功能,请从 Koodo Reader 官方获取构建产物放入
-        // web.koodoreader.com/ 目录,并恢复下方 CopyPlugin pattern(详见 README)。
+        {
+          // Tiny native entry: secondary file/URL launches acquire the lock
+          // and exit without parsing the full main.bundle.js.
+          from: resolve(__dirname, 'src/main/main-launcher.js'),
+          to: resolve(__dirname, 'build', 'main-launcher.js'),
+        },
+        {
+          // Shared stable lock resolver used by the unbundled launcher.
+          from: resolve(__dirname, 'src/main/instance-lock.js'),
+          to: resolve(__dirname, 'build', 'instance-lock.js'),
+        },
+        {
+          // koodoreader 阅读器静态资源:protocol.ts 在 yjllq://web.koodoreader.com/
+          // 下按 __dirname/web.koodoreader.com/* 取文件。打包时 electron-builder
+          // 也会通过 extraFiles 拷一份,这里保证本地 `npm start` 同样可用。
+          // glob 显式匹配目录下全部文件,避免 to 被当成单一文件名而互相覆盖。
+          from: resolve(__dirname, 'web.koodoreader.com').replace(/\\/g, '/') + '/**/*',
+          to: resolve(__dirname, 'build', 'web.koodoreader.com', '[path][name][ext]'),
+          context: resolve(__dirname, 'web.koodoreader.com'),
+        },
+        {
+          // flags-service 与 main.bundle.js 从同一 build 目录读取数据。
+          // electron-builder 只收集 build/**/*，因此安装包也会包含该文件。
+          from: resolve(__dirname, 'flasg.md'),
+          to: resolve(__dirname, 'build', 'flasg.md'),
+        },
       ],
     })
   ],
 });
+
+// The shared tsconfig lowers import() to Promise.resolve().then(require),
+// which keeps deferred services in main.bundle.js. Preserve ESM only for the
+// main compiler so webpack can split those services without changing renderer
+// tree-shaking or its side-effect behavior.
+mainConfig.module = {
+  ...mainConfig.module,
+  rules: mainConfig.module.rules.map((rule) => ({
+    ...rule,
+    use: (rule.use || []).map((use) =>
+      use && use.loader === 'ts-loader'
+        ? {
+            ...use,
+            options: {
+              ...use.options,
+              compilerOptions: {
+                ...(use.options.compilerOptions || {}),
+                module: 'esnext',
+              },
+            },
+          }
+        : use,
+    ),
+  })),
+};
 
 const preloadConfig = getConfig({
   target: 'web',
@@ -61,6 +124,8 @@ const preloadConfig = getConfig({
 
   entry: {
     'view-preload': './src/preloads/view-preload',
+    // 独立 PWA 窗口的轻量应用栏（右上角更多菜单）。
+    'app-mode-preload': './src/preloads/app-mode-preload',
   },
 
   plugins: [],

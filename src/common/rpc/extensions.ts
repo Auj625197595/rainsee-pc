@@ -9,7 +9,7 @@ export interface ActionAnchorRect {
 
 export interface ExtensionMainService {
   uninstall(id: string): Promise<boolean>;
-  inspectBackgroundPage(id: string): void;
+  inspectBackgroundPage(id: string): Promise<void>;
   /**
    * Fire a browser-action left-click for the extension. Opens the declared
    * popup (anchored under the toolbar icon via `anchorRect`) or fires

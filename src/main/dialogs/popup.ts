@@ -2,7 +2,7 @@ import {BrowserWindow, ipcRenderer, screen, Session, app} from 'electron'
 import * as path from 'path'
 import {getViewMenu} from "~/main/menus/extension-popup";
 import {Application} from "~/main/application";
-import {postBodyToLoadOptions} from "~/main/utils/post-body";
+import {windowOpenToLoadOptions} from "~/main/utils/window-open";
 
 // const debug = require('debug')('electron-chrome-extensions:popup')
 const debug = console.log;
@@ -37,19 +37,31 @@ export class PopupView {
   static POSITION_PADDING = 5
 
   static BOUNDS = {
-    minWidth: 200,
-    minHeight: 150,
+    // Chromium's ExtensionViewHost auto-resize bounds.
+    minWidth: 25,
+    minHeight: 25,
     maxWidth: 800,
     maxHeight: 600,
   }
 
-  /** preferred-size-changed 在布局稳定前会密集连发(异步数据/滚动条进出/子像素取整
-   *  都会触发)。去抖窗口,期间连发全部合并,只留首帧 + 停顿后的尾沿各一次。 */
-  static readonly PREFERRED_SIZE_DEBOUNCE_MS = 80
-  /** 两次真正 applyPreferredSize 之间的最小间隔(节流)。preferred-size-changed 可达每帧
-   *  一次,逐帧 setSize+定位既是闪动本身,也扰动页面布局。节流把 apply 频率压到人眼不敏感
-   *  以下,停顿后的尾沿去抖仍会补上最终值。 */
-  static readonly APPLY_MIN_INTERVAL_MS = 120
+  /** 合并同一轮 DOM/layout 产生的 preferred-size 连发。窗口保持旧尺寸（首次则保持隐藏），
+   *  直到最新尺寸稳定，再一次性提交 bounds。 */
+  static readonly PREFERRED_SIZE_SETTLE_MS = 60
+  /** 动画或轮询页面可能持续改变布局，不能让 debounce 导致 popup 永远不显示/不更新。 */
+  static readonly PREFERRED_SIZE_MAX_WAIT_MS = 180
+  /**
+   * setContentBounds 会改变页面可用宽度；部分扩展会因此在两个 preferred size
+   * 间来回报告。检测到 A -> B -> A 后先锁定在较大尺寸，截断这个反馈环。
+   */
+  static readonly PREFERRED_SIZE_OSCILLATION_LOCK_MS = 1000
+  /** 锁定期间仍允许真实内容明显扩展，不把正常交互当成抖动。 */
+  static readonly PREFERRED_SIZE_LOCK_BREAK_THRESHOLD_PX = 80
+  /** 部分 sandbox 异常的扩展既不发 preferred-size-changed，executeJavaScript 也不返回。
+   *  dom-ready 后用独立的 CDP 测量兜底，保证窗口一定能显示。 */
+  static readonly INITIAL_SIZE_FALLBACK_MS = 220
+  static readonly FALLBACK_MEASURE_TIMEOUT_MS = 300
+  static readonly FALLBACK_SIZE = { width: 400, height: 300 }
+  static readonly FALLBACK_SIZE_MESSAGE = '[rainsee-popup-size]'
   browserWindow?: BrowserWindow
   parent?: BrowserWindow
   extensionId: string
@@ -95,7 +107,11 @@ export class PopupView {
     this.anchorRect = opts.anchorRect
     this.session = opts.session
     this.url = opts.url
-    this.tabs = opts.tabs || []
+    this.tabs = (opts.tabs || []).map((tab) => ({
+      ...tab,
+      // Chrome always exposes groupId on tabs.Tab; ungrouped tabs use -1.
+      groupId: typeof tab?.groupId === 'number' ? tab.groupId : -1,
+    }))
 
     this.readyPromise = this.spawn()
   }
@@ -106,6 +122,7 @@ export class PopupView {
    * tearing the window down and calling spawn() again (see render-process-gone).
    */
   private spawn(): Promise<void> {
+    this.resetPreferredSizeState()
     this.browserWindow = new BrowserWindow({
       show: false,
       frame: false,
@@ -195,7 +212,7 @@ export class PopupView {
           // window.open until a fix is available.
           // https://github.com/electron/electron/issues/33383
           if(details.url && details.url != "about:blank") {
-            const loadOptions = postBodyToLoadOptions(details.postBody);
+            const loadOptions = windowOpenToLoadOptions(details);
             queueMicrotask(() => {
               Application.instance.windows.current.viewManager.create(
                 {
@@ -217,6 +234,10 @@ export class PopupView {
   }
 
   private show() {
+    if (this.initialSizeFallbackTimer) {
+      clearTimeout(this.initialSizeFallbackTimer)
+      this.initialSizeFallbackTimer = null
+    }
     this.hidden = false
     this.browserWindow?.show()
     console.log(`[crx-popup] show() ${this.extensionId}`)
@@ -248,6 +269,13 @@ export class PopupView {
     }
 
     win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+      if (
+        typeof message === 'string' &&
+        message.startsWith(PopupView.FALLBACK_SIZE_MESSAGE)
+      ) {
+        this.onFallbackSizeMessage(message)
+        return
+      }
       if (
         typeof message === 'string' &&
         (message.includes('[crx-preload]') ||
@@ -296,6 +324,14 @@ export class PopupView {
     }
     win.webContents.once('dom-ready', () => {
       console.log(`[crx-popup] dom-ready`)
+      this.domReady = true
+      this.scheduleInitialSizeFallback()
+      // CDP remains functional in the sandbox failure mode where insertCSS and
+      // executeJavaScript can hang. The media query automatically restores the
+      // native scrollbar at either Chrome size limit.
+      void this.installRootScrollbarGuardWithDebugger(win).catch((error) => {
+        debug('[crx-popup] failed to install scrollbar guard', error)
+      })
       injectTabs('dom-ready')
     })
     win.webContents.once('did-finish-load', () => {
@@ -313,13 +349,12 @@ export class PopupView {
     win.webContents.once('did-start-loading', () => console.log(`[crx-popup] did-start-loading`))
     win.webContents.once('did-stop-loading', () => console.log(`[crx-popup] did-stop-loading`))
 
-    // PRIMARY channel: append the tab snapshot to the URL hash. The hash is part
-    // of the page load itself (available before any script runs, no main→renderer
-    // IPC), so it survives the sandboxed-renderer state that breaks both the
-    // session preload AND executeJavaScript. The SHIM parses `crxbridge=` out of
-    // location.hash at startup and sets globalThis.__crxTabs. executeJavaScript
-    // (above) is the belt-and-suspenders backup. AdGuard's popup doesn't read
-    // location.hash (verified), so appending is safe.
+    // PRIMARY channel: append a transient tab snapshot to the URL hash. The
+    // fragment is available before any script runs (no main→renderer IPC), so
+    // it survives the sandboxed-renderer state that breaks both the session
+    // preload and executeJavaScript. The first injected SHIM synchronously
+    // caches a valid `crxbridge=` payload, then removes only that segment with
+    // history.replaceState before extension hash routers initialize.
     let loadUrl = url
     if (this.tabs.length && url.indexOf('crxbridge=') === -1) {
       const sep = url.indexOf('#') === -1 ? '#' : '&'
@@ -358,35 +393,46 @@ export class PopupView {
 
     if (this.destroyed) return
 
-    // Bridge recovery. When the popup renderer gets co-sited with a sandboxed
-    // host process (e.g. a running MV3 service worker of the same chrome-
-    // extension:// origin), the frame-type crx-preload registered on the session
-    // is silently skipped (`binding.startupData === null` → "sandboxed_renderer
-    // .bundle.js script failed to run"), so `globalThis.electron` (the IPC bridge
-    // crx-preload installs) never lands. Every chrome.* call in the popup then
-    // either throws or falls back to Electron's NATIVE impl (tabs.query returns
-    // the wrong registry, storage.sync is missing, …) — e.g. the AdGuard popup
-    // sits forever on "Loading" because tabs.query({active:true}) can't resolve
-    // the current site. The SHIM (prepended to every ext JS file) still runs, so
-    // probe the bridge AND the SHIM's yujianobjtest marker: if the SHIM ran but
-    // electron is undefined, crx-preload was skipped. Rebuild the window ONCE to
-    // force a fresh renderer process (new negotiation → proper startupData →
-    // crx-preload runs). reload() is useless here — it reuses the same broken
-    // process. Mirrors the vendor popup (browser/popup.ts) recovery.
+    // A direct Electron invoke bridge may be absent when startupData is dropped,
+    // while the source shim still provides a complete API through its service-
+    // worker proxy. Treat that fallback as healthy. Rebuild only when the popup
+    // has the wrong runtime identity or is missing an API surface it declared it
+    // needs; otherwise every healthy shim-backed popup would rebuild once.
     try {
       const bridgeState = await win.webContents.executeJavaScript(
-        `(() => ({ electronType: typeof globalThis.electron, shim: globalThis.yujianobjtest ?? null }))()`,
+        `(() => {
+          const e = globalThis.electron;
+          const c = globalThis.chrome;
+          let manifest;
+          try { manifest = c?.runtime?.getManifest?.(); } catch {}
+          const permissions = manifest?.permissions || [];
+          const needsStorage = permissions.includes('storage');
+          const needsSessionStorage = needsStorage && manifest?.manifest_version === 3;
+          return {
+            electronInvoke: typeof e?.invokeExtensionRaw === 'function' || typeof e?.invokeExtension === 'function',
+            runtimeId: c?.runtime?.id || '',
+            tabsQuery: typeof c?.tabs?.query === 'function',
+            storageReady: !needsStorage || (
+              typeof c?.storage?.local?.get === 'function' &&
+              (!needsSessionStorage || typeof c?.storage?.session?.get === 'function')
+            ),
+            shim: globalThis.yujianobjtest ?? null,
+          };
+        })()`,
         true,
       )
       console.log(
-        `[crx-popup] bridge probe electronType=${bridgeState && bridgeState.electronType} shim=${bridgeState && bridgeState.shim}`,
+        `[crx-popup] bridge probe ${JSON.stringify(bridgeState)}`,
       )
       if (
         !this.bridgeRecovered &&
-        (!bridgeState || bridgeState.electronType === 'undefined')
+        (!bridgeState ||
+          bridgeState.runtimeId !== this.extensionId ||
+          !bridgeState.tabsQuery ||
+          !bridgeState.storageReady)
       ) {
         this.bridgeRecovered = true
-        console.log('[crx-popup] bridge missing after load; rebuilding popup once')
+        console.log('[crx-popup] bridge unhealthy after load; rebuilding popup once')
         const dead = this.browserWindow
         this.browserWindow = undefined
         if (dead && !dead.isDestroyed()) {
@@ -408,11 +454,15 @@ export class PopupView {
     if (this.destroyed) return
 
     if (this.usingPreferredSize) {
-      // preferred-size-changed 通常在 loadURL resolve 前就已到达并完成首次定尺/显示。
-      // 此时再重置到最小尺寸会产生一次 350→200→365 的明显闪动,还会重新触发滚动条
-      // reflow。仅在尚未收到任何尺寸时设置隐藏窗口的初始值。
-      if (this.lastWidth < 0) {
+      // Empty documents may not emit preferred-size-changed. Keep that edge
+      // case usable without disturbing a real measurement already in flight.
+      if (
+        this.lastWidth < 0 &&
+        !this.pendingPreferredSize &&
+        !this.applyingPreferredSize
+      ) {
         this.setSize({ width: PopupView.BOUNDS.minWidth, height: PopupView.BOUNDS.minHeight })
+        this.show()
       }
     } else {
       // Set large initial size to avoid overflow
@@ -437,6 +487,10 @@ export class PopupView {
     if (this.preferredSizeTimer) {
       clearTimeout(this.preferredSizeTimer)
       this.preferredSizeTimer = null
+    }
+    if (this.initialSizeFallbackTimer) {
+      clearTimeout(this.initialSizeFallbackTimer)
+      this.initialSizeFallbackTimer = null
     }
 
     debug(`destroying ${this.extensionId}`)
@@ -473,18 +527,35 @@ export class PopupView {
     return this.readyPromise
   }
   
-  lastWidth = -1;
-  lastHeight = -1;
+  lastWidth = -1
+  lastHeight = -1
 
-  /** 去抖句柄 + 最近一次测量值,供 preferred-size-changed 合并连发。 */
   private preferredSizeTimer: ReturnType<typeof setTimeout> | null = null
+  private initialSizeFallbackTimer: ReturnType<typeof setTimeout> | null = null
   private pendingPreferredSize: Electron.Size | null = null
-  /** 同一次 popup 展示过程中只增不减的 preferred size。关闭后 PopupView 实例销毁,
-   *  下次打开重新测量。这样 248↔263 或其他 reflow 循环只会采用其中的最大值。 */
-  private maxPreferredWidth = 0
-  private maxPreferredHeight = 0
-  /** 上一次 applyPreferredSize 真正生效的时刻,用于节流。 */
-  private lastApplyAt = 0
+  private preferredSizeBatchStartedAt = 0
+  private applyingPreferredSize = false
+  private domReady = false
+  private sizingGeneration = 0
+  private appliedPreferredSizeHistory: Electron.Size[] = []
+  private preferredSizeOscillationLockUntil = 0
+
+  private resetPreferredSizeState() {
+    if (this.preferredSizeTimer) clearTimeout(this.preferredSizeTimer)
+    if (this.initialSizeFallbackTimer) clearTimeout(this.initialSizeFallbackTimer)
+    this.preferredSizeTimer = null
+    this.initialSizeFallbackTimer = null
+    this.pendingPreferredSize = null
+    this.preferredSizeBatchStartedAt = 0
+    this.applyingPreferredSize = false
+    this.domReady = false
+    this.lastWidth = -1
+    this.lastHeight = -1
+    this.appliedPreferredSizeHistory = []
+    this.preferredSizeOscillationLockUntil = 0
+    this.hidden = true
+    this.sizingGeneration += 1
+  }
 
   setSize(rect: Partial<Electron.Rectangle>): boolean {
     if (!this.browserWindow || !this.parent) return false
@@ -500,19 +571,19 @@ export class PopupView {
     )
 
     // preferred size 已经向上取整,此处只过滤完全相同的尺寸。不能忽略 1px 差异:
-    // 内容区少 1px 也可能触发滚动条,而历史最大值随后不会再次产生同一尺寸事件。
-    // 返回是否真的改了尺寸,调用方据此决定是否重新定位。
+    // 内容区少 1px 也可能触发滚动条。返回是否真的提交了新 bounds。
     if (width === this.lastWidth && height === this.lastHeight) {
       return false
     }
+    debug(`setSize`, { width, height })
+
     this.lastWidth = width
     this.lastHeight = height
 
-    debug(`setSize`, { width, height })
-
-    // 必须用 setContentSize 设置“内容区(网页)”尺寸而非整窗 setBounds，否则 Windows
-    // 下 frameless 窗口的非客户区(不可见缩放边框)会被算进去，导致弹窗宽高偏大、不精准。
-    this.browserWindow.setContentSize(width, height)
+    // 尺寸和锚点一次提交。先 setContentSize 再 setContentBounds 会产生两个原生
+    // geometry 变更，页面会在中间尺寸完成一次 layout，正是 scrollbar 闪现和
+    // preferred-size 回弹的来源。
+    this.updatePosition()
     return true
   }
 
@@ -556,6 +627,7 @@ export class PopupView {
     if (!this.browserWindow || this.browserWindow.isDestroyed()) return
     this.devToolsOpened = false
     this.browserWindow.setMinimumSize(PopupView.BOUNDS.minWidth, PopupView.BOUNDS.minHeight)
+    this.updatePosition()
     this.browserWindow.setResizable(false)
     this.browserWindow.setMovable(false)
   }
@@ -567,14 +639,10 @@ export class PopupView {
       return
     }
 
-    // For extension popups with a login form, the user may need to access a
-    // program outside of the app. Closing the popup would then add
-    // inconvenience.
-    if (!BrowserWindow.getFocusedWindow()) {
-      debug('preventing close due to focus residing outside of the app')
-      return
-    }
-
+    // Chrome action popups are transient: any focus loss closes the popup,
+    // including focus moving to another application. Keeping an unfocused
+    // popup alive leaves login UIs on their pre-login route even after the
+    // background has persisted the authenticated account.
     this.destroy()
   }
 
@@ -588,8 +656,8 @@ export class PopupView {
     // 因此这里统一用 content bounds 计算与定位，避免把窗口不可见边框算进去导致偏移。
     const winBounds = this.parent.getContentBounds()
 
-    // 直接用最近一次 setContentSize 写入的 lastWidth/lastHeight,而不是回读
-    // getContentBounds():frameless 不可缩放窗口在 Windows 上反复读内容边界会因
+    // 直接用最近一次计算出的 lastWidth/lastHeight,而不是回读 getContentBounds():
+    // frameless 不可缩放窗口在 Windows 上反复读内容边界会因
     // 不可见缩放边框/滚动条核算而逐帧漂移(日志里 x 每步 +14 的横向闪动来源)。
     const width = this.lastWidth
     const height = this.lastHeight
@@ -620,12 +688,221 @@ export class PopupView {
 
     if (this.destroyed) return
 
-    const changed = this.setSize({ width: rect.width, height: rect.height })
-    if (changed) this.updatePosition()
+    this.setSize({ width: rect.width, height: rect.height })
+  }
+
+  private scheduleInitialSizeFallback() {
+    if (this.initialSizeFallbackTimer) clearTimeout(this.initialSizeFallbackTimer)
+    this.initialSizeFallbackTimer = setTimeout(() => {
+      this.initialSizeFallbackTimer = null
+      void this.showUsingFallbackSize()
+    }, PopupView.INITIAL_SIZE_FALLBACK_MS)
+  }
+
+  private async showUsingFallbackSize() {
+    if (this.destroyed || !this.hidden || !this.browserWindow) return
+    const generation = this.sizingGeneration
+    const win = this.browserWindow
+
+    if (this.lastWidth > 0 && this.lastHeight > 0) {
+      this.show()
+      return
+    }
+
+    let size: Electron.Size = PopupView.FALLBACK_SIZE
+    try {
+      size = await Promise.race([
+        this.measurePreferredSizeWithDebugger(win),
+        new Promise<Electron.Size>((_resolve, reject) => {
+          setTimeout(
+            () => reject(new Error('popup preferred-size fallback timed out')),
+            PopupView.FALLBACK_MEASURE_TIMEOUT_MS,
+          )
+        }),
+      ])
+    } catch (error) {
+      debug('[crx-popup] preferred-size fallback failed', error)
+    }
+
+    if (
+      this.destroyed ||
+      !this.hidden ||
+      generation !== this.sizingGeneration ||
+      this.browserWindow !== win ||
+      win.isDestroyed()
+    ) {
+      return
+    }
+
+    if (this.preferredSizeTimer) {
+      clearTimeout(this.preferredSizeTimer)
+      this.preferredSizeTimer = null
+    }
+    this.pendingPreferredSize = null
+    this.preferredSizeBatchStartedAt = 0
+    debug('[crx-popup] showing with measured fallback size', size)
+    this.setSize(size)
+    this.show()
+  }
+
+  /**
+   * Measure through CDP rather than executeJavaScript. The latter shares the
+   * broken renderer bridge in the sandbox failure mode that needs this fallback.
+   */
+  private async installRootScrollbarGuardWithDebugger(win: BrowserWindow) {
+    const debuggerApi = win.webContents.debugger
+    let attachedHere = false
+
+    try {
+      if (!debuggerApi.isAttached()) {
+        debuggerApi.attach('1.3')
+        attachedHere = true
+      }
+      await debuggerApi.sendCommand('Runtime.evaluate', {
+        expression: `(() => {
+          if (document.getElementById('rainsee-popup-scrollbar-guard')) return;
+          const style = document.createElement('style');
+          style.id = 'rainsee-popup-scrollbar-guard';
+          style.textContent = '@media (max-width: 799px) and (max-height: 599px) { :root { scrollbar-width: none !important; } :root::-webkit-scrollbar { width: 0 !important; height: 0 !important; } }';
+          (document.head || document.documentElement).appendChild(style);
+        })()`,
+      })
+    } finally {
+      if (attachedHere && debuggerApi.isAttached()) debuggerApi.detach()
+    }
+  }
+
+  private async measurePreferredSizeWithDebugger(win: BrowserWindow): Promise<Electron.Size> {
+    const debuggerApi = win.webContents.debugger
+    let attachedHere = false
+
+    try {
+      if (!debuggerApi.isAttached()) {
+        debuggerApi.attach('1.3')
+        attachedHere = true
+      }
+
+      const response: any = await debuggerApi.sendCommand('Runtime.evaluate', {
+        returnByValue: true,
+        expression: `(() => {
+          const root = document.documentElement;
+          const body = document.body;
+          if (!root || !body) return { width: 0, height: 0 };
+          const existing = globalThis.__rainseePopupAutosize;
+          if (existing) return existing.measure();
+
+          const marker = ${JSON.stringify(PopupView.FALLBACK_SIZE_MESSAGE)};
+          let mutationObserver;
+          let resizeObserver;
+          let timer = 0;
+          let measuring = false;
+          let lastSize = '';
+
+          const observe = () => {
+            mutationObserver.observe(root, {
+              subtree: true,
+              childList: true,
+              characterData: true,
+              attributes: true,
+              attributeFilter: ['class', 'style', 'hidden', 'open'],
+            });
+            resizeObserver.observe(body);
+          };
+
+          const measure = () => {
+            if (measuring) return null;
+            measuring = true;
+            mutationObserver?.disconnect();
+            resizeObserver?.disconnect();
+            const rootStyle = root.getAttribute('style');
+            const bodyStyle = body.getAttribute('style');
+            const computed = getComputedStyle(body);
+            const number = (value) => {
+              const parsed = parseFloat(value);
+              return Number.isFinite(parsed) ? parsed : 0;
+            };
+            const marginWidth = number(computed.marginLeft) + number(computed.marginRight);
+            const marginHeight = number(computed.marginTop) + number(computed.marginBottom);
+
+            try {
+              for (const element of [root, body]) {
+                element.style.setProperty('width', 'max-content', 'important');
+                element.style.setProperty('height', 'max-content', 'important');
+                element.style.setProperty('min-width', '0', 'important');
+                element.style.setProperty('min-height', '0', 'important');
+                element.style.setProperty('overflow', 'hidden', 'important');
+              }
+              const rect = body.getBoundingClientRect();
+              return {
+                width: Math.max(body.scrollWidth, body.offsetWidth, rect.width) + marginWidth,
+                height: Math.max(body.scrollHeight, body.offsetHeight, rect.height) + marginHeight,
+              };
+            } finally {
+              if (rootStyle === null) root.removeAttribute('style');
+              else root.setAttribute('style', rootStyle);
+              if (bodyStyle === null) body.removeAttribute('style');
+              else body.setAttribute('style', bodyStyle);
+              void root.offsetWidth;
+              measuring = false;
+              requestAnimationFrame(observe);
+            }
+          };
+
+          const report = () => {
+            timer = 0;
+            const size = measure();
+            if (!size) return;
+            const serialized = JSON.stringify(size);
+            if (serialized === lastSize) return;
+            lastSize = serialized;
+            console.debug(marker + serialized);
+          };
+          const schedule = (delay = 40) => {
+            clearTimeout(timer);
+            timer = setTimeout(report, delay);
+          };
+          const scheduleInteraction = () => {
+            schedule(0);
+            setTimeout(schedule, 100);
+            setTimeout(schedule, 300);
+          };
+
+          mutationObserver = new MutationObserver(() => schedule());
+          resizeObserver = new ResizeObserver(() => schedule());
+          document.addEventListener('click', scheduleInteraction, true);
+          document.addEventListener('input', scheduleInteraction, true);
+          document.addEventListener('change', scheduleInteraction, true);
+          document.addEventListener('transitionend', () => schedule(0), true);
+          document.addEventListener('animationend', () => schedule(0), true);
+          window.addEventListener('load', () => schedule(0), { once: true });
+          document.fonts?.ready.then(() => schedule(0));
+
+          const initialSize = measure();
+          lastSize = JSON.stringify(initialSize);
+          globalThis.__rainseePopupAutosize = { measure, schedule };
+          return initialSize;
+        })()`,
+      })
+
+      const value = response?.result?.value
+      if (
+        !value ||
+        !Number.isFinite(value.width) ||
+        !Number.isFinite(value.height) ||
+        value.width < 0 ||
+        value.height < 0
+      ) {
+        throw new Error('popup preferred-size fallback returned invalid bounds')
+      }
+      return { width: value.width, height: value.height }
+    } finally {
+      if (attachedHere && debuggerApi.isAttached()) debuggerApi.detach()
+    }
   }
 
   private updatePreferredSize = (_event: Electron.Event, size: Electron.Size) => {
     this.usingPreferredSize = true
+    debug('[crx-popup] preferred-size-changed', size)
 
     // While DevTools is open the window is intentionally enlarged for
     // inspection; don't let the content's preferred size shrink it back.
@@ -634,72 +911,202 @@ export class PopupView {
       return
     }
 
-    const previousMaxWidth = this.maxPreferredWidth
-    const previousMaxHeight = this.maxPreferredHeight
-    if (size.width > 0) this.maxPreferredWidth = Math.max(this.maxPreferredWidth, size.width)
-    if (size.height > 0) this.maxPreferredHeight = Math.max(this.maxPreferredHeight, size.height)
-    const maxChanged =
-      this.maxPreferredWidth !== previousMaxWidth ||
-      this.maxPreferredHeight !== previousMaxHeight
-    if (maxChanged) {
-      debug('updatePreferredSize max', {
-        width: this.maxPreferredWidth,
-        height: this.maxPreferredHeight,
-      })
-    }
-    // 没有刷新历史最大值时窗口目标尺寸必然不变。不要让 248↔263 中较小的一侧
-    // 持续重置 debounce 或进入 setSize,达到最大值后整个反馈链立即静默。
-    if (!maxChanged) return
-
-    this.pendingPreferredSize = size
-
-    // 首帧:窗口尚未确定尺寸,立即应用让弹窗尽快显示,节流/锁均不生效。
-    if (this.lastWidth < 0) {
-      this.applyPreferredSize()
-      this.schedulePreferredSizeTail()
-      return
-    }
-
-    const now = Date.now()
-
-    if (now - this.lastApplyAt < PopupView.APPLY_MIN_INTERVAL_MS) {
-      // 节流:距上次 apply 太近,只更新 pending,靠 tail 兜底。
-      this.schedulePreferredSizeTail()
-      return
-    }
-
-    this.applyPreferredSize()
-    this.schedulePreferredSizeTail()
+    this.queuePreferredSize(size)
   }
 
-  /** 尾沿去抖:停顿后补一次最终值。 */
-  private schedulePreferredSizeTail() {
+  private onFallbackSizeMessage(message: string) {
+    try {
+      const size = JSON.parse(message.slice(PopupView.FALLBACK_SIZE_MESSAGE.length))
+      if (!size || !Number.isFinite(size.width) || !Number.isFinite(size.height)) return
+      debug('[crx-popup] observed fallback size', size)
+      this.queuePreferredSize(size)
+    } catch (error) {
+      debug('[crx-popup] invalid fallback size message', error)
+    }
+  }
+
+  private queuePreferredSize(size: Electron.Size) {
+    if (this.devToolsOpened) return
+
+    const preferredSize = {
+      width: Number.isFinite(size.width) ? Math.max(0, size.width) : 0,
+      height: Number.isFinite(size.height) ? Math.max(0, size.height) : 0,
+    }
+    const width = this.clampWidth(preferredSize.width)
+    const height = this.clampHeight(preferredSize.height)
+    const now = Date.now()
+
+    if (now < this.preferredSizeOscillationLockUntil) {
+      // The size that won the oscillation is still being reported. It proves
+      // the page is continuing the old feedback loop, so drop any pending
+      // smaller measurement before it can be applied at the lock boundary.
+      if (width === this.lastWidth && height === this.lastHeight) {
+        this.pendingPreferredSize = null
+        this.preferredSizeBatchStartedAt = 0
+        if (this.preferredSizeTimer) {
+          clearTimeout(this.preferredSizeTimer)
+          this.preferredSizeTimer = null
+        }
+        return
+      }
+
+      const widthDelta = Math.abs(width - this.lastWidth)
+      const heightDelta = Math.abs(height - this.lastHeight)
+      if (
+        widthDelta < PopupView.PREFERRED_SIZE_LOCK_BREAK_THRESHOLD_PX &&
+        heightDelta < PopupView.PREFERRED_SIZE_LOCK_BREAK_THRESHOLD_PX
+      ) {
+        // A smaller report may be a real later shrink. Keep it pending, but
+        // apply it only if the competing size does not return before the lock
+        // expires.
+        this.pendingPreferredSize = preferredSize
+        this.preferredSizeBatchStartedAt = now
+        this.schedulePreferredSizeAfterOscillationLock()
+        return
+      }
+
+      this.preferredSizeOscillationLockUntil = 0
+    }
+
+    // A scrollbar appearing at the Chrome limit may change the reported raw
+    // preferred size, but not the clamped window bounds. Do not feed that
+    // layout-only change back into BrowserWindow.
+    if (
+      !this.pendingPreferredSize &&
+      width === this.lastWidth &&
+      height === this.lastHeight
+    ) {
+      return
+    }
+
+    if (!this.preferredSizeBatchStartedAt) this.preferredSizeBatchStartedAt = Date.now()
+    this.pendingPreferredSize = preferredSize
+    if (this.domReady) this.schedulePreferredSize()
+  }
+
+  private clampWidth(width: number) {
+    return Math.ceil(
+      Math.min(PopupView.BOUNDS.maxWidth, Math.max(width, PopupView.BOUNDS.minWidth)),
+    )
+  }
+
+  private clampHeight(height: number) {
+    return Math.ceil(
+      Math.min(PopupView.BOUNDS.maxHeight, Math.max(height, PopupView.BOUNDS.minHeight)),
+    )
+  }
+
+  private schedulePreferredSize() {
     if (this.preferredSizeTimer) clearTimeout(this.preferredSizeTimer)
+    const elapsed = this.preferredSizeBatchStartedAt
+      ? Date.now() - this.preferredSizeBatchStartedAt
+      : 0
+    const delay = Math.max(
+      0,
+      Math.min(
+        PopupView.PREFERRED_SIZE_SETTLE_MS,
+        PopupView.PREFERRED_SIZE_MAX_WAIT_MS - elapsed,
+      ),
+    )
     this.preferredSizeTimer = setTimeout(() => {
       this.preferredSizeTimer = null
-      this.applyPreferredSize()
-    }, PopupView.PREFERRED_SIZE_DEBOUNCE_MS)
+      void this.applyPreferredSize()
+    }, delay)
   }
 
-  private applyPreferredSize() {
-    if (this.destroyed || !this.browserWindow) return
-    const size = this.pendingPreferredSize
-    if (!size) return
+  private schedulePreferredSizeAfterOscillationLock() {
+    if (this.preferredSizeTimer) clearTimeout(this.preferredSizeTimer)
+    const delay = Math.max(0, this.preferredSizeOscillationLockUntil - Date.now())
+    this.preferredSizeTimer = setTimeout(() => {
+      this.preferredSizeTimer = null
+      void this.applyPreferredSize()
+    }, delay)
+  }
 
-    const now = Date.now()
-    // Chrome 让扩展 popup 按其 HTML 声明的 preferred size 显示,宿主不额外加
-    // padding。之前硬加固定宽度会在按内容定宽的 popup(Dark Reader/uBlock/油猴等)
-    // 右侧产生永久白边。width:0 时退回 lastWidth,避免基于 0 重复累加。高度保持
-    // 内容历史最大值。
-    const width = this.maxPreferredWidth > 0 ? this.maxPreferredWidth : this.lastWidth
-    const height = this.maxPreferredHeight > 0 ? this.maxPreferredHeight : this.lastHeight
+  private hasPreferredSizeOscillation(size: Electron.Size) {
+    if (this.appliedPreferredSizeHistory.length < 2) return false
 
-    const changed = this.setSize({ width, height })
-    // 仅在窗口尺寸真正变化时重新定位;尺寸未变却重新定位正是横向漂移的来源。
-    if (changed) this.updatePosition()
-    this.lastApplyAt = now
+    const previous = this.appliedPreferredSizeHistory[this.appliedPreferredSizeHistory.length - 1]
+    const beforePrevious = this.appliedPreferredSizeHistory[this.appliedPreferredSizeHistory.length - 2]
+    const returnsToPrevious =
+      size.width === beforePrevious.width && size.height === beforePrevious.height
+    const differsFromCurrent = size.width !== previous.width || size.height !== previous.height
 
-    // Wait to reveal popup until it's sized and positioned correctly
-    if (this.hidden) this.show()
+    return returnsToPrevious && differsFromCurrent
+  }
+
+  private recordAppliedPreferredSize() {
+    this.appliedPreferredSizeHistory.push({
+      width: this.lastWidth,
+      height: this.lastHeight,
+    })
+    if (this.appliedPreferredSizeHistory.length > 3) {
+      this.appliedPreferredSizeHistory.shift()
+    }
+  }
+
+  private async applyPreferredSize() {
+    if (this.applyingPreferredSize || this.destroyed || !this.browserWindow) return
+    const generation = this.sizingGeneration
+    const win = this.browserWindow
+    this.applyingPreferredSize = true
+
+    try {
+      // CSS changes and async page work can report a newer preferred size while
+      // the scrollbar mode is being switched. Always commit only the newest
+      // candidate, never an intermediate viewport-dependent measurement.
+      while (
+        this.pendingPreferredSize &&
+        !this.destroyed &&
+        generation === this.sizingGeneration &&
+        this.browserWindow === win
+      ) {
+        const size = this.pendingPreferredSize
+        this.pendingPreferredSize = null
+        const clampedSize = {
+          width: this.clampWidth(size.width),
+          height: this.clampHeight(size.height),
+        }
+
+        if (this.hasPreferredSizeOscillation(clampedSize)) {
+          const previous = this.appliedPreferredSizeHistory[
+            this.appliedPreferredSizeHistory.length - 1
+          ]
+          const lockedSize = {
+            width: Math.max(clampedSize.width, previous.width),
+            height: Math.max(clampedSize.height, previous.height),
+          }
+          this.setSize(lockedSize)
+          this.appliedPreferredSizeHistory = [
+            { width: this.lastWidth, height: this.lastHeight },
+          ]
+          this.preferredSizeOscillationLockUntil =
+            Date.now() + PopupView.PREFERRED_SIZE_OSCILLATION_LOCK_MS
+          debug('[crx-popup] preferred-size oscillation locked', lockedSize)
+        } else if (this.setSize(clampedSize)) {
+          this.recordAppliedPreferredSize()
+        }
+        this.preferredSizeBatchStartedAt = 0
+      }
+
+      // Wait to reveal the popup until both scrollbar mode and final content
+      // bounds have been committed.
+      if (
+        generation === this.sizingGeneration &&
+        this.browserWindow === win &&
+        this.hidden &&
+        this.lastWidth > 0 &&
+        this.lastHeight > 0
+      ) {
+        this.show()
+      }
+    } finally {
+      if (generation === this.sizingGeneration) {
+        this.applyingPreferredSize = false
+        if (this.pendingPreferredSize && !this.preferredSizeTimer) {
+          this.schedulePreferredSize()
+        }
+      }
+    }
   }
 }

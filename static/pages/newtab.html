@@ -3,14 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="color-scheme" content="dark light" />
-    <!-- 预连接 pcapp.rainsee.cn:新标签页壳内 iframe 全屏内嵌该远程 SPA,
+    <!-- 预连接 pcv2.rainsee.cn:新标签页壳内 iframe 全屏内嵌该远程 SPA,
          在 React 渲染、iframe 挂载之前就提前完成 DNS/TCP/TLS 握手,
          iframe 挂载即复用连接,缩短白屏。仅 newtab 用此模板,不污染其他 webui 页。 -->
-    <link rel="preconnect" href="https://pcapp.rainsee.cn" crossorigin />
-    <link rel="dns-prefetch" href="https://pcapp.rainsee.cn" />
+    <link rel="preconnect" href="https://pcv2.rainsee.cn" crossorigin />
+    <link rel="dns-prefetch" href="https://pcv2.rainsee.cn" />
     <!-- 暗色模式启动背景:React/iframe 绘制前外壳默认白底会闪一下。
          按 settings.theme 同步主应用 app.html,提前把 html 背景与 color-scheme 设为深色,
-         顺带让内嵌 iframe 继承 dark color-scheme(pcapp 若支持 prefers-color-scheme 则随之转暗)。 -->
+         顺带让内嵌 iframe 继承 dark color-scheme(pcv2 若支持 prefers-color-scheme 则随之转暗)。 -->
     <style>
       html,
       body,

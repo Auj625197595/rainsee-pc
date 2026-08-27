@@ -7,15 +7,15 @@
 //
 //   1) 监听主窗口 webContents 的 render-process-gone(渲染进程崩)与
 //      unresponsive(UI 卡死,超 12s 才确认,避免短时卡顿误报)。
-//   2) 任一触发即弹出一个【独立 BrowserWindow】覆盖层(不依赖已死/已卡的
-//      主渲染进程,所以一定能显示),内含诊断日志 + 「复制日志」「重启浏览器」
+//   2) OOM 使用系统原生对话框并重启恢复标签页;其它崩溃/卡死弹出一个独立
+//      BrowserWindow 覆盖层,内含诊断日志 + 「复制日志」「重启浏览器」
 //      「打开日志目录」。
 //
-// 「重启浏览器」走 app.relaunch() + app.exit(0):整窗重启,启动时按
-// startupBehavior='continue' 还原标签页。app.exit 直接终结进程,即便主 UI
+// 「重启浏览器」走 app.relaunch() + app.exit(0):整窗重启,并用一次性参数强制
+// 恢复崩溃前标签页,不受常规启动偏好影响。app.exit 直接终结进程,即便主 UI
 // 卡死也能可靠退出。
 
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { readFileSync, statSync } from 'fs';
@@ -30,6 +30,10 @@ const UNRESPONSIVE_TIMEOUT_MS = 12000;
 // 日志尾部截取量:全量日志可能上百 KB,页面上只展示末尾(最近的崩溃信息在尾部)。
 const LOG_TAIL_BYTES = 60 * 1024;
 
+// 异常重启参数:值是崩溃前仍存活的普通窗口 id。下一次启动只恢复这些窗口的
+// startupTabs 记录,不受用户平时的启动偏好影响。
+const CRASH_RESTORE_ARG = '--restore-after-crash=';
+
 // 每个主窗口是否已弹覆盖层 + 待确认的 unresponsive 定时器。
 const overlayByWindow = new WeakMap<AppWindow, BrowserWindow | null>();
 const unresponsiveTimers = new WeakMap<AppWindow, NodeJS.Timeout>();
@@ -37,6 +41,7 @@ const unresponsiveTimers = new WeakMap<AppWindow, NodeJS.Timeout>();
 // 最近一次触发的现场,供全局 IPC 处理器(覆盖层页面调用)读取。
 let lastTriggerAppWindow: AppWindow | null = null;
 let lastReason = '';
+let nativeOomRecoveryInProgress = false;
 
 const pad = (n: number, w = 2) => String(n).padStart(w, '0');
 
@@ -180,6 +185,142 @@ const clearUnresponsiveTimer = (appWindow: AppWindow) => {
   }
 };
 
+const getRecoverableWindows = (): AppWindow[] => {
+  try {
+    const application = require('./application').Application.instance as import('./application').Application;
+    return (application.windows?.list || []).filter(
+      (win) => win && !win.incognito && !win.win.isDestroyed(),
+    );
+  } catch {
+    return [];
+  }
+};
+
+// 主 UI renderer 已死时,renderer 侧尚未完成的 startupTabs 写入也会中断。
+// 内容 BrowserView 仍由主进程持有,这里把它们的最新地址同步补进 NeDB 后再重启。
+const persistTabsForCrashRecovery = async (windows: AppWindow[]) => {
+  if (windows.length === 0) return;
+
+  try {
+    const application = require('./application').Application.instance as import('./application').Application;
+    const storage = application.storage;
+
+    for (const win of windows) {
+      const existing = await storage.find<any>({
+        scope: 'startupTabs',
+        query: {windowId: win.id},
+      });
+      const existingById = new Map(existing.map((item) => [item.id, item]));
+
+      await storage.update({
+        scope: 'startupTabs',
+        query: {windowId: win.id},
+        value: {active: false},
+        multi: true,
+      });
+
+      const views = Array.from(win.viewManager.views.values());
+      for (let order = 0; order < views.length; order++) {
+        const view = views[order];
+        let url = '';
+        let title = '';
+        try {
+          if (view.webContents.isDestroyed()) continue;
+          url = view.url || '';
+          title = view.title || '';
+        } catch {
+          continue;
+        }
+        if (
+          !url ||
+          url === 'about:blank' ||
+          url.startsWith('chrome-extension:') ||
+          url.endsWith('.crx') ||
+          url.endsWith('.zip')
+        ) {
+          continue;
+        }
+
+        const existingItem = existingById.get(view.id) as any;
+        const value = {
+          id: view.id,
+          windowId: win.id,
+          url,
+          title,
+          favicon: view.favicon || '',
+          active: view.id === win.viewManager.selectedId,
+          isUserDefined: false,
+        };
+        if (existingItem) {
+          await storage.update({
+            scope: 'startupTabs',
+            query: {id: view.id},
+            value,
+          });
+        } else {
+          await storage.insert({
+            scope: 'startupTabs',
+            item: {...value, order, pinned: false, tabGroupId: -1},
+          });
+        }
+      }
+    }
+  } catch (error) {
+    // 已有 startupTabs 仍可用于恢复;补写失败不阻止重启。
+    console.error('[whitescreen] 崩溃标签快照补写失败', error);
+  }
+};
+
+const relaunchForCrashRecovery = async (
+  windows = getRecoverableWindows(),
+  persistTabs = true,
+) => {
+  if (persistTabs) await persistTabsForCrashRecovery(windows);
+
+  const windowIds = windows.map((win) => win.id).join(',');
+  const args = process.argv
+    .slice(1)
+    .filter((arg) => !arg.startsWith(CRASH_RESTORE_ARG));
+  args.push(`${CRASH_RESTORE_ARG}${windowIds}`);
+
+  try {
+    app.relaunch({args});
+  } catch {
+    // relaunch 失败仍尝试退出,避免残留不可用进程。
+  }
+  app.exit(0);
+};
+
+const recoverFromOom = async (appWindow: AppWindow, reason: string) => {
+  if (nativeOomRecoveryInProgress) return;
+  nativeOomRecoveryInProgress = true;
+  lastTriggerAppWindow = appWindow;
+  lastReason = reason;
+
+  console.error(`[whitescreen] 系统可用内存不足,准备重启恢复标签页: ${reason}`);
+
+  // 快照与原生对话框并行进行,减少用户确认后的等待时间。
+  const windows = getRecoverableWindows();
+  const persistPromise = persistTabsForCrashRecovery(windows);
+  try {
+    await dialog.showMessageBox(appWindow.win, {
+      type: 'warning',
+      title: '系统内存不足',
+      message: '当前系统可用内存不足',
+      detail:
+        '系统暂时无法为浏览器分配足够的运行内存，页面已无法继续正常显示。请关闭其他占用内存较多的程序，然后重启浏览器。重启后将自动恢复本次打开的标签页。',
+      buttons: ['重启浏览器'],
+      defaultId: 0,
+      noLink: true,
+    });
+  } catch (error) {
+    console.error('[whitescreen] 系统内存不足提示失败', error);
+  }
+
+  await persistPromise;
+  await relaunchForCrashRecovery(windows, false);
+};
+
 // IPC 只注册一次(模块单次求值)。覆盖层页面通过 nodeIntegration 直连。
 let ipcReady = false;
 const ensureIpc = () => {
@@ -201,12 +342,18 @@ const ensureIpc = () => {
 
   ipcMain.on('crash-reporter-restart', () => {
     // app.exit 直接终结,不触发 before-quit/will-quit,即便主 UI 卡死也能退出。
-    try {
-      app.relaunch();
-    } catch {
-      // relaunch 失败仍尝试退出。
+    // 重启前由主进程补写标签快照,并给下一次启动附加一次性恢复参数。
+    void relaunchForCrashRecovery();
+  });
+
+  // 恢复参数只对紧接着崩溃的这次启动有效。renderer 读完后从主进程 argv
+  // 移除,避免后续设置迁移等普通 app.relaunch() 再次恢复旧标签。
+  ipcMain.on('crash-recovery-consumed', () => {
+    for (let i = process.argv.length - 1; i >= 1; i--) {
+      if (process.argv[i].startsWith(CRASH_RESTORE_ARG)) {
+        process.argv.splice(i, 1);
+      }
     }
-    app.exit(0);
   });
 
   ipcMain.on('crash-reporter-open-dir', async () => {
@@ -226,9 +373,17 @@ export const attachWhiteScreenDetector = (appWindow: AppWindow) => {
 
   // 渲染进程崩溃(OOM/(crashed)/killed)→ 立即弹。
   wc.on('render-process-gone', (_e, details: any) => {
+    const reason =
+      `render-process-gone (reason=${details?.reason || 'unknown'}, ` +
+      `exitCode=${details?.exitCode ?? '?'})`;
+    if (details?.reason === 'oom') {
+      // OOM 时不能依赖新的 BrowserWindow renderer;使用系统原生对话框。
+      void recoverFromOom(appWindow, reason);
+      return;
+    }
     trigger(
       appWindow,
-      `render-process-gone (reason=${details?.reason || 'unknown'}, exitCode=${details?.exitCode ?? '?'})`,
+      reason,
     );
   });
 

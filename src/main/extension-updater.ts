@@ -28,6 +28,27 @@ let lastUpdateCheck: number | undefined;
 /** 进行中的检查标记,避免手动 + 后台并发重入。 */
 let checking = false;
 
+/** 网络抖动重试:对 edge.microsoft.com / clients2.google.com 的请求在部分网络下
+ *  频繁 ECONNRESET / 连接被重置,单次 fetch 失败率可观。指数退避重试几次。 */
+async function fetchWithRetry(
+  url: string,
+  opts: {tries?: number; timeoutMs?: number} = {},
+): Promise<Response | null> {
+  const tries = opts.tries ?? 3;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await fetch(url, {
+        redirect: 'follow',
+        signal: AbortSignal.timeout(opts.timeoutMs ?? 30000),
+      });
+    } catch (e: any) {
+      if (i === tries - 1) return null;
+      await new Promise((r) => setTimeout(r, 800 * (i + 1)));
+    }
+  }
+  return null;
+}
+
 interface InstalledExt {
   id: string;
   name: string;
@@ -126,24 +147,27 @@ async function checkExtensionUpdate(
   ext: InstalledExt,
 ): Promise<AvailableUpdate | null> {
   const chromeVer = process.versions.chrome || '120.0';
-  const x = encodeURIComponent(`id=${ext.id}&uc`);
+  // x= 里必须带 v=<当前版本>(参考 PC 端 Java 实现 getCrxUpdateMsg):
+  // Edge 商店端点缺 v= 时直接 HTTP 500(逐参数对照实测定位),Google 端点无所谓。
+  const x = encodeURIComponent(
+    `id=${ext.id}&installsource=ondemand&v=${ext.version}&uc`,
+  );
   const sep = ext.updateUrl.includes('?') ? '&' : '?';
   const url =
     `${ext.updateUrl}${sep}response=updatecheck` +
     `&prodversion=${chromeVer}&acceptformat=crx2,crx3&x=${x}`;
 
   let text: string;
-  try {
-    const res = await fetch(url, { method: 'GET' });
-    if (!res.ok) {
-      tlog(`ext-update: check http ${res.status} for ${ext.id}`);
-      return null;
-    }
-    text = await res.text();
-  } catch (e) {
-    tlog(`ext-update: check failed (network) ${ext.id}`, e);
+  const res = await fetchWithRetry(url, {tries: 3, timeoutMs: 20000});
+  if (!res) {
+    tlog(`ext-update: check failed (network) ${ext.id}`);
     return null;
   }
+  if (!res.ok) {
+    tlog(`ext-update: check http ${res.status} for ${ext.id}`);
+    return null;
+  }
+  text = await res.text().catch(() => '');
 
   const parsed = parseUpdateCheckXml(text);
   if (!parsed || parsed.status !== 'ok' || !parsed.codebase || !parsed.version) {
@@ -170,10 +194,19 @@ async function applyUpdate(
   tlog(
     `ext-update: downloading ${update.id} ${update.fromVersion} -> ${update.toVersion}`,
   );
-  const res = await fetch(update.url, { redirect: 'follow' });
+  const res = await fetchWithRetry(update.url, {tries: 3, timeoutMs: 120000});
+  if (!res) throw new Error('download failed (network)');
   if (!res.ok) throw new Error(`download http ${res.status}`);
   const crxBuf = Buffer.from(await res.arrayBuffer());
   const crxInfo = parseCrx(crxBuf);
+  // 下载完整性:截断的 crx 会在 zip 层抛错或解出不完整目录,先校验 zip 尾部签名。
+  if (
+    crxInfo?.zip &&
+    crxInfo.zip.length > 0 &&
+    crxInfo.zip.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06])) < 0
+  ) {
+    throw new Error('download truncated (missing EOCD)');
+  }
 
   // 安全校验:下载到的 crx 必须与目标扩展同一身份(同签名 → 同 id),否则拒绝覆盖,
   // 防止 update_url 被改写后用另一扩展的包顶替。
@@ -181,17 +214,24 @@ async function applyUpdate(
     throw new Error(`crx id mismatch: got ${crxInfo.id}, expected ${update.id}`);
   }
 
-  // 先卸掉已加载的旧版本(参考 reloadExtension),再覆盖安装。
+  sessions.setExtensionTransitioning(update.id, false, true);
+  let ext: Electron.Extension;
   try {
-    await sessions.view.removeExtension(update.id);
-  } catch {
-    // 理论上启用的扩展都已加载;万一未加载,忽略
+    // 先卸掉已加载的旧版本(参考 reloadExtension),再覆盖安装。
+    try {
+      const extensionApi = (sessions.view as any).extensions || sessions.view;
+      await extensionApi.removeExtension(update.id);
+    } catch {
+      // 理论上启用的扩展都已加载;万一未加载,忽略
+    }
+
+    ext = await sessions.installExtensionFromCrxInfo(crxInfo, true);
+  } finally {
+    sessions.setExtensionTransitioning(update.id, false, false);
   }
 
-  const ext = await sessions.installExtensionFromCrxInfo(crxInfo, true);
-
   // 刷新工具栏图标(与商店安装一致)。
-  if (ext) {
+  if (ext && !(ext.manifest as any)?.theme) {
     // 这里加载的是普通 session 的扩展实例，不能广播到无痕窗口；否则未获
     // 「在无痕模式下启用」权限的已固定扩展会重新出现在地址栏工具栏。
     for (const window of Application.instance.windows.list.filter(

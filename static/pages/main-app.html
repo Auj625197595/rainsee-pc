@@ -4,6 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="color-scheme" content="dark light" />
     <style>
+      :root {
+        --startup-bg: #ffffff;
+        --startup-chrome: #f5f7fd;
+        --startup-toolbar: #f5f7fd;
+        --startup-surface: #f1f3f8;
+        --startup-line: rgba(24, 31, 52, 0.1);
+        --startup-muted: rgba(31, 38, 59, 0.42);
+        --startup-strong: rgba(22, 27, 45, 0.72);
+        --startup-accent: #3452ff;
+        --startup-sidebar-width: 240px;
+      }
+
       html,
       body,
       #app {
@@ -12,36 +24,614 @@
         margin: 0;
         background: var(--startup-bg, #ffffff);
       }
+
+      html[data-startup-dark='true'] {
+        --startup-chrome: #1c1c1c;
+        --startup-toolbar: #1c1c1c;
+        --startup-surface: #303138;
+        --startup-line: rgba(255, 255, 255, 0.09);
+        --startup-muted: rgba(255, 255, 255, 0.38);
+        --startup-strong: rgba(255, 255, 255, 0.76);
+      }
+
+      body {
+        overflow: hidden;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }
+
+      #startup-shell,
+      #startup-shell * {
+        box-sizing: border-box;
+      }
+
+      #startup-shell {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        height: 100%;
+        color: var(--startup-strong);
+        background: var(--startup-bg);
+        overflow: hidden;
+      }
+
+      .startup-titlebar {
+        display: flex;
+        align-items: center;
+        height: 54px;
+        padding: 0 12px 0 8px;
+        flex-shrink: 0;
+        gap: 14px;
+        background: var(--startup-chrome);
+        -webkit-app-region: drag;
+      }
+
+      .startup-brand,
+      .startup-tab,
+      .startup-window-actions,
+      .startup-toolbar,
+      .startup-sidebar-header,
+      .startup-sidebar-row {
+        display: flex;
+        align-items: center;
+      }
+
+      .startup-brand {
+        width: 194px;
+        min-width: 150px;
+        gap: 10px;
+      }
+
+      .startup-logo {
+        width: 30px;
+        height: 30px;
+        padding: 4px;
+        border-radius: 8px;
+        object-fit: contain;
+        background: rgba(255, 255, 255, 0.9);
+        box-shadow: 0 4px 14px rgba(20, 32, 72, 0.1);
+      }
+
+      .startup-brand-copy {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .startup-brand-title {
+        width: 70px;
+        height: 7px;
+        border-radius: 2px;
+        background: var(--startup-strong);
+      }
+
+      .startup-brand-subtitle {
+        width: 44px;
+        height: 4px;
+        border-radius: 2px;
+        background: var(--startup-muted);
+      }
+
+      .startup-tabs {
+        display: flex;
+        align-items: flex-end;
+        align-self: stretch;
+        flex: 1;
+        min-width: 0;
+        padding-top: 9px;
+      }
+
+      .startup-tab {
+        width: min(220px, 32vw);
+        height: 36px;
+        padding: 0 14px;
+        gap: 10px;
+        border-radius: 7px 7px 0 0;
+        background: var(--startup-toolbar);
+        -webkit-app-region: no-drag;
+      }
+
+      .startup-favicon {
+        width: 16px;
+        height: 16px;
+        border-radius: 5px;
+        background: color-mix(in srgb, var(--startup-accent) 18%, var(--startup-surface));
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--startup-accent) 24%, transparent);
+        flex-shrink: 0;
+      }
+
+      .startup-label {
+        width: min(112px, 55%);
+        height: 6px;
+        border-radius: 3px;
+        background: var(--startup-muted);
+      }
+
+      .startup-window-actions {
+        align-self: stretch;
+        gap: 2px;
+        -webkit-app-region: no-drag;
+      }
+
+      .startup-window-action {
+        position: relative;
+        width: 34px;
+        height: 100%;
+      }
+
+      .startup-window-action::before,
+      .startup-window-action::after {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        content: '';
+        width: 10px;
+        height: 1px;
+        background: var(--startup-muted);
+        transform: translate(-50%, -50%);
+      }
+
+      .startup-window-action.maximize::before {
+        width: 9px;
+        height: 7px;
+        border: 1px solid var(--startup-muted);
+        background: transparent;
+      }
+
+      .startup-window-action.close::before {
+        transform: translate(-50%, -50%) rotate(45deg);
+      }
+
+      .startup-window-action.close::after {
+        transform: translate(-50%, -50%) rotate(-45deg);
+      }
+
+      .startup-body {
+        display: flex;
+        flex: 1;
+        min-height: 0;
+      }
+
+      .startup-content {
+        display: flex;
+        flex: 1;
+        min-width: 0;
+        flex-direction: column;
+      }
+
+      .startup-toolbar {
+        width: 100%;
+        height: 54px;
+        padding: 0 12px;
+        flex-shrink: 0;
+        gap: 6px;
+        border-bottom: 1px solid var(--startup-line);
+        background: var(--startup-toolbar);
+        -webkit-app-region: drag;
+      }
+
+      .startup-bookmarkbar {
+        display: none;
+        align-items: center;
+        width: 100%;
+        min-height: 32px;
+        padding: 0 12px;
+        flex-shrink: 0;
+        gap: 14px;
+        border-bottom: 1px solid var(--startup-line);
+        background: var(--startup-toolbar);
+      }
+
+      .startup-bookmark {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        width: 84px;
+      }
+
+      .startup-bookmark .startup-favicon {
+        width: 14px;
+        height: 14px;
+      }
+
+      .startup-bookmark .startup-label {
+        width: 52px;
+      }
+
+      .startup-tool {
+        position: relative;
+        width: 32px;
+        height: 32px;
+        flex-shrink: 0;
+        border-radius: 8px;
+        -webkit-app-region: no-drag;
+      }
+
+      .startup-tool::before {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        content: '';
+        width: 8px;
+        height: 8px;
+        border-left: 1.5px solid var(--startup-muted);
+        border-bottom: 1.5px solid var(--startup-muted);
+        transform: translate(-35%, -50%) rotate(45deg);
+      }
+
+      .startup-tool.forward::before {
+        transform: translate(-65%, -50%) rotate(225deg);
+      }
+
+      .startup-tool.reload::before {
+        width: 12px;
+        height: 12px;
+        border: 1.5px solid var(--startup-muted);
+        border-right-color: transparent;
+        border-radius: 50%;
+        transform: translate(-50%, -50%);
+      }
+
+      .startup-tool.reload::after {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        content: '';
+        border-left: 4px solid var(--startup-muted);
+        border-top: 3px solid transparent;
+        border-bottom: 3px solid transparent;
+        transform: rotate(-30deg);
+      }
+
+      .startup-address {
+        display: flex;
+        align-items: center;
+        flex: 1;
+        min-width: 120px;
+        height: 38px;
+        margin: 0 4px;
+        padding: 0 14px;
+        gap: 10px;
+        border: 1px solid var(--startup-line);
+        border-radius: 8px;
+        background: var(--startup-surface);
+        -webkit-app-region: no-drag;
+      }
+
+      .startup-address-mark {
+        width: 12px;
+        height: 12px;
+        border: 1.5px solid var(--startup-muted);
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+
+      .startup-address-line {
+        width: min(210px, 38%);
+        height: 6px;
+        border-radius: 3px;
+        background: var(--startup-muted);
+      }
+
+      .startup-actions {
+        display: flex;
+        gap: 5px;
+      }
+
+      .startup-action-dot {
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+        background: var(--startup-surface);
+      }
+
+      .startup-page {
+        flex: 1;
+        min-height: 0;
+        background: var(--startup-bg);
+      }
+
+      .startup-sidebar {
+        display: none;
+        width: var(--startup-sidebar-width);
+        flex-shrink: 0;
+        flex-direction: column;
+        gap: 5px;
+        padding: 8px 10px 12px;
+        border-right: 1px solid var(--startup-line);
+        background: var(--startup-chrome);
+        -webkit-app-region: drag;
+      }
+
+      .startup-sidebar-header {
+        height: 40px;
+        gap: 9px;
+        margin-bottom: 4px;
+      }
+
+      .startup-sidebar-header .startup-logo {
+        width: 28px;
+        height: 28px;
+      }
+
+      .startup-sidebar-copy {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .startup-sidebar-row {
+        height: 38px;
+        padding: 0 10px;
+        gap: 10px;
+        border-radius: 7px;
+        -webkit-app-region: no-drag;
+      }
+
+      .startup-sidebar-row.active {
+        background: var(--startup-toolbar);
+        box-shadow: 0 2px 9px rgba(22, 30, 58, 0.06);
+      }
+
+      .startup-sidebar-row .startup-label {
+        width: 48%;
+      }
+
+      html[data-startup-layout='left'] #startup-shell,
+      html[data-startup-layout='right'] #startup-shell {
+        padding-top: 8px;
+      }
+
+      html[data-startup-layout='left'] .startup-titlebar,
+      html[data-startup-layout='right'] .startup-titlebar {
+        display: none;
+      }
+
+      html[data-startup-layout='left'] .startup-sidebar,
+      html[data-startup-layout='right'] .startup-sidebar {
+        display: flex;
+      }
+
+      html[data-startup-layout='right'] .startup-sidebar {
+        order: 2;
+        border-right: 0;
+        border-left: 1px solid var(--startup-line);
+      }
+
+      html[data-startup-layout='right'] .startup-content {
+        order: 1;
+      }
+
+      html[data-startup-compact='true'][data-startup-layout='top'] .startup-titlebar {
+        height: 44px;
+      }
+
+      html[data-startup-compact='true'][data-startup-layout='top'] .startup-tabs {
+        padding-top: 8px;
+      }
+
+      html[data-startup-compact='true'][data-startup-layout='top'] .startup-tab {
+        height: 28px;
+      }
+
+      html[data-startup-compact='true'][data-startup-layout='top'] .startup-toolbar {
+        display: none;
+      }
+
+      html[data-startup-bookmarks='true'] .startup-bookmarkbar {
+        display: flex;
+      }
+
+      html[data-startup-overlay='true'] #startup-shell {
+        display: none;
+      }
+
+      html[data-startup-pinned='false'] .startup-sidebar {
+        padding-left: 8px;
+        padding-right: 8px;
+      }
+
+      html[data-startup-pinned='false'] .startup-sidebar-copy,
+      html[data-startup-pinned='false'] .startup-sidebar-row .startup-label {
+        display: none;
+      }
+
+      html[data-startup-pinned='false'] .startup-sidebar-header,
+      html[data-startup-pinned='false'] .startup-sidebar-row {
+        justify-content: center;
+        padding-left: 0;
+        padding-right: 0;
+      }
+
+      @media (max-width: 680px) {
+        .startup-brand-copy,
+        .startup-tool.forward,
+        .startup-actions .startup-action-dot:nth-child(-n + 2) {
+          display: none;
+        }
+
+        .startup-brand {
+          width: auto;
+          min-width: 30px;
+        }
+      }
     </style>
     <script>
       (() => {
         try {
-          const { ipcRenderer, nativeTheme } = require('electron');
-          const settings = ipcRenderer.sendSync('get-settings-sync') || {};
-          const themeSource =
-            settings.themeAuto === false
-              ? settings.theme === 'wexond-dark'
-                ? 'dark'
-                : 'light'
-              : 'system';
+          const { nativeTheme } = require('electron');
+          const params = new URLSearchParams(location.search);
+          const incognito = params.get('incognito') === '1';
+          const immersiveHeader = params.get('immersiveHeader') === '1';
+          // 外观参数由主进程随 URL 注入(AppWindow 构造时 getStartupLook()),
+          // 不再 sendSync('get-settings-sync') —— 冷启动时主进程正忙,
+          // 同步 IPC 应答会推迟 dom_ready。dev 服务器无注入时回退默认值。
+          const themeAuto = params.get('themeAuto') !== 'false';
+          const theme = params.get('theme') === 'dark' ? 'dark' : 'light';
+          const themeSource = themeAuto ? 'system' : theme;
           const dark =
+            incognito ||
             themeSource === 'dark' ||
             (themeSource === 'system' && nativeTheme.shouldUseDarkColors);
           const bg = dark ? '#1c1c1c' : '#ffffff';
+          const layoutParam = params.get('tabsLayout');
+          const layout =
+            layoutParam === 'left' || layoutParam === 'right'
+              ? layoutParam
+              : 'top';
+          const sidebarWidth = Number(params.get('sidebarWidth'));
+          const sidebarPinned = params.get('sidebarPinned') !== 'false';
+          // Keep this in sync with SIDEBAR_RAIL_WIDTH in src/constants/design.ts.
+          const effectiveSidebarWidth = sidebarPinned
+            ? `${Number.isFinite(sidebarWidth) ? Math.max(180, sidebarWidth) : 240}px`
+            : '62px';
+          const bookmarkBarAlways = params.get('bookmarksBar') === 'true';
           document.documentElement.style.setProperty('--startup-bg', bg);
+          document.documentElement.style.setProperty(
+            '--startup-sidebar-width',
+            effectiveSidebarWidth,
+          );
           document.documentElement.style.backgroundColor = bg;
           document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+          document.documentElement.dataset.startupDark = String(dark);
+          document.documentElement.dataset.startupLayout = layout;
+          document.documentElement.dataset.startupPinned = String(sidebarPinned);
+          document.documentElement.dataset.startupCompact = String(
+            params.get('topBarVariant') !== 'default' &&
+              params.get('topBarVariant') != null,
+          );
+          document.documentElement.dataset.startupBookmarks = String(
+            bookmarkBarAlways,
+          );
+          document.documentElement.dataset.startupOverlay = String(
+            immersiveHeader,
+          );
+        } catch (e) {}
+        // 细分埋点:切开 loadURL→painted 之间的空洞(head 脚本何时执行、
+        // rAF 何时回来),用于定位渲染进程被饿死还是合成器迟到。
+        try {
+          require('electron').ipcRenderer.send('startup-timing', {
+            phase: 'renderer.head_script.executed',
+            details: { rendererElapsedMs: Math.round(performance.now()) },
+          });
         } catch (e) {}
       })();
     </script>
   </head>
 
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <div id="startup-shell" aria-hidden="true">
+        <div class="startup-titlebar">
+          <div class="startup-brand">
+            <img class="startup-logo" src="../static/icons/icon.png" alt="" />
+            <div class="startup-brand-copy">
+              <span class="startup-brand-title"></span>
+              <span class="startup-brand-subtitle"></span>
+            </div>
+          </div>
+          <div class="startup-tabs">
+            <div class="startup-tab">
+              <span class="startup-favicon"></span>
+              <span class="startup-label"></span>
+            </div>
+          </div>
+          <div class="startup-window-actions">
+            <span class="startup-window-action minimize"></span>
+            <span class="startup-window-action maximize"></span>
+            <span class="startup-window-action close"></span>
+          </div>
+        </div>
+
+        <div class="startup-body">
+          <aside class="startup-sidebar">
+            <div class="startup-sidebar-header">
+              <img class="startup-logo" src="../static/icons/icon.png" alt="" />
+              <div class="startup-sidebar-copy">
+                <div class="startup-brand-title"></div>
+              </div>
+            </div>
+            <div class="startup-sidebar-row active">
+              <span class="startup-favicon"></span>
+              <span class="startup-label"></span>
+            </div>
+            <div class="startup-sidebar-row">
+              <span class="startup-favicon"></span>
+              <span class="startup-label"></span>
+            </div>
+            <div class="startup-sidebar-row">
+              <span class="startup-favicon"></span>
+              <span class="startup-label"></span>
+            </div>
+          </aside>
+
+          <main class="startup-content">
+            <div class="startup-toolbar">
+              <span class="startup-tool back"></span>
+              <span class="startup-tool forward"></span>
+              <span class="startup-tool reload"></span>
+              <div class="startup-address">
+                <span class="startup-address-mark"></span>
+                <span class="startup-address-line"></span>
+              </div>
+              <div class="startup-actions">
+                <span class="startup-action-dot"></span>
+                <span class="startup-action-dot"></span>
+                <span class="startup-action-dot"></span>
+              </div>
+            </div>
+            <div class="startup-bookmarkbar">
+              <div class="startup-bookmark">
+                <span class="startup-favicon"></span>
+                <span class="startup-label"></span>
+              </div>
+              <div class="startup-bookmark">
+                <span class="startup-favicon"></span>
+                <span class="startup-label"></span>
+              </div>
+              <div class="startup-bookmark">
+                <span class="startup-favicon"></span>
+                <span class="startup-label"></span>
+              </div>
+            </div>
+            <div class="startup-page"></div>
+          </main>
+        </div>
+      </div>
+    </div>
 
     <div style="-webkit-app-region: no-drag"></div>
 
-    <!-- prettier-ignore -->
-    <script> </script>
+    <script>
+      (() => {
+        const scripts = <%= JSON.stringify(htmlWebpackPlugin.files.js) %>;
+        const mark = (phase) => {
+          try {
+            require('electron').ipcRenderer.send('startup-timing', {
+              phase,
+              details: { rendererElapsedMs: Math.round(performance.now()) },
+            });
+          } catch (e) {}
+        };
+        mark('renderer.body_script.executed');
+        let applicationLoaded = false;
+        const loadApplication = () => {
+          if (applicationLoaded) return;
+          applicationLoaded = true;
+          for (const src of scripts) {
+            const script = document.createElement('script');
+            script.src = src;
+            script.async = false;
+            document.head.appendChild(script);
+          }
+
+          mark('renderer.startup.bootstrap_dispatched');
+        };
+
+        loadApplication();
+        // This is a measurement only. It must not gate application bootstrap:
+        // a throttled renderer can otherwise wait several seconds before the
+        // second animation frame is delivered.
+        requestAnimationFrame(() => mark('renderer.startup_shell.first_frame'));
+      })();
+    </script>
   </body>
 </html>

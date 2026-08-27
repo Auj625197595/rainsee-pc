@@ -11,6 +11,17 @@ export interface ITheme {
 
   'tab.textColor': string;
   'tab.selected.textColor': string;
+  'tab.backgroundColor'?: string;
+  'tab.selected.backgroundColor'?: string;
+
+  'bookmark.textColor'?: string;
+
+  'sidebar.backgroundColor'?: string;
+  'sidebar.tab.backgroundColor'?: string;
+  'sidebar.tab.inactiveBackgroundColor'?: string;
+  'sidebar.tab.selectedBackgroundColor'?: string;
+  'sidebar.tab.textColor'?: string;
+  'sidebar.tab.selectedTextColor'?: string;
 
   'control.backgroundColor': string;
   'control.hover.backgroundColor': string;

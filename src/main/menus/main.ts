@@ -4,6 +4,7 @@ import { WEBUI_BASE_URL, WEBUI_URL_SUFFIX } from '~/constants/files';
 import { AppWindow } from '../windows';
 import { Application } from '../application';
 import { getWebUIURL } from '~/common/webui-main';
+import { normalizeBookmarkBarDisplay } from '~/common/bookmark-bar';
 
 const isMac = process.platform === 'darwin';
 
@@ -89,10 +90,14 @@ export const getMainMenu = () => {
             // 启动行为「打开特定页面」:Ctrl+T 也打开配置网址,否则默认新标签页。
             const sb = Application.instance.settings.object.startupBehavior;
             const raw = sb.type === 'urls' && sb.url ? sb.url.trim() : '';
-            const url = raw ? (raw.includes('://') ? raw : `http://${raw}`) : getWebUIURL('newtab');
+            const url = raw
+              ? raw.includes('://')
+                ? raw
+                : `http://${raw}`
+              : getWebUIURL('newtab');
             window.viewManager.create({
               url,
-              active: true
+              active: true,
             });
           },
           '打开新的标签页',
@@ -188,7 +193,9 @@ export const getMainMenu = () => {
         ...createMenuItem(
           ['CmdOrCtrl+Shift+L'],
           () => {
-            Application.instance.windows.current?.send('addressbar-paste-and-go');
+            Application.instance.windows.current?.send(
+              'addressbar-paste-and-go',
+            );
           },
           '粘贴并转到',
           'paste-and-go',
@@ -231,9 +238,8 @@ export const getMainMenu = () => {
         ...createMenuItem(
           isMac ? ['Cmd+[', 'Cmd+Left'] : ['Alt+Left'],
           () => {
-            const {
-              selected,
-            } = Application.instance.windows.current.viewManager;
+            const { selected } =
+              Application.instance.windows.current.viewManager;
             if (selected) {
               selected.webContents.goBack();
             }
@@ -244,9 +250,8 @@ export const getMainMenu = () => {
         ...createMenuItem(
           isMac ? ['Cmd+]', 'Cmd+Right'] : ['Alt+Right'],
           () => {
-            const {
-              selected,
-            } = Application.instance.windows.current.viewManager;
+            const { selected } =
+              Application.instance.windows.current.viewManager;
             if (selected) {
               selected.webContents.goForward();
             }
@@ -289,9 +294,19 @@ export const getMainMenu = () => {
         ...createMenuItem(
           ['CmdOrCtrl+Shift+B'],
           () => {
-            const { bookmarksBar } = Application.instance.settings.object;
+            const settings = Application.instance.settings.object;
+            const current = normalizeBookmarkBarDisplay(
+              settings.bookmarksBarDisplay,
+              settings.bookmarksBar,
+            );
+            const bookmarksBarDisplay =
+              current === 'always'
+                ? 'newtab'
+                : current === 'newtab'
+                ? 'never'
+                : 'always';
             Application.instance.settings.updateSettings({
-              bookmarksBar: !bookmarksBar,
+              bookmarksBarDisplay,
             });
           },
           'Toggle bookmarks bar',
@@ -314,6 +329,23 @@ export const getMainMenu = () => {
     {
       label: '工具',
       submenu: [
+        ...createMenuItem(
+          ['CmdOrCtrl+Shift+X'],
+          () => {
+            void Application.instance.openDesktopScreenshot();
+          },
+          '截图',
+          'screenshot',
+        ),
+        ...createMenuItem(
+          ['Ctrl+`'],
+          () => {
+            Application.instance.toggleBossKey();
+          },
+          '老板键',
+          'boss-key',
+        ),
+        { type: 'separator' },
         {
           label: 'Developer',
           submenu: [
@@ -371,13 +403,41 @@ export const getMainMenu = () => {
           'Select previous tab',
           'previous-tab',
         ),
+        // 标签栏整理(隐藏项,快捷键驱动):动作在 renderer 的 LayoutSwitcher,
+        // 这里只把动作名经 organize-tabs IPC 转发过去。
+        ...createMenuItem(
+          ['CmdOrCtrl+Shift+D'],
+          (window) => {
+            window.send('organize-tabs', 'deduplicate');
+          },
+          null,
+          'deduplicate-tabs',
+        ),
+        ...createMenuItem(
+          ['CmdOrCtrl+Shift+G'],
+          (window) => {
+            window.send('organize-tabs', 'domain');
+          },
+          null,
+          'group-tabs-by-domain',
+        ),
       ],
     },
     {
       label: '窗口',
       submenu: [
         { role: 'minimize' },
-        { role: 'togglefullscreen' },
+        {
+          label: '切换全屏',
+          accelerator: 'F11',
+          click: (_menuItem: MenuItem, browserWindow: BrowserWindow) => {
+            const target = browserWindow || BrowserWindow.getFocusedWindow();
+            const window = Application.instance.windows.list.find(
+              (item) => item.win.id === target?.id,
+            );
+            window?.toggleFullscreenFromF11();
+          },
+        },
         { role: 'zoom' },
         ...(isMac
           ? [
@@ -423,7 +483,9 @@ export const getMainMenu = () => {
     createMenuItem(
       ['CmdOrCtrl+9'],
       () => {
-        Application.instance.windows.current.webContents.send('select-last-tab');
+        Application.instance.windows.current.webContents.send(
+          'select-last-tab',
+        );
       },
       null,
       'select-last-tab',

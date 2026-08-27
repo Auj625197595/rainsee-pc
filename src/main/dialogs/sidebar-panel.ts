@@ -1,4 +1,4 @@
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, screen } from 'electron';
 import { PersistentDialog } from './dialog';
 
 // 侧边栏「缩放模式」悬停浮层。窄轨(62px)常驻在侧边栏位置,鼠标移入窄轨时弹出
@@ -34,7 +34,24 @@ export class SidebarPanelDialog extends PersistentDialog {
 
   public async show(browserWindow: BrowserWindow, payload: any) {
     this.payload = payload || {};
-    await super.show(browserWindow, false);
+    if (!(await super.show(browserWindow, false))) return;
     this.send('visible', true, payload);
+
+    // BrowserView 会覆盖触发它的窄轨并令窄轨收到 mouseleave。显示完成时主动
+    // 核对一次光标位置,避免光标静止时浮层收不到 mouseenter、关闭计时器未取消。
+    const cursor = screen.getCursorScreenPoint();
+    const contentBounds = browserWindow.getContentBounds();
+    const left = contentBounds.x + Number(this.bounds.x || 0);
+    const top = contentBounds.y + Number(this.bounds.y || 0);
+    const right = left + Number(this.bounds.width || 0);
+    const bottom = top + Number(this.bounds.height || 0);
+    if (
+      cursor.x >= left &&
+      cursor.x < right &&
+      cursor.y >= top &&
+      cursor.y < bottom
+    ) {
+      browserWindow.webContents.send('sidebar-panel-enter');
+    }
   }
 }

@@ -1,15 +1,41 @@
 import {existsSync, promises as fs, createWriteStream} from 'fs';
 import {resolve, join} from 'path';
 
-import {BlockingResponse, ElectronBlocker, Request} from '@cliqz/adblocker-electron';
+import type {BlockingResponse, ElectronBlocker, Request} from '@cliqz/adblocker-electron';
 import {getPath} from '~/utils';
 import {Application} from '../application';
 import {ipcMain, webContents} from 'electron';
 import {getDomain} from 'tldts';
 import {deletePath, isExpire, readFileAsText, writeFileText} from "~/utils/files";
 import {filterVideo, stripEdgeCspHeaders} from '~/main/services/supervideo-video';
+import {resolveChromeExtensionResourceUrl} from './chrome-extension-resources';
+
+// @cliqz/adblocker-electron 是主进程最重的依赖之一(完整过滤引擎,顶层求值拖慢
+// main.bundle require ~数百 ms)。真正构建引擎只在 loadFilters(deferred 阶段),
+// 首次调用时动态 import 并缓存,启动关键路径不再求值它。
+let adblockerModule: Promise<typeof import('@cliqz/adblocker-electron')> | null =
+  null;
+const getAdblocker = () => {
+  adblockerModule ??= import('@cliqz/adblocker-electron');
+  return adblockerModule;
+};
 
 export let engine: ElectronBlocker;
+const adblockVerbose =
+  process.env.CRX_VERBOSE === '1' || process.env.ADBLOCK_VERBOSE === '1';
+const webRequestVerbose =
+  process.env.CRX_WEBREQUEST_DEBUG === '1' || process.env.CRX_VERBOSE === '1';
+const shortWebRequestUrl = (url: unknown) => {
+  const value = typeof url === 'string' ? url : '';
+  return value.length > 180 ? `${value.slice(0, 177)}...` : value;
+};
+let mediaDispatchLogCount = 0;
+const logMediaDispatch = (message: string) => {
+  if (!webRequestVerbose) return;
+  if (mediaDispatchLogCount >= 200) return;
+  mediaDispatchLogCount++;
+  console.log(`[crx-webRequest] ${message}`);
+};
 
 // Electron webRequest.resourceType(camelCase) → Chrome 扩展 webRequest type(snake_case)。
 // AdGuard 等扩展按 Chrome 标准 type 匹配,未映射会导致匹配异常(全盘 redirect + per-tab badge 不计数)。
@@ -22,6 +48,9 @@ function normalizeResourceType(t: string | undefined): string {
     fetch: 'xmlhttprequest',
     cspReport: 'csp_report',
     webSocket: 'websocket',
+    serviceWorker: 'service_worker',
+    signedExchange: 'signed_exchange',
+    webTransport: 'webtransport',
   }
   return map[t] || t
 }
@@ -35,12 +64,36 @@ const webRequestEventDispatchers = new Map<
   Electron.Session,
   (eventName: string, details: any) => void
 >();
+const webRequestTabIdResolvers = new Map<
+  Electron.Session,
+  (webContentsId: number) => number | undefined
+>();
+const webRequestDispatchPredicates = new Map<
+  Electron.Session,
+  (eventName: string, details: any) => boolean
+>();
+const webRequestFallbackInstallers = new Map<Electron.Session, () => void>();
+const adblockSessions = new Set<Electron.Session>();
 
 export function setWebRequestDispatcher(
   session: Electron.Session,
   dispatcher: (eventName: string, details: any) => void,
+  resolveTabId?: (webContentsId: number) => number | undefined,
+  shouldDispatch?: (eventName: string, details: any) => boolean,
 ) {
   webRequestEventDispatchers.set(session, dispatcher);
+  if (resolveTabId) webRequestTabIdResolvers.set(session, resolveTabId);
+  else webRequestTabIdResolvers.delete(session);
+  if (shouldDispatch) webRequestDispatchPredicates.set(session, shouldDispatch);
+  else webRequestDispatchPredicates.delete(session);
+}
+
+export function setWebRequestFallbackInstaller(
+  session: Electron.Session,
+  install: () => void,
+) {
+  webRequestFallbackInstallers.set(session, install);
+  if (!adblockSessions.has(session)) install();
 }
 
 // 独立的 DNR (declarativeNetRequest) 执行路径。屏蔽开启时 cliqz 占据 session 唯一
@@ -49,6 +102,7 @@ export function setWebRequestDispatcher(
 // 屏蔽开启/关闭两种状态下都能同步执行。所有方法必须同步(Electron 42 异步调
 // webRequest callback 会触发 Chromium CHECK 硬崩主进程)。
 interface DnrEnforcer {
+  hasHeaderRules?(kind: 'request' | 'response'): boolean
   decideBeforeRequest(details: {
     url: string
     resourceType?: string
@@ -74,10 +128,51 @@ export function setDnrEnforcer(session: Electron.Session, enforcer: DnrEnforcer)
   dnrEnforcers.set(session, enforcer);
 }
 
+export function applyDnrRequestHeaders(
+  details: any,
+  session?: Electron.Session,
+): Record<string, string> | undefined {
+  const dnr = dnrEnforcers.get(session || requestSession(details));
+  if (!dnr || !isNetworkUrl(details?.url) || !details?.requestHeaders) return undefined;
+  if (dnr.hasHeaderRules?.('request') === false) return undefined;
+  const modified = dnr.matchHeaders(
+    details,
+    'request',
+    recordReqToArray(details.requestHeaders),
+  );
+  return modified ? arrayToReqRecord(modified) : undefined;
+}
+
+export function applyDnrResponseHeaders(
+  details: any,
+  session?: Electron.Session,
+): Record<string, string[]> | undefined {
+  const dnr = dnrEnforcers.get(session || requestSession(details));
+  if (!dnr || !isNetworkUrl(details?.url) || !details?.responseHeaders) return undefined;
+  if (dnr.hasHeaderRules?.('response') === false) return undefined;
+  const modified = dnr.matchHeaders(
+    details,
+    'response',
+    recordRespToArray(details.responseHeaders),
+  );
+  return modified ? arrayToRespRecord(modified) : undefined;
+}
+
 const requestSession = (details: any): Electron.Session | undefined => {
-  if (!details?.webContentsId) return undefined;
+  // Electron's native webRequest details expose `webContentsId`, while the
+  // cliqz/adblock Request passed to engine hooks calls the same physical
+  // WebContents id `tabId`. When the blocker owns the single webRequest slot,
+  // using only webContentsId makes extension dispatch lose its session and
+  // silently drops every webRequest event (including media).
+  const contentsId =
+    typeof details?.webContentsId === 'number'
+      ? details.webContentsId
+      : typeof details?.tabId === 'number'
+        ? details.tabId
+        : undefined;
+  if (typeof contentsId !== 'number') return undefined;
   try {
-    return webContents.fromId(details.webContentsId)?.session;
+    return webContents.fromId(contentsId)?.session;
   } catch {
     return undefined;
   }
@@ -191,25 +286,93 @@ export function dispatchWebReqToExtensions(
   if (!details || typeof details.url !== 'string' || details.url.startsWith('chrome-extension://')) {
     return;
   }
-  const chromeDetails = {
-    requestId: String(details.id),
+  const webContentsId =
+    typeof details.webContentsId === 'number'
+      ? details.webContentsId
+      : typeof details.tabId === 'number'
+        ? details.tabId
+        : -1;
+  const targetSession = session || requestSession(details);
+  const tabIdResolver = targetSession
+    ? webRequestTabIdResolvers.get(targetSession)
+    : undefined;
+  const logicalTabId =
+    webContentsId < 0
+      ? -1
+      : tabIdResolver
+        ? tabIdResolver(webContentsId) ?? -1
+        : webContentsId;
+  const chromeDetails: any = {
+    requestId: String(details.id ?? Math.random().toString(36).slice(2)),
     url: details.url,
-    method: details.method || 'GET',
-    frameId: details.frameId || 0,
-    parentFrameId: details.parentFrameId || -1,
-    tabId: details.webContentsId || -1,
-    type: normalizeResourceType(details.resourceType),
-    timeStamp: details.timestamp || Date.now(),
+    method: details.method ?? 'GET',
+    // Preserve Chromium's top-frame id (0). `||` incorrectly turns a valid
+    // parentFrameId of 0 into -1 and breaks frame-scoped webRequest filters.
+    frameId: typeof details.frameId === 'number' ? details.frameId : 0,
+    parentFrameId:
+      typeof details.parentFrameId === 'number' ? details.parentFrameId : -1,
+    // Chrome exposes the stable tab id, not the internal WebContents id used
+    // by an overlay created for window.open navigation. Extensions use this
+    // value in DNR tabIds conditions, so both APIs must observe the same id.
+    tabId: logicalTabId,
+    type: normalizeResourceType(details.resourceType || details.type),
+    timeStamp: typeof details.timestamp === 'number' ? details.timestamp : Date.now(),
     statusCode: details.statusCode,
     statusLine: details.statusLine,
-    responseHeaders: toChromeHeaders(details.responseHeaders),
-    requestHeaders: toChromeHeaders(details.requestHeaders),
-    initiator: details.initiator || '',
+    fromCache: details.fromCache,
+    ip: details.ip,
+    fromOrigin: details.fromOrigin,
+    error: details.error,
+    redirectUrl: details.redirectUrl,
+    // Chrome omits initiator for requests without one. Keep it undefined;
+    // an empty string is interpreted as a special page by some extensions.
+    initiator:
+      typeof details.initiator === 'string' && details.initiator.length > 0
+        ? details.initiator
+        : undefined,
   };
-  const dispatcher = webRequestEventDispatchers.get(session || requestSession(details));
-  if (!dispatcher) return;
+  const shouldDispatch = targetSession
+    ? webRequestDispatchPredicates.get(targetSession)
+    : undefined;
+  if (shouldDispatch && !shouldDispatch(eventName, chromeDetails)) return;
+  chromeDetails.responseHeaders = toChromeHeaders(details.responseHeaders);
+  chromeDetails.requestHeaders = toChromeHeaders(details.requestHeaders);
+  const dispatcher = targetSession
+    ? webRequestEventDispatchers.get(targetSession)
+    : undefined;
+  if (!dispatcher) {
+    if (webRequestVerbose && (chromeDetails.type === 'media' || chromeDetails.type === 'object')) {
+      logMediaDispatch(
+        `adblock event=${eventName} no-dispatcher tab=${chromeDetails.tabId} ` +
+        `url=${shortWebRequestUrl(chromeDetails.url)}`,
+      );
+    }
+    if (webRequestVerbose) {
+      console.log(
+        `[crx-webRequest] adblock event=${eventName} no-dispatcher ` +
+          `type=${chromeDetails.type} tab=${chromeDetails.tabId} url=${shortWebRequestUrl(chromeDetails.url)}`,
+      );
+    }
+    return;
+  }
+  if (
+    webRequestVerbose &&
+    (chromeDetails.type === 'media' || chromeDetails.type === 'object')
+  ) {
+    console.log(
+      `[crx-webRequest] adblock event=${eventName} dispatch ` +
+        `type=${chromeDetails.type} tab=${chromeDetails.tabId} ` +
+        `headers=${chromeDetails.responseHeaders?.length || 0} url=${shortWebRequestUrl(chromeDetails.url)}`,
+    );
+  }
   try {
     dispatcher(eventName, chromeDetails);
+    if (webRequestVerbose && (chromeDetails.type === 'media' || chromeDetails.type === 'object')) {
+      logMediaDispatch(
+        `adblock event=${eventName} dispatched tab=${chromeDetails.tabId} ` +
+        `headers=${chromeDetails.responseHeaders?.length || 0} url=${shortWebRequestUrl(chromeDetails.url)}`,
+      );
+    }
   } catch (err) {
     console.error('[adblock] dispatchWebReqToExtensions error:', err);
   }
@@ -233,32 +396,38 @@ const emitBlockedEvent = (request: Request, result: BlockingResponse) => {
   const win = Application.instance.windows.findByBrowserView(request.tabId);
   if (!win) {
     dbgEmitFailNoWin++;
-    console.log(
-      `[adblock] BLOCKED but NO WINDOW: tabId=${request.tabId} url=${request.url} ` +
-      `(blocked=${dbgBlockedCount}, lostNoWin=${dbgEmitFailNoWin})`,
-    );
+    if (adblockVerbose) {
+      console.log(
+        `[adblock] BLOCKED but NO WINDOW: tabId=${request.tabId} url=${request.url} ` +
+        `(blocked=${dbgBlockedCount}, lostNoWin=${dbgEmitFailNoWin})`,
+      );
+    }
     return;
   }
-  const view = win.viewManager.views.get(request.tabId);
+  // 覆盖页请求携带物理 WebContents id，归并到 renderer 中唯一的根标签。
+  const view = win.viewManager.findViewByWebContentsId(request.tabId);
   if (!view) {
     dbgEmitFailNoWin++;
-    console.log(
-      `[adblock] BLOCKED but NO VIEW: tabId=${request.tabId} url=${request.url} ` +
-      `(blocked=${dbgBlockedCount}, lostNoView=${dbgEmitFailNoWin})`,
-    );
+    if (adblockVerbose) {
+      console.log(
+        `[adblock] BLOCKED but NO VIEW: tabId=${request.tabId} url=${request.url} ` +
+        `(blocked=${dbgBlockedCount}, lostNoView=${dbgEmitFailNoWin})`,
+      );
+    }
     return;
   }
   const filterStr = result.filter
     ? (result.filter.filter || result.filter.toString())
     : '(no-filter)';
-  console.log(
-    `[adblock] BLOCKED #${dbgBlockedCount} tabId=${request.tabId} ` +
-    `filter=${filterStr} url=${request.url}`,
-  );
+  if (adblockVerbose) {
+    console.log(
+      `[adblock] BLOCKED #${dbgBlockedCount} tabId=${request.tabId} ` +
+      `filter=${filterStr} url=${request.url}`,
+    );
+  }
   view.emitEvent('blocked-ad', request.url, filterStr, filterCount);
 };
 
-let adblockRunning = false;
 let adblockInitialized = false;
 
 interface IAdblockInfo {
@@ -360,7 +529,9 @@ let whiteList = [...BUILTIN_WHITELIST];
 // 旧实现把所有订阅地址塞进 lists.txt, 引擎合并成一个, 无法区分单条订阅的名字/条数。
 // 新实现用 adblock/subscriptions.json 单独保存每条订阅的元数据(名字、条数、启用、更新时间),
 // lists.txt 仍作为"已启用地址"的镜像保留, 兼容旧的 getAdLists/updateAdLists。
-const BUILTIN_ADBLOCK_URL = 'https://api.yjllq.com/api/White/adblock';
+// 内置广告规则订阅: EasyList China 官方源(与中国区规则合并版)
+const BUILTIN_ADBLOCK_URL =
+  'https://easylist-downloads.adblockplus.org/easylistchina+easylist.txt';
 const DEFAULT_AUTO_UPDATE_HOURS = 168; // 默认每周自动更新
 
 interface ISubItem {
@@ -489,13 +660,15 @@ const getEnabledSubUrls = (): string[] =>
   readSubStore().items.filter((i) => i.enabled).map((i) => i.url);
 
 // 删缓存并对所有会话重启拦截服务, 使订阅集合/规则变更立即生效。
+// 必须先停完所有会话再统一启动。若逐个“停后立即启动”，adblockSessions 永远
+// 非空，adblockInitialized 不会复位，runAdblockService 会继续复用旧引擎，
+// 导致订阅已经更新但规则和 filterCount 都没有刷新。
 const reloadAllSessions = async (ses: Electron.Session[]) => {
   const path = resolve(getPath('adblock/cache.bin'));
   await deletePath(path);
-  for (let i = 0; i < ses.length; i++) {
-    stopAdblockService(ses[i]);
-    await runAdblockService(ses[i]);
-  }
+  const sessions = Array.from(new Set(ses.filter(Boolean)));
+  sessions.forEach((session) => stopAdblockService(session));
+  for (const session of sessions) await runAdblockService(session);
 };
 
 // 仅刷新元数据(名字/条数/更新时间), 不重启引擎。用于首屏补全条数展示。
@@ -801,7 +974,8 @@ const loadFilters = async () => {
   }
   // 载入订阅原文本地缓存, 供 subscriptionFetch 在断网/拉取失败时兜底。
   ensureListCacheLoaded();
-  engine = await ElectronBlocker.fromLists(subscriptionFetch, ads, {
+  const {ElectronBlocker: Blocker} = await getAdblocker();
+  engine = await Blocker.fromLists(subscriptionFetch, ads, {
     loadCosmeticFilters: false,
     enableHtmlFiltering: false
   }, {
@@ -855,7 +1029,7 @@ const hookEngine = () => {
   const onBeforeRequest = engine.onBeforeRequest.bind(engine);
   (engine as any).onBeforeRequest = (details: Electron.OnBeforeRequestListenerDetails, callback: any) => {
     dbgRequestCount++;
-    if (dbgRequestCount % 200 === 1) {
+    if (adblockVerbose && dbgRequestCount % 200 === 1) {
       console.log(
         `[adblock] 请求=${dbgRequestCount} 白名单放行=${dbgWhitelistSkip} ` +
         `filter命中=${dbgFilterMatched} 拦截=${dbgBlockedCount} 重定向=${dbgRedirected} ` +
@@ -869,7 +1043,11 @@ const hookEngine = () => {
     }
 
     if (details.url.startsWith('chrome-extension://')) {
-      callback({});
+      // The vendor webRequest hook owns this slot when adblock is disabled;
+      // both paths resolve Chrome-owned resources so the favicon endpoint works
+      // regardless of the adblock toggle.
+      const specialRedirect = resolveChromeExtensionResourceUrl(details.url);
+      callback(specialRedirect ? {redirectURL: specialRedirect} : {});
       return;
     }
     // 注意:这里必须同步调用 callback。曾尝试为接回 uBlock 的 {cancel} 把 callback 延迟到
@@ -932,7 +1110,7 @@ const hookEngine = () => {
     // 调用。卡顿表现为 did-start-loading 后无 did-finish-load,怀疑 origOnHeadersReceived 对
     // chrome-extension:// 不调 callback。
     const isChromeExt = details.url && details.url.startsWith('chrome-extension://');
-    if (isChromeExt) {
+    if (adblockVerbose && isChromeExt) {
       console.log(`[adblock] onHeadersReceived ENTER chrome-ext ${details.resourceType} ${String(details.url).slice(0, 80)}`);
     }
     // 分发 webRequest.onHeadersReceived 到扩展(屏蔽开启时 cliqz 占据 session 唯一监听器,
@@ -965,16 +1143,14 @@ const hookEngine = () => {
       let headers = baseHeaders;
       let dnrTouched = false;
       let cookieTouched = false;
-      const dnr = dnrEnforcers.get(requestSession(details));
-      if (dnr && !isChromeExt && isNetworkUrl(details.url) && headers) {
+      if (!isChromeExt && headers) {
         try {
-          const modified = dnr.matchHeaders(
-            details,
-            'response',
-            recordRespToArray(headers),
-          );
+          const modified = applyDnrResponseHeaders({
+            ...details,
+            responseHeaders: headers,
+          });
           if (modified) {
-            headers = arrayToRespRecord(modified);
+            headers = modified;
             dnrTouched = true;
           }
         } catch (err) {
@@ -1021,11 +1197,14 @@ const hookEngine = () => {
   };
 
   // DNR modifyHeaders (request) — 独立路径。仅当 cliqz 引擎暴露 onBeforeSendHeaders
-  // 且屏蔽开启时 session 监听器会路由到这里时生效;屏蔽关闭时由 vendor WebRequestAPI
-  // 的 onBeforeSendHeaders 兜底。在 cliqz 的结果之上再叠加 DNR 改写, 全程同步。
+  // 且屏蔽开启时 session 监听器会路由到这里时生效;屏蔽关闭时由 settings.ts
+  // 的 session 监听器执行。在 cliqz 的结果之上再叠加 DNR 改写, 全程同步。
   if (typeof (engine as any).onBeforeSendHeaders === 'function') {
     const origOnBeforeSendHeaders = (engine as any).onBeforeSendHeaders.bind(engine);
     (engine as any).onBeforeSendHeaders = (details: any, callback: any) => {
+      if (!details.url?.startsWith('chrome-extension://')) {
+        dispatchWebReqToExtensions('onBeforeSendHeaders', details);
+      }
       const next = (resp: any) => {
         let requestHeaders = (resp && resp.requestHeaders) || details.requestHeaders;
         if (
@@ -1035,14 +1214,12 @@ const hookEngine = () => {
           requestHeaders &&
           dnrEnforcers.has(requestSession(details))
         ) {
-          const dnr = dnrEnforcers.get(requestSession(details));
           try {
-            const modified = dnr?.matchHeaders(
-              details,
-              'request',
-              recordReqToArray(requestHeaders),
-            );
-            if (modified) requestHeaders = arrayToReqRecord(modified);
+            const modified = applyDnrRequestHeaders({
+              ...details,
+              requestHeaders,
+            });
+            if (modified) requestHeaders = modified;
           } catch (err) {
             console.error('[adblock] DNR request-headers error', err);
           }
@@ -1066,7 +1243,9 @@ const hookEngine = () => {
   engine.on('request-allowed', () => { dbgAllowed++; });
   engine.on('request-whitelisted', (request: Request) => {
     dbgWhitelisted++;
-    if (dbgWhitelisted <= 20) console.log(`[adblock] WHITELISTED(例外规则解封) url=${request.url}`);
+    if (adblockVerbose && dbgWhitelisted <= 20) {
+      console.log(`[adblock] WHITELISTED(例外规则解封) url=${request.url}`);
+    }
   });
   engine.on('filter-matched', () => { dbgFilterMatched++; });
   engine.on('request-redirected', (request: Request, result: BlockingResponse) => {
@@ -1091,20 +1270,25 @@ export const runAdblockService = async (ses: any) => {
   hookEngine();
   console.log(`[adblock] enableBlockingInSession (filterCount=${filterCount})`);
   engine.enableBlockingInSession(ses);
-  adblockRunning = true;
+  adblockSessions.add(ses);
 };
 
 export const stopAdblockService = (ses: any) => {
-  if (!adblockRunning) return;
-  adblockRunning = false;
-  adblockInitialized = false;
-  engineHooked = false; // 下次 loadFilters 会新建 engine,需重新挂钩
-  try {
-    engine.disableBlockingInSession(ses);
-    //ses.setPreloads(ses.getPreloads().filter((p: string) => p !== PRELOAD_PATH));
-  } catch (e) {
-    console.error(e);
+  if (adblockSessions.delete(ses)) {
+    try {
+      engine.disableBlockingInSession(ses);
+      //ses.setPreloads(ses.getPreloads().filter((p: string) => p !== PRELOAD_PATH));
+    } catch (e) {
+      console.error(e);
+    }
   }
+  if (adblockSessions.size === 0) {
+    adblockInitialized = false;
+    engineHooked = false; // 下次 loadFilters 会新建 engine,需重新挂钩
+  }
+  // The blocker owns Electron's single onBeforeRequest slot while enabled and
+  // clears it when disabled. Restore the extension fallback for this session.
+  webRequestFallbackInstallers.get(ses)?.();
 };
 const persistWhiteList = () => {
   const whitePath = resolve(getPath('adblock/whiteList.txt'));
@@ -1137,10 +1321,7 @@ export const toggleSiteWhitelist = async (domain: string, ses: Electron.Session[
     enabled = false;
   }
   persistWhiteList();
-  for (let i = 0; i < ses.length; i++) {
-    stopAdblockService(ses[i]);
-    await runAdblockService(ses[i]);
-  }
+  await reloadAllSessions(ses);
   return enabled;
 };
 
@@ -1163,10 +1344,7 @@ export const addWhitelistDomain = async (
   }
   whiteList.push(d);
   persistWhiteList();
-  for (let i = 0; i < ses.length; i++) {
-    stopAdblockService(ses[i]);
-    await runAdblockService(ses[i]);
-  }
+  await reloadAllSessions(ses);
   return {list: getUserWhitelist()};
 };
 
@@ -1180,10 +1358,7 @@ export const removeWhitelistDomain = async (
   if (idx < 0) return getUserWhitelist();
   whiteList.splice(idx, 1);
   persistWhiteList();
-  for (let i = 0; i < ses.length; i++) {
-    stopAdblockService(ses[i]);
-    await runAdblockService(ses[i]);
-  }
+  await reloadAllSessions(ses);
   return getUserWhitelist();
 };
 

@@ -208,14 +208,14 @@ export function createBookmarksImpl(storage: StorageService): BookmarksImpl {
       if (b.isFolder && all().some((x) => x.parent === id)) {
         throw new Error("Can't remove non-empty folder (use recursive to force)");
       }
-      storage.removeBookmark(id);
+      await storage.removeBookmark(id);
     },
 
     async removeTree(id) {
       const b = byId(id);
       if (!b) throw new Error(`Bookmark ${id} not found`);
       // removeBookmark already recurses into folder contents.
-      storage.removeBookmark(id);
+      await storage.removeBookmark(id);
     },
   };
 }

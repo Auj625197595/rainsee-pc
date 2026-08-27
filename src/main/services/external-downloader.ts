@@ -56,6 +56,17 @@ export interface ILaunchOptions {
   filename?: string;
 }
 
+export interface IAvailableDownloader {
+  type: string;
+  name: string;
+  path?: string;
+}
+
+interface IConfiguredDownloader {
+  downloaderType?: string;
+  downloaderPath?: string;
+}
+
 // 构造各预置的 argv(除迅雷外)。
 function buildArgv(opts: ILaunchOptions): string[] {
   const {type, url, path, filename, customArgs} = opts;
@@ -123,6 +134,83 @@ export function discoverDownloaderPath(type: string): Promise<string> {
     };
     tryNext();
   });
+}
+
+function commandExists(command: string, args: string[]): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile(command, args, (error) => resolve(!error));
+  });
+}
+
+function discoverExecutable(command: string): Promise<string> {
+  return new Promise((resolve) => {
+    execFile('where.exe', [command], (error, stdout) => {
+      if (error || !stdout) {
+        resolve('');
+        return;
+      }
+      resolve(
+        stdout
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .find(Boolean) || '',
+      );
+    });
+  });
+}
+
+// 下载确认弹窗只展示本机确实可调用的下载器。已配置路径优先；常见预置则
+// 补充注册表/系统 PATH 检测，避免给用户一个点击后才发现未安装的选项。
+export async function getAvailableDownloaders(
+  configured: IConfiguredDownloader,
+): Promise<IAvailableDownloader[]> {
+  const configuredType = configured.downloaderType || '';
+  const configuredPath = configured.downloaderPath || '';
+  const pathFor = (type: string) =>
+    configuredType === type && existsSync(configuredPath) ? configuredPath : '';
+
+  const [idmDiscovered, thunderInstalled, ariaDiscovered] = await Promise.all([
+    pathFor('idm') ? Promise.resolve('') : discoverDownloaderPath('idm'),
+    commandExists('reg', [
+      'query',
+      'HKCR\\thunder\\shell\\open\\command',
+      '/ve',
+    ]),
+    pathFor('aria2') ? Promise.resolve('') : discoverExecutable('aria2c.exe'),
+  ]);
+
+  const available: IAvailableDownloader[] = [];
+  const idmPath = pathFor('idm') || idmDiscovered;
+  if (idmPath && existsSync(idmPath)) {
+    available.push({
+      type: 'idm',
+      name: DOWNLOADER_PRESETS.idm.name,
+      path: idmPath,
+    });
+  }
+  if (thunderInstalled) {
+    available.push({type: 'thunder', name: DOWNLOADER_PRESETS.thunder.name});
+  }
+
+  const ariaPath = pathFor('aria2') || ariaDiscovered;
+  if (ariaPath && existsSync(ariaPath)) {
+    available.push({
+      type: 'aria2',
+      name: DOWNLOADER_PRESETS.aria2.name,
+      path: ariaPath,
+    });
+  }
+
+  const customPath = pathFor('custom');
+  if (customPath) {
+    available.push({
+      type: 'custom',
+      name: DOWNLOADER_PRESETS.custom.name,
+      path: customPath,
+    });
+  }
+
+  return available;
 }
 
 // 同步预判能否接管下载。用于 will-download 中决定是否同步 preventDefault:

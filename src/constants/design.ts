@@ -24,6 +24,10 @@ export const VIEW_Y_OFFSET = TOOLBAR_HEIGHT + DEFAULT_TITLEBAR_HEIGHT;
 export const WINDOWS_BUTTON_WIDTH = 45;
 export const MENU_WIDTH = 330;
 
+// 标签页侧边栏缩放模式(sidebarPinned=false,收起)下的窄轨宽度:
+// 恰好容纳 favicon + 截取的两字标题。renderer 与 main(权限弹窗定位等)共用此值。
+export const SIDEBAR_RAIL_WIDTH = 62;
+
 // Dialogs
 export const DIALOG_MIN_HEIGHT = 130;
 export const DIALOG_MARGIN = 16;

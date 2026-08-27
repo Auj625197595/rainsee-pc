@@ -1,13 +1,15 @@
 import { VIEW_Y_OFFSET } from '~/constants/design';
-import { AppWindow } from '../windows';
-import { Dialog } from '.';
+import { PersistentDialog } from './dialog';
 
 const WIDTH = 350;
 const HEIGHT = 271;
 
-export class CredentialsDialog extends Dialog {
-  public constructor(appWindow: AppWindow) {
-    super(appWindow, {
+export class CredentialsDialog extends PersistentDialog {
+  private rendererReady = false;
+  private pendingPayload: any = null;
+
+  public constructor() {
+    super({
       name: 'credentials',
       bounds: {
         height: HEIGHT,
@@ -15,12 +17,30 @@ export class CredentialsDialog extends Dialog {
         y: VIEW_Y_OFFSET,
       },
     });
+    this.webContents.once('did-finish-load', () => {
+      this.rendererReady = true;
+      if (this.pendingPayload) this.flushPayload();
+    });
+  }
+
+  public present(payload: any) {
+    this.pendingPayload = payload;
+    if (this.rendererReady) this.flushPayload();
+  }
+
+  private flushPayload() {
+    if (!this.pendingPayload || this.webContents.isDestroyed()) return;
+    const payload = this.pendingPayload;
+    this.pendingPayload = null;
+    this.send('credentials-update', payload);
   }
 
   public rearrange() {
-    const { width } = this.appWindow.win.getContentBounds();
+    if (!this.browserWindow || this.browserWindow.isDestroyed()) return;
+    const { width } = this.browserWindow.getContentBounds();
     super.rearrange({
       x: width - WIDTH,
+      y: VIEW_Y_OFFSET,
     });
   }
 }

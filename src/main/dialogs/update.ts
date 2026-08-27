@@ -18,7 +18,9 @@ export class UpdateDialog extends PersistentDialog {
     });
 
     // 渲染层测量到真实内容高度后回报，重排弹窗
-    ipcMain.on(`resize-dialog-${this.id}`, (e, nextHeight: number) => {
+    const resizeChannel = `resize-dialog-${this.id}`;
+    this.ipcChannels.push(resizeChannel);
+    ipcMain.on(resizeChannel, (e, nextHeight: number) => {
       super.rearrange({ height: nextHeight });
     });
   }
@@ -36,8 +38,7 @@ export class UpdateDialog extends PersistentDialog {
   public async open(browserWindow: BrowserWindow, x: number, y: number) {
     this.pos = { x, y };
 
-    // 弹窗已在启动时预加载，waitForLoad=false：立即 addBrowserView+定位，秒开
-    await super.show(browserWindow, true, false);
+    if (!(await super.show(browserWindow, true))) return;
 
     browserWindow.removeListener('resize', this.onBoundsUpdate);
     browserWindow.removeListener('move', this.onBoundsUpdate);

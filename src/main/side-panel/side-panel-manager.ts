@@ -9,7 +9,7 @@ const DEFAULT_WIDTH = 400;
 const MIN_WIDTH = 300;
 const MAX_WIDTH = 720;
 
-// 面板宽度持久化(独立文件,避免与 ai-panel.json 冲突)。
+// 面板宽度持久化(独立文件,避免与其他面板配置冲突)。
 const widthPath = () => getPath('side-panel.json');
 
 // 每个窗口一个:管理「每标签一个」的扩展 sidePanel 侧边面板,负责显隐、切标签
@@ -70,6 +70,7 @@ export class SidePanelManager {
       this.panels.set(tabId, panel);
     }
     this.visibleTabId = tabId;
+    this.window.win.addBrowserView(panel.headerView);
     this.window.win.addBrowserView(panel.browserView);
     this.resizer.attach();
     panel.visible = true;
@@ -89,6 +90,7 @@ export class SidePanelManager {
   private detach(tabId: number) {
     const panel = this.panels.get(tabId);
     if (panel && panel.browserView) {
+      this.window.win.removeBrowserView(panel.headerView);
       this.window.win.removeBrowserView(panel.browserView);
       panel.markDismissed();
     }
@@ -103,6 +105,7 @@ export class SidePanelManager {
     if (this.panels.has(tabId)) {
       this.visibleTabId = tabId;
       const panel = this.panels.get(tabId)!;
+      this.window.win.addBrowserView(panel.headerView);
       this.window.win.addBrowserView(panel.browserView);
       this.resizer.attach();
       panel.visible = true;
@@ -119,6 +122,7 @@ export class SidePanelManager {
     const panel = this.panels.get(tabId);
     if (!panel) return;
     if (this.visibleTabId === tabId) {
+      this.window.win.removeBrowserView(panel.headerView);
       this.window.win.removeBrowserView(panel.browserView);
       this.resizer.detach();
       this.visibleTabId = 0;

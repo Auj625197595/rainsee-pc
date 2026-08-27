@@ -6,6 +6,12 @@ import {URL} from 'url';
 import {Application} from '../application';
 import {IDownloadItem} from '~/interfaces';
 import {makeId} from '~/utils';
+import {normalizeDownloadSpeed} from '~/common/download-speed';
+import {
+  DEFAULT_SETTINGS,
+  MAX_M3U8_DOWNLOAD_THREADS,
+  MIN_M3U8_DOWNLOAD_THREADS,
+} from '~/constants';
 
 // 媒体下载服务：支持 m3u8(解析切片 + AES-128 解密 + 合并)与 mp4 等直链。
 // 所有网络请求复用嗅探时保存、清理后的请求头(Referer/Origin/Cookie/UA)，绕过防盗链。
@@ -48,16 +54,24 @@ interface MediaJob {
   savePath: string;
   receivedBytes: number;
   totalBytes: number;
+  speedBytesPerSecond: number;
   paused: boolean;
+  interrupted: boolean;
+  retrying: boolean;
   canceled: boolean;
   completed: boolean;
   // 运行控制
   request?: Electron.ClientRequest; // 当前直链请求(用于 abort)
   running: boolean;                 // 是否有循环在跑(避免重复 resume)
+  retryAttempts: number;
+  retryBytes: number;
+  retryTimer?: ReturnType<typeof setTimeout>;
+  lastSpeedBytes: number;
+  lastSpeedAt: number;
+  lastProgressAt: number;
   // hls 续传
   isHls: boolean;
   segments?: M3u8Segment[];
-  segIndex: number;
   partsDir?: string;
 }
 
@@ -185,9 +199,12 @@ export class MediaDownloadManager {
       fileName: j.fileName,
       receivedBytes: j.receivedBytes,
       totalBytes: j.totalBytes,
+      speedBytesPerSecond: j.speedBytesPerSecond,
       savePath: j.savePath,
       url: j.url,
       paused: j.paused,
+      interrupted: j.interrupted,
+      retrying: j.retrying,
       completed: j.completed,
       canceled: j.canceled,
     };
@@ -244,12 +261,19 @@ export class MediaDownloadManager {
       savePath,
       receivedBytes: 0,
       totalBytes: 0,
+      speedBytesPerSecond: 0,
       paused: false,
+      interrupted: false,
+      retrying: false,
       canceled: false,
       completed: false,
       running: false,
+      retryAttempts: 0,
+      retryBytes: 0,
+      lastSpeedBytes: 0,
+      lastSpeedAt: Date.now(),
+      lastProgressAt: 0,
       isHls,
-      segIndex: 0,
     };
     if (isHls) {
       job.partsDir = join(this.getDownloadDir(), `.${id}.parts`);
@@ -265,19 +289,31 @@ export class MediaDownloadManager {
     const job = this.jobs.get(id);
     if (!job || job.completed || job.canceled) return;
     job.paused = true;
+    job.interrupted = false;
+    job.retrying = false;
+    job.speedBytesPerSecond = 0;
+    if (job.retryTimer) clearTimeout(job.retryTimer);
+    job.retryTimer = undefined;
     try {
       job.request?.abort();
     } catch (e) {
     }
     this.emit('download-paused', id);
+    this.progress(job, true);
   }
 
   public static resume(id: string) {
     const job = this.jobs.get(id);
-    if (!job || job.completed || job.canceled || job.running) return;
+    if (!job || job.completed || job.canceled) return;
     job.paused = false;
-    this.emit('download-progress', this.toItem(job));
-    this.run(job);
+    job.interrupted = false;
+    job.retrying = false;
+    job.retryAttempts = 0;
+    job.lastSpeedBytes = job.receivedBytes;
+    job.lastSpeedAt = Date.now();
+    job.speedBytesPerSecond = 0;
+    this.progress(job, true);
+    if (!job.running) this.run(job);
   }
 
   public static cancel(id: string) {
@@ -285,6 +321,10 @@ export class MediaDownloadManager {
     if (!job) return;
     job.canceled = true;
     job.paused = false;
+    job.interrupted = false;
+    job.retrying = false;
+    if (job.retryTimer) clearTimeout(job.retryTimer);
+    job.retryTimer = undefined;
     try {
       job.request?.abort();
     } catch (e) {
@@ -304,7 +344,19 @@ export class MediaDownloadManager {
       }
       this.cleanup(job);
     }
+    if (job.retryTimer) clearTimeout(job.retryTimer);
     this.jobs.delete(id);
+  }
+
+  // 清理已结束的媒体下载记录，保留正在进行的任务和已下载文件。
+  public static clearHistory(): string[] {
+    const removedIds: string[] = [];
+    for (const [id, job] of this.jobs) {
+      if (!job.completed && !job.canceled) continue;
+      this.jobs.delete(id);
+      removedIds.push(id);
+    }
+    return removedIds;
   }
 
   private static cleanup(job: MediaJob) {
@@ -318,13 +370,35 @@ export class MediaDownloadManager {
   }
 
   // 进度上报(节流交给渲染层，这里直接发)
-  private static progress(job: MediaJob) {
-    this.emit('download-progress', this.toItem(job));
+  private static progress(job: MediaJob, force = false) {
+    const now = Date.now();
+    if (job.paused || job.interrupted || job.completed || job.canceled) {
+      job.speedBytesPerSecond = 0;
+    } else {
+      const elapsed = now - job.lastSpeedAt;
+      if (elapsed >= 250) {
+        const instant = Math.max(0, job.receivedBytes - job.lastSpeedBytes) * 1000 / elapsed;
+        job.speedBytesPerSecond = normalizeDownloadSpeed(
+          job.speedBytesPerSecond > 0
+            ? job.speedBytesPerSecond * 0.35 + instant * 0.65
+            : instant,
+        );
+        job.lastSpeedBytes = job.receivedBytes;
+        job.lastSpeedAt = now;
+      }
+    }
+    if (force || now - job.lastProgressAt >= 250) {
+      job.lastProgressAt = now;
+      this.emit('download-progress', this.toItem(job));
+    }
   }
 
   private static done(job: MediaJob) {
     job.completed = true;
     job.running = false;
+    job.speedBytesPerSecond = 0;
+    job.interrupted = false;
+    job.retrying = false;
     this.emit('download-completed', job.id);
     this.emit('download-progress', this.toItem(job));
   }
@@ -332,10 +406,38 @@ export class MediaDownloadManager {
   private static fail(job: MediaJob, message: string) {
     job.running = false;
     if (job.canceled) return;
-    // 失败按取消处理，面板显示 Canceled
-    job.canceled = true;
-    console.log(`[media-download] ${job.fileName} failed: ${message}`);
-    this.emit('download-canceled', job.id);
+    if (job.paused) return;
+
+    if (job.receivedBytes > job.retryBytes) job.retryAttempts = 0;
+    job.retryBytes = job.receivedBytes;
+    const delays = [1000, 2000, 5000, 10000, 15000];
+    if (job.retryAttempts >= delays.length) {
+      job.paused = true;
+      job.interrupted = true;
+      job.retrying = false;
+      job.speedBytesPerSecond = 0;
+      console.log(`[media-download] ${job.fileName} interrupted: ${message}`);
+      this.progress(job, true);
+      return;
+    }
+
+    const delay = delays[job.retryAttempts++];
+    job.interrupted = true;
+    job.retrying = true;
+    job.speedBytesPerSecond = 0;
+    console.log(
+      `[media-download] ${job.fileName} failed, retry ${job.retryAttempts}/${delays.length} in ${delay}ms: ${message}`,
+    );
+    this.progress(job, true);
+    job.retryTimer = setTimeout(() => {
+      job.retryTimer = undefined;
+      if (job.paused || job.canceled || job.completed) return;
+      job.interrupted = false;
+      job.retrying = false;
+      job.lastSpeedBytes = job.receivedBytes;
+      job.lastSpeedAt = Date.now();
+      this.run(job);
+    }, delay);
   }
 
   // 调度入口
@@ -346,7 +448,11 @@ export class MediaDownloadManager {
     work
       .then((finished) => {
         if (finished) this.done(job);
-        else job.running = false; // 暂停态：保留进度，等 resume
+        else {
+          job.running = false;
+          // 用户可能在 abort 完成前就点了恢复；旧请求退出后立即接续。
+          if (!job.paused && !job.canceled) this.run(job);
+        }
       })
       .catch((e: any) => this.fail(job, e?.message || String(e)));
   }
@@ -402,9 +508,20 @@ export class MediaDownloadManager {
         }
 
         const ws = createWriteStream(job.savePath, append ? {flags: 'a'} : {flags: 'w'});
+        ws.on('error', (err) => {
+          job.request = undefined;
+          try {
+            request.abort();
+          } catch (e) {
+          }
+          rejectRun(err);
+        });
         response.on('data', (chunk: Buffer) => {
           job.receivedBytes += chunk.length;
-          ws.write(chunk);
+          if (!ws.write(chunk)) {
+            (response as any).pause?.();
+            ws.once('drain', () => (response as any).resume?.());
+          }
           this.progress(job);
         });
         response.on('end', () => {
@@ -441,6 +558,17 @@ export class MediaDownloadManager {
     return res.body;
   }
 
+  private static getM3u8DownloadThreads(): number {
+    const configured = Application.instance?.settings?.object?.m3u8DownloadThreads;
+    if (typeof configured !== 'number' || !Number.isFinite(configured)) {
+      return DEFAULT_SETTINGS.m3u8DownloadThreads;
+    }
+    return Math.max(
+      MIN_M3U8_DOWNLOAD_THREADS,
+      Math.min(MAX_M3U8_DOWNLOAD_THREADS, Math.round(configured)),
+    );
+  }
+
   // ── hls/m3u8：切片续传 ──
   // 返回 true=完成并已合并；false=暂停(切片留在 partsDir，等 resume)
   private static async runHls(job: MediaJob): Promise<boolean> {
@@ -463,45 +591,70 @@ export class MediaDownloadManager {
     const segments = job.segments;
     const total = segments.length;
 
-    for (; job.segIndex < total; job.segIndex++) {
-      if (job.paused) return false;
-      if (job.canceled) return false;
-
-      const i = job.segIndex;
-      const seg = segments[i];
+    // 每次启动/恢复都以临时目录为准重建进度。并发下载会产生非连续分片，
+    // 不能再只依赖单一 segIndex 判断续传位置。
+    const pending: number[] = [];
+    let completedCount = 0;
+    job.receivedBytes = 0;
+    for (let i = 0; i < total; i++) {
       const partPath = join(job.partsDir, `${String(i).padStart(6, '0')}.part`);
-
-      // 已存在的切片跳过(续传)
       if (existsSync(partPath)) {
         try {
           job.receivedBytes += statSync(partPath).size;
+          completedCount++;
+          continue;
         } catch (e) {
         }
-        // 按已完成比例估算总量，进度条可用
-        job.totalBytes = Math.round((job.receivedBytes / (i + 1)) * total);
-        this.progress(job);
-        continue;
       }
-
-      const res = await fetchBuffer(seg.url, job.headers);
-      if (res.status >= 400) throw new Error(`HTTP ${res.status} for segment ${i}`);
-      let data = res.body;
-
-      if (seg.keyUrl) {
-        const key = await this.getKey(seg.keyUrl, job.headers);
-        const iv = seg.iv && seg.iv.length === 16 ? seg.iv : defaultIv(i);
-        const decipher = createDecipheriv('aes-128-cbc', key, iv);
-        decipher.setAutoPadding(false);
-        data = Buffer.concat([decipher.update(data), decipher.final()]);
-      }
-
-      await fsp.writeFile(partPath, data);
-      job.receivedBytes += data.length;
-      job.totalBytes = Math.round((job.receivedBytes / (i + 1)) * total);
-      this.progress(job);
+      pending.push(i);
     }
+    job.totalBytes = completedCount > 0
+      ? Math.round((job.receivedBytes / completedCount) * total)
+      : 0;
+    this.progress(job, true);
 
-    if (job.canceled) return false;
+    let pendingIndex = 0;
+    let firstError: any;
+    const downloadNext = async () => {
+      while (!job.paused && !job.canceled && !firstError) {
+        const queueIndex = pendingIndex++;
+        if (queueIndex >= pending.length) return;
+
+        const i = pending[queueIndex];
+        const seg = segments[i];
+        const partPath = join(job.partsDir, `${String(i).padStart(6, '0')}.part`);
+        try {
+          const res = await fetchBuffer(seg.url, job.headers);
+          if (res.status >= 400) {
+            throw new Error(`HTTP ${res.status} for segment ${i}`);
+          }
+          let data = res.body;
+
+          if (seg.keyUrl) {
+            const key = await this.getKey(seg.keyUrl, job.headers);
+            const iv = seg.iv && seg.iv.length === 16 ? seg.iv : defaultIv(i);
+            const decipher = createDecipheriv('aes-128-cbc', key, iv);
+            decipher.setAutoPadding(false);
+            data = Buffer.concat([decipher.update(data), decipher.final()]);
+          }
+
+          await fsp.writeFile(partPath, data);
+          job.receivedBytes += data.length;
+          completedCount++;
+          job.totalBytes = Math.round((job.receivedBytes / completedCount) * total);
+          this.progress(job);
+        } catch (e) {
+          firstError = e;
+        }
+      }
+    };
+
+    const workerCount = Math.min(this.getM3u8DownloadThreads(), pending.length);
+    await Promise.all(Array.from({length: workerCount}, () => downloadNext()));
+    if (firstError) throw firstError;
+
+    if (job.paused || job.canceled) return false;
+    job.totalBytes = job.receivedBytes;
 
     // 全部切片就绪 → 按序合并为 .ts
     const ws = createWriteStream(job.savePath);

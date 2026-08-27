@@ -19,7 +19,7 @@
   window.translateelemet = true;
   dbg('guard set');
 
-  var ENGINE_URL = 'https://news.yujianpay.com/js/translatev3/element_new.js?t=67';
+  var ENGINE_URL = 'https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit';
 
   function wait() {
     var head = document.querySelector('head');

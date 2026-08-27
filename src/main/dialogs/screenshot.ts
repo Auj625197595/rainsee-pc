@@ -12,8 +12,19 @@ export class ScreenshotDialog extends PersistentDialog {
       bounds: { x: 0, y: 0, width: 0, height: 0 },
     });
 
+    const saveChannel = `screenshot-save-${this.id}`;
+    const copyChannel = `screenshot-copy-${this.id}`;
+    const searchChannel = `screenshot-search-${this.id}`;
+    const longshotChannel = `screenshot-longshot-${this.id}`;
+    this.ipcChannels.push(
+      saveChannel,
+      copyChannel,
+      searchChannel,
+      longshotChannel,
+    );
+
     // 渲染层就绪后请求:保存图片(弹原生保存框写盘)
-    ipcMain.on(`screenshot-save-${this.id}`, async (e, dataURL: string) => {
+    ipcMain.on(saveChannel, async (e, dataURL: string) => {
       console.log('[screenshot] SAVE handler dataURL.len=', dataURL?.length);
       try {
         const img = nativeImage.createFromDataURL(dataURL);
@@ -38,7 +49,7 @@ export class ScreenshotDialog extends PersistentDialog {
     });
 
     // 复制图片到剪贴板
-    ipcMain.on(`screenshot-copy-${this.id}`, (e, dataURL: string) => {
+    ipcMain.on(copyChannel, (e, dataURL: string) => {
       console.log('[screenshot] COPY handler dataURL.len=', dataURL?.length);
       try {
         clipboard.writeImage(nativeImage.createFromDataURL(dataURL));
@@ -49,8 +60,15 @@ export class ScreenshotDialog extends PersistentDialog {
       }
     });
 
+    ipcMain.on(searchChannel, (_e, dataURL: string) => {
+      this.hide();
+      void Application.instance.handleScreenshotImageAction('search', dataURL);
+    });
+
+    // 开源版：截图「问 AI」通道已移除。
+
     // 长截图:截取整张可滚动页面(CDP captureBeyondViewport)
-    ipcMain.on(`screenshot-longshot-${this.id}`, async () => {
+    ipcMain.on(longshotChannel, async () => {
       console.log('[screenshot] LONGSHOT handler');
       try {
         const dataURL = await this.captureFullPage();
@@ -169,11 +187,7 @@ export class ScreenshotDialog extends PersistentDialog {
       /* 抓取失败仍打开,渲染层显示纯遮罩 */
     }
 
-    // waitForLoad:首次打开必须等浮层页 dom-ready 再 send('visible')。否则浮层刚 loadURL
-    // 完成脚本尚未执行、store 的 'visible' 监听还没注册,快照事件被丢弃 → store.snapshot
-    // 恒为空 → 框选后复制/保存/问AI 全部静默早退(无反应)。已加载(二次及以后) isLoaded=true,
-    // show 立即返回不等待。
-    await super.show(browserWindow, true, !this.isLoaded);
+    if (!(await super.show(browserWindow, true))) return;
     this.rearrange();
 
     browserWindow.removeListener('resize', this.onBoundsUpdate);

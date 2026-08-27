@@ -1,17 +1,20 @@
 import {session, ipcMain, app, dialog, webContents} from 'electron';
 import {getPath, makeId} from '~/utils';
 import {promises, existsSync} from 'fs';
-import {resolve, basename, parse, extname} from 'path';
+import {resolve, relative, isAbsolute, sep, basename, parse, extname} from 'path';
 import {createHash, generateKeyPairSync} from 'crypto';
 import {Application} from './application';
 import {getWebUIURL} from '~/common/webui-main';
-import {registerProtocol} from './models/protocol';
+import {PRINT_PREVIEW_PROTOCOL, registerProtocol} from './models/protocol';
 import * as url from 'url';
 import {
   IDownloadItem,
   BrowserActionChangeType,
   IElectronDownloadItem,
   IExtInspectView,
+  IExtensionGroup,
+  IBrowserExtensionImportResult,
+  IBrowserExtensionImportScan,
 } from '~/interfaces';
 import {getCrxIdByKey, parseCrx} from '~/utils/crx';
 import {
@@ -30,20 +33,125 @@ import {resolveExtMessage} from '~/vendor/electron-chrome-extensions/browser/api
 import {patchExtensionStorage, isExtensionStoragePatched} from './extension-storage-patch';
 import * as Electron from "electron";
 import tab from "~/renderer/views/app/components/Tab";
-import {tlog, nowTs} from "./timing";
+import {nowTs, startupMark, startupTimer, tlog} from "./timing";
 import {MediaDownloadManager} from "./services/media-downloader";
 import {createBookmarksImpl, createHistoryImpl} from "./services/extension-bookmarks-history";
 import {updateAllExtensions} from "./extension-updater";
 import {getViewMenu} from "./menus/extension-popup";
-import {setWebRequestDispatcher, setDnrEnforcer} from "./services/adblock";
+import {
+  setWebRequestDispatcher,
+  setWebRequestFallbackInstaller,
+  setDnrEnforcer,
+} from "./services/adblock";
 import {
   canHandoffDownload,
+  getAvailableDownloaders,
   launchExternalDownload,
 } from './services/external-downloader';
+import {DownloadPromptDialog} from './dialogs/download-prompt';
+import {resolveChromeExtensionResourceUrl} from './services/chrome-extension-resources';
+import {normalizeChromeTheme} from '~/common/chrome-theme';
+import {normalizeDownloadSpeed} from '~/common/download-speed';
+import {
+  BrowserExtensionImportCandidate,
+  scanBrowserExtensions,
+} from './browser-extension-migration';
+import {isAppModeWebContents} from './windows/app-mode';
+import {
+  getRuntimeInstallDetails as readRuntimeInstallDetails,
+  markRuntimeInstalledDelivered as clearDeliveredRuntimeInstall,
+  saveRuntimeInstalledState as writeRuntimeInstalledState,
+} from './extension-runtime-state';
 
 const rf = promisify(rimraf);
 const GENERATED_KEY_SOURCE_FILE = '.rainsee-extension-source.json';
-const EXTENSION_RUNTIME_STATE_FILE = '.rainsee-extension-runtime.json';
+const MANAGED_SESSION_COOKIES_FILE = 'managed-session-cookies.json';
+
+// 开源版拓展商店的内置精选清单(均为 Microsoft Edge 加载项官方产品 ID,
+// 安装走 Edge 官方 crx 下载通道):
+const BUILTIN_STORE_LIST: string[] = [
+  // Tampermonkey BETA
+  'fcmfnpggmnlmfebfghbfnillijihnkoh',
+  // uBlock Origin Lite
+  'cimighlppcgcoapaliogpjjdehbnofhn',
+  // MetaMask
+  'ejbalbakoplchlghecdalmeeeajnimhm',
+  // 沉浸式翻译
+  'amkbmndfnliijdhojkpoglbnaaahippg',
+  // Stay - Sidebar Your Browser(侧边栏标签管理)
+  'ihnakibhdgjfcconfoohcncbadhjloej',
+  // Reader View(rNeomy)
+  'lpmbefndcmjoaepdpgmoonafikcalmnf',
+  // Grammarly
+  'cnlefmmeadmemmdciolhbnfeacpdfbkd',
+  // Edge Translate(网页翻译)
+  'bfdogplmndidlpjfhoijckpakkdjkkil',
+];
+
+const normalizeExtensionGroups = (value: unknown): IExtensionGroup[] => {
+  if (!Array.isArray(value)) return [];
+  const groupIds = new Set<string>();
+  const extensionIds = new Set<string>();
+  const result: IExtensionGroup[] = [];
+  for (const raw of value.slice(0, 100)) {
+    if (!raw || typeof raw !== 'object') continue;
+    const item = raw as Record<string, unknown>;
+    const id = typeof item.id === 'string' ? item.id.slice(0, 80) : '';
+    const name = typeof item.name === 'string' ? item.name.trim().slice(0, 40) : '';
+    if (!id || !name || groupIds.has(id)) continue;
+    groupIds.add(id);
+    const ids = Array.isArray(item.extensionIds)
+      ? item.extensionIds.slice(0, 1000).filter((extensionId): extensionId is string => {
+          if (typeof extensionId !== 'string' || extensionIds.has(extensionId)) return false;
+          extensionIds.add(extensionId);
+          return true;
+        })
+      : [];
+    result.push({id, name, extensionIds: ids});
+  }
+  return result;
+};
+
+interface ManagedSessionCookie {
+  host: string;
+  name: string;
+  domain: string;
+  path: string;
+  secure: boolean;
+}
+
+const normalizePersistSessionCookieHost = (value: string): string | null => {
+  let host = value.trim().toLowerCase();
+  if (!host) return null;
+  try {
+    host = new URL(host.includes('://') ? host : `https://${host}`).hostname;
+  } catch {
+    return null;
+  }
+  host = host.replace(/^\.+|\.+$/g, '');
+  return host.length <= 253 &&
+    /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(host) &&
+    host.includes('.')
+    ? host
+    : null;
+};
+
+const cookieMatchesHost = (cookieDomain: string, host: string): boolean => {
+  const domain = (cookieDomain || '').replace(/^\./, '').toLowerCase();
+  return domain === host || domain.endsWith(`.${host}`);
+};
+
+async function removeSessionExtension(
+  targetSession: Electron.Session,
+  extensionId: string,
+): Promise<void> {
+  const extensions = (targetSession as any).extensions;
+  if (extensions && typeof extensions.removeExtension === 'function') {
+    await extensions.removeExtension(extensionId);
+    return;
+  }
+  await targetSession.removeExtension(extensionId);
+}
 
 // 【调试总开关】true 时在 session 源头把 startWorkerForScope 拦成 no-op,
 // 彻底阻止主动/按需拉起后台 service worker,用于验证 popup 白屏是否由 SW 共置
@@ -89,6 +197,15 @@ export class SessionsService {
   // loadExtensions() calls coalesce instead of double-loading.
   private extensionsLoading: Promise<void> | null = null;
 
+  private startupExtensionLoadAllowed = false;
+
+  private startupExtensionLoadRequested = false;
+
+  // 首页扩展在冷启动、手动重载或自动更新期间会暂时从 Session 卸载。
+  // 同一扩展的多个新标签共享一个等待任务，避免为每个 View 重复注册监听器。
+  private extensionReadyWaiters = new Map<string, Promise<boolean>>();
+  private transitioningExtensions = new Set<string>();
+
   // 多个标签可能同时发现 Flash，只允许一个下载/安装任务；共享结果使所有命中的
   // 原页面都能在同一次安装完成后刷新。任务结束后清空，后续调用会先走已加载检查。
   private ruffleInstallPromise: Promise<boolean> | null = null;
@@ -100,8 +217,28 @@ export class SessionsService {
   // 无痕 session 的第二个扩展实例(仅加载 incognitoAllowedExtensions 白名单)。
   // 懒加载:首个无痕窗口创建时由 loadIncognitoExtensions 建立。
   public chromeExtensionsIncognito: ElectronChromeExtensions | null = null;
+  // 记录由「重启后保持登录」改写过的 Cookie 键。文件只存元数据、不存 Cookie
+  // 值；用于在用户关闭功能或重新登录时精确清理本功能创建的持久 Cookie。
+  private managedSessionCookies: ManagedSessionCookie[] = [];
+  private managedSessionCookiesLoad: Promise<void> | null = null;
+  private loginCookieCleanupHosts = new Set<string>();
   private incognitoExtensionTask: Promise<void> = Promise.resolve();
   private incognitoDataReady: Promise<void> = Promise.resolve();
+  private swRecoveryCooldown = new Map<string, number>();
+  private swRecoveryInFlight = new Map<string, Promise<boolean>>();
+  private swRecoveryCount = new Map<string, number>();
+  private static readonly SW_RECOVERY_COOLDOWN_MS = 60_000;
+  private static readonly SW_MAX_RECOVERIES_PER_SESSION = 2;
+  private static readonly SW_RECOVERY_RECHECK_MS = 12_000;
+
+  public getTabGroupId(tabId: number, incognito = false): number {
+    const crx = incognito ? this.chromeExtensionsIncognito : this.chromeExtensions;
+    try {
+      return crx?.getTabGroupId(tabId) ?? -1;
+    } catch {
+      return -1;
+    }
+  }
 
   // Service Worker 本身不是 WebContents。没有活动扩展页时，用同源隐藏页作为
   // inspectServiceWorker() 的宿主，并在枚举检查视图时排除该内部页面。
@@ -110,6 +247,12 @@ export class SessionsService {
   // 每个检查目标使用独立、可见的 DevTools BrowserWindow，避免 DevTools
   // 被默认停靠到隐藏的 Offscreen / Service Worker 宿主窗口中。
   private extensionDevToolsWindows = new Map<string, Electron.BrowserWindow>();
+
+  // 扫描结果只保留在主进程，renderer 通过不可猜测 key 选择要导入的项目。
+  private browserExtensionImportCandidates = new Map<
+    string,
+    BrowserExtensionImportCandidate
+  >();
 
   /**
    * Evaluate extension DNR rules for a top-level browser navigation.
@@ -158,6 +301,68 @@ export class SessionsService {
   private rememberLoadedExtension(extension: Electron.Extension) {
     this.extensions = this.extensions.filter((it) => it.id !== extension.id);
     this.extensions.push(extension);
+  }
+
+  private isThemeManifest(manifest: any): boolean {
+    return !!manifest?.theme && typeof manifest.theme === 'object';
+  }
+
+  private createThemeExtensionRecord(
+    id: string,
+    path: string,
+    manifest: any,
+  ): Electron.Extension {
+    const name = this.resolveI18n(
+      path,
+      manifest?.name || id,
+      manifest?.default_locale || '',
+    );
+    return {
+      id,
+      name,
+      path,
+      url: `chrome-extension://${id}/`,
+      version: manifest?.version || '',
+      manifest,
+    } as Electron.Extension;
+  }
+
+  private activateChromeTheme(
+    id: string,
+    path: string,
+    manifest: any,
+  ): Electron.Extension | null {
+    const extension = this.createThemeExtensionRecord(id, path, manifest);
+    const normalized = normalizeChromeTheme(id, extension.name, manifest?.theme);
+    if (!normalized) return null;
+
+    const settings = Application.instance.settings;
+    const previousId = settings.object.activeChromeTheme?.id;
+    const disabled = new Set(settings.object.disabledExtensions || []);
+    const wasDisabled = disabled.delete(id);
+    // Chrome keeps one active theme. Retain the previous package on disk so it
+    // can be re-enabled, but represent it as disabled in Rainsee's manager.
+    if (previousId && previousId !== id) disabled.add(previousId);
+    if (
+      !wasDisabled &&
+      previousId === id &&
+      JSON.stringify(settings.object.activeChromeTheme) ===
+        JSON.stringify(normalized)
+    ) {
+      return extension;
+    }
+    settings.updateSettings({
+      activeChromeTheme: normalized,
+      disabledExtensions: [...disabled],
+    });
+    return extension;
+  }
+
+  private clearChromeTheme(id?: string) {
+    const settings = Application.instance.settings;
+    if (id && settings.object.activeChromeTheme?.id !== id) return;
+    if (!settings.object.activeChromeTheme) return;
+    settings.updateSettings({activeChromeTheme: null});
   }
 
   /**
@@ -350,13 +555,6 @@ export class SessionsService {
     extensionId: string,
     version?: string,
   ): Promise<chrome.runtime.InstalledDetails | null> {
-    if (!extensionId || !version) return null;
-    const runtimePath = resolve(getPath('extensions'), extensionId, EXTENSION_RUNTIME_STATE_FILE);
-    let prevVersion = '';
-    try {
-      const payload = JSON.parse(await promises.readFile(runtimePath, 'utf8'));
-      prevVersion = typeof payload?.version === 'string' ? payload.version : '';
-    } catch {}
     // No persisted state, or the on-disk version is unchanged: a normal
     // startup, NOT a fresh install. Chrome fires runtime.onStartup (never
     // onInstalled) when the browser starts with an extension already on disk.
@@ -366,10 +564,11 @@ export class SessionsService {
     // installs/updates are detected at explicit install time (where the prior
     // manifest is read directly); this only needs to spot a version change that
     // happened while the app was closed.
-    if (typeof prevVersion === 'string' && prevVersion && prevVersion !== version) {
-      return {reason: 'update', previousVersion: prevVersion};
-    }
-    return null;
+    return readRuntimeInstallDetails(
+      String(getPath('extensions') || ''),
+      extensionId,
+      version,
+    );
   }
 
   /** Map a prior manifest version to onInstalled details. Shared by both CRX
@@ -382,19 +581,63 @@ export class SessionsService {
       : {reason: 'install'};
   }
 
-  private async saveRuntimeInstalledState(extensionId: string, version?: string) {
-    if (!extensionId || !version) return;
-    const runtimePath = resolve(getPath('extensions'), extensionId, EXTENSION_RUNTIME_STATE_FILE);
+  private async saveRuntimeInstalledState(
+    extensionId: string,
+    version?: string,
+    pendingInstalledDetails?: chrome.runtime.InstalledDetails,
+  ) {
     try {
-      await promises.writeFile(runtimePath, JSON.stringify({version}, null, 2), 'utf8');
+      await writeRuntimeInstalledState(
+        String(getPath('extensions') || ''),
+        extensionId,
+        version,
+        pendingInstalledDetails,
+      );
     } catch (e) {
       console.error('saveRuntimeInstalledState failed', extensionId, e);
     }
   }
 
+  private async markRuntimeInstalledDelivered(
+    extensionId: string,
+    version: string,
+    details: chrome.runtime.InstalledDetails,
+  ) {
+    try {
+      await clearDeliveredRuntimeInstall(
+        String(getPath('extensions') || ''),
+        extensionId,
+        version,
+        details,
+      );
+    } catch (e) {
+      console.error('markRuntimeInstalledDelivered failed', extensionId, e);
+    }
+  }
+
+  private async queueRuntimeInstalled(
+    extension: Electron.Extension,
+    details: chrome.runtime.InstalledDetails,
+  ) {
+    await this.saveRuntimeInstalledState(
+      extension.id,
+      (extension?.manifest as any)?.version,
+      details,
+    );
+    this.notifyRuntimeInstalled(extension, details);
+  }
+
   public constructor() {
+    // BrowserWindow chrome uses the default session; tab BrowserViews use the
+    // persist:view sessions below. Theme assets must be available to both.
+    registerProtocol(session.defaultSession);
     registerProtocol(this.view);
     registerProtocol(this.viewIncognito);
+    ElectronChromeExtensions.handleCRXProtocol(session.defaultSession);
+    ElectronChromeExtensions.handleCRXProtocol(this.view);
+    ElectronChromeExtensions.handleCRXProtocol(this.viewIncognito);
+
+    this.installLoginPageCookieCleanup();
 
     // 【调试】根据全局开关 DISABLE_START_WORKER_FOR_SCOPE 决定是否彻底禁用主动
     // 拉起后台 service worker。SW 由多条路径拉起(主进程 startBackgroundWorker、
@@ -434,8 +677,15 @@ export class SessionsService {
       // );
 
       ipcMain.on('load-extensions', () => {
+        if (!this.startupExtensionLoadAllowed) {
+          this.startupExtensionLoadRequested = true;
+          startupMark('main.extensions.renderer_request.queued');
+          return;
+        }
         tlog('IPC load-extensions received (from renderer)');
-        this.loadExtensions();
+        void this.loadExtensions().catch((error) =>
+          console.error('[extensions] renderer load request failed', error),
+        );
       });
 
       ipcMain.handle('get-extensions', (event) => {
@@ -449,6 +699,22 @@ export class SessionsService {
 
       // ===== 「拓展」管理页(yjllq://extensions)后端 =====
       ipcMain.handle('extensions-get-detailed', () => this.getDetailedExtensions());
+
+      ipcMain.handle('extensions-set-groups', (_event, value: unknown) => {
+        const extensionGroups = normalizeExtensionGroups(value);
+        Application.instance.settings.updateSettings({extensionGroups});
+        return extensionGroups;
+      });
+
+      ipcMain.handle(
+        'extensions-scan-browser-import',
+        (_event, selectDirectory = false) =>
+          this.scanBrowserExtensionImports(!!selectDirectory),
+      );
+      ipcMain.handle(
+        'extensions-import-from-browser',
+        (_event, keys: string[]) => this.importBrowserExtensions(keys),
+      );
 
       // 同步解析单个 __MSG_key__ 串(如 action.default_title),供 renderer 在
       // 没有 manifest/磁盘访问能力时调用(地址栏工具栏按钮标题)。复用运行时
@@ -521,6 +787,14 @@ export class SessionsService {
         assignTabDetails(details: chrome.tabs.Tab, tab: Electron.WebContents) {
 
         },
+        resolveTabId(webContentsId: number) {
+          for (const window of Application.instance.windows.list) {
+            if (window.incognito) continue;
+            const view = window.viewManager.findViewByWebContentsId(webContentsId);
+            if (view) return view.id;
+          }
+          return undefined;
+        },
         createTab(details) {
           // viewManager.create is synchronous; return the [webContents, window]
           // pair directly. The previous impl wrapped this in `new Promise(r => { …
@@ -538,62 +812,54 @@ export class SessionsService {
           // the wrong one. Resolve the target deterministically: the AppWindow that
           // owns details.windowId if it's a real tracked window, else the host's
           // current/last-focused AppWindow.
-          let appWin = list.find((x) => x.win.id === requested) || Application.instance.windows.current
-          console.log(
-            `[crx-tab-target] createTab url=${details && details.url} `,
-            `requestedWindowId=${requested} `,
-            `matched=${appWin && appWin.win && !appWin.win.isDestroyed() ? appWin.win.id : 'none'} `,
-            `list=[${list.map((x) => x.win.id).join(',')}]`,
+          const isLive = (candidate: typeof list[number] | undefined) =>
+            !!candidate?.win && !candidate.win.isDestroyed()
+          let appWin = list.find(
+            (candidate) => isLive(candidate) && candidate.win.id === requested,
           )
           if (!appWin) {
-            appWin = Application.instance.windows.lastFocused
+            const {lastFocused, current} = Application.instance.windows
+            appWin = isLive(lastFocused)
+              ? lastFocused
+              : isLive(current)
+                ? current
+                : list.find(isLive)
           }
-          const view = appWin.viewManager.create(details, true, true)
+          if (!appWin) {
+            throw new Error('tabs.create requires an open browser window')
+          }
+          if (
+            process.env.CRX_WEBREQUEST_DEBUG === '1' ||
+            process.env.CRX_VERBOSE === '1'
+          ) {
+            console.log(
+              `[crx-tab-target] createTab url=${details && details.url} `,
+              `requestedWindowId=${requested} matched=${appWin.win.id}`,
+            )
+          }
+          // Chrome defaults tabs.create to active=true, but an explicit
+          // active:false must open in the background without selecting the new
+          // tab (and without stealing focus from an extension popup).
+          const createDetails = { ...details, active: details.active !== false }
+          const view = appWin.viewManager.create(createDetails, true, true)
           return [view.webContents, view.window.win]
         },
         selectTab(tab, browserWindow) {
-          (Application.instance.windows.list
-            .find((x) => x.win.id === browserWindow.id) || Application.instance.windows.current)
-            .viewManager.select(tab.id, true, false)
+          const appWin =
+            Application.instance.windows.list.find(
+              (x) => x.win.id === browserWindow.id,
+            ) || Application.instance.windows.current;
+          appWin?.viewManager.select(tab.id, true, false);
         },
         removeTab(tab, browserWindow) {
-          (Application.instance.windows.list
-            .find((x) => x.win.id === browserWindow.id) || Application.instance.windows.current)
-            .viewManager.removeByTabId(tab.id);
+          const appWin =
+            Application.instance.windows.list.find(
+              (x) => x.win.id === browserWindow.id,
+            ) || Application.instance.windows.current;
+          appWin?.viewManager.removeByTabId(tab.id);
         },
         createWindow(details) {
-          // 衔接「新壳窗口 → 渲染层就绪 → 迁入标签」这套握手太脆弱:
-          // 直接对壳窗口 loadURL 会顶掉 React UI 并被拦截器拦成 ERR_BLOCKED_BY_CLIENT,
-          // 且新窗口里没有注册标签,tabs.query 查不到。改为把扩展请求的 URL 在
-          // 当前窗口里以新标签页打开(viewManager.create 会注册进扩展 store 并通知
-          // 渲染层),再把当前窗口的真实 BrowserWindow 回给 vendor store。
-          const appWin =
-            Application.instance.windows.current ||
-            Application.instance.windows.lastFocused ||
-            Application.instance.windows.open(details.incognito);
-
-          console.log(
-            `[crx-tab-target] createWindow type=${details && details.type} url=${details && details.url} `,
-            `targetWindowId=${appWin && appWin.win && !appWin.win.isDestroyed() ? appWin.win.id : 'none'}`,
-          )
-
-          const urls = Array.isArray(details.url)
-            ? details.url
-            : details.url
-              ? [details.url]
-              : [];
-
-          if (urls.length > 0) {
-            urls.forEach((u: string, i: number) => {
-              appWin.viewManager.create(
-                { url: u, active: i === urls.length - 1, incognito: details.incognito },
-                false,
-                true,
-              );
-            });
-          }
-
-          return appWin.win;
+          return Application.instance.windows.openForExtension(details);
         },
         isIncognitoWindow(window: Electron.BaseWindow) {
           return Application.instance.windows.list.find((item) => item.win.id === window.id)
@@ -639,6 +905,7 @@ export class SessionsService {
             : null) || Application.instance.windows.current || Application.instance.windows.lastFocused;
           w?.sidePanels.show(extensionId, tabId, panelPath);
         },
+        resolveChromeExtensionResourceUrl,
       });
       // if(this.view.getPreloads()) {
       //   this.view.setPreloads(this.view.getPreloads().reverse());
@@ -657,17 +924,35 @@ export class SessionsService {
 
       // 接收 renderer 推送的可视标签栏顺序,用于给扩展提供准确的 chrome.tabs.Tab.index。
       // 顺序的权威来源是 renderer 的 tabs store(拖拽重排只在 renderer);主进程本身不知道。
+      // list 变更(新建/关闭/拖拽)都会触发 renderer 重发,故这里同时做幽灵 view 对账:
+      // renderer 标签列表里已不存在的 view(关闭通知丢失、崩溃恢复后遗留等)在此销毁,
+      // 避免 viewManager.views 越积越多——退出确认对话框的标签计数也会因此虚高。
+      // 安全:对账会销毁主进程 View,必须校验发送方是该 windowId 窗口自己的主 UI
+      // renderer(app.html 的 tabs store)——否则任意 renderer 可指定别的窗口、提交
+      // 不含其标签的列表,借对账销毁其它窗口的标签。
       ipcMain.on(
         'crx-set-tab-order',
-        (_e: any, windowId: number, orderedTabIds: number[]) => {
+        (e: Electron.IpcMainEvent, windowId: number, orderedTabIds: number[]) => {
           try {
+            if (!Array.isArray(orderedTabIds)) return;
             const owner = Application.instance.windows.list.find(
               (window) => window.win.id === windowId,
             );
-            const context = owner?.incognito
+            if (
+              !owner ||
+              owner.win.isDestroyed() ||
+              e.sender !== owner.win.webContents
+            ) {
+              console.warn(
+                `[sessions-service] crx-set-tab-order rejected: sender=${e.sender.id} windowId=${windowId}`,
+              );
+              return;
+            }
+            const context = owner.incognito
               ? this.chromeExtensionsIncognito
               : this.chromeExtensions;
             context?.setTabOrder(windowId, orderedTabIds);
+            owner.viewManager.reconcileWithRendererOrder(orderedTabIds);
           } catch (err) {
             console.error('[sessions-service] crx-set-tab-order error:', err);
           }
@@ -782,10 +1067,24 @@ export class SessionsService {
           webContents.id,
         );
         if (!window) {
+          // 独立 PWA 复用 persist:view，但不属于浏览器的 ViewManager。
+          // 允许其使用 HTML 全屏 API，视频才能从普通窗口真正铺满屏幕；
+          // 其他未归属 webContents 和其他权限仍保持默认拒绝。
+          callback(
+            permission === 'fullscreen' && isAppModeWebContents(webContents),
+          );
+          return;
+        }
+        // Electron 给出的是物理 WebContents id；覆盖页应归并到原生
+        // window.open 标签的根 View，后续 selectedId 和弹窗关联才会一致。
+        const requestView = window.viewManager.findViewByWebContentsId(
+          webContents.id,
+        );
+        if (!requestView) {
           callback(false);
           return;
         }
-        const requestView = window.viewManager.views.get(webContents.id);
+        const requestTabId = requestView.id;
 
         console.log('[permissions] request received', {
           webContentsId: webContents.id,
@@ -817,17 +1116,24 @@ export class SessionsService {
 
         if (
           permission !== 'openExternal' &&
-          webContents.id !== window.viewManager.selectedId
+          requestTabId !== window.viewManager.selectedId
         ) {
+          // 权限回调必须恰好完成一次；后台标签不展示交互弹窗时显式拒绝，
+          // 不能只 return，否则 Chromium 会一直等待宿主决策。
+          callback(false);
           return;
         }
 
         if (permission === 'fullscreen') {
           callback(true);
+        } else if (permission === 'bluetooth') {
+          // Web Bluetooth:此处放行,授权由设备选择弹窗(select-bluetooth-device)
+          // 本身完成——选了设备=允许,取消=拒绝,不落 storage 避免双弹窗。
+          callback(true);
         } else {
           try {
             const {hostname} = url.parse(details.requestingUrl);
-            const perm: any = await Application.instance.storage.findOne({
+            let perm: any = await Application.instance.storage.findOne({
               scope: 'permissions',
               query: {
                 url: hostname,
@@ -835,6 +1141,36 @@ export class SessionsService {
                 mediaTypes: JSON.stringify(details.mediaTypes) || '',
               },
             });
+
+            // getUserMedia({audio:true, video:true}) 会以一个 media 请求同时携带两种
+            // mediaTypes。网站设置页按麦克风/摄像头分别配置；没有组合规则时，只有
+            // 两项都已配置才合并使用，任一项拒绝即拒绝，避免组合申请绕过单项设置。
+            const requestedMediaTypes = Array.isArray(details?.mediaTypes)
+              ? details.mediaTypes
+              : [];
+            if (
+              !perm &&
+              permission === 'media' &&
+              requestedMediaTypes.length > 1
+            ) {
+              const mediaRules = await Promise.all(
+                requestedMediaTypes.map((mediaType: string) =>
+                  Application.instance.storage.findOne<any>({
+                    scope: 'permissions',
+                    query: {
+                      url: hostname,
+                      permission: 'media',
+                      mediaTypes: JSON.stringify([mediaType]),
+                    },
+                  }),
+                ),
+              );
+              if (mediaRules.every(Boolean)) {
+                perm = {
+                  type: mediaRules.some((item) => item.type === 2) ? 2 : 1,
+                };
+              }
+            }
 
             if (!perm && ['sensors', 'screen-wake-lock'].includes(permission)) {
               console.log('[permissions] no stored decision for permission, allowing by default', {
@@ -860,7 +1196,7 @@ export class SessionsService {
                 permission,
                 webContents.getURL(),
                 details,
-                webContents.id,
+                requestTabId,
               );
 
               console.log('[permissions] dialog resolved', {
@@ -917,24 +1253,55 @@ export class SessionsService {
     const getDownloadItem = (
       item: Electron.DownloadItem,
       id: string,
+      speedBytesPerSecond = 0,
+      paused = item.isPaused(),
+      interrupted = false,
+      retrying = false,
     ): IDownloadItem => ({
       fileName: basename(item.savePath),
       receivedBytes: item.getReceivedBytes(),
       totalBytes: item.getTotalBytes(),
+      speedBytesPerSecond,
       savePath: item.savePath,
       url: item.getURL(),
-      paused: item.isPaused(),
+      paused,
+      interrupted,
+      retrying,
       id,
     });
+
+    type ManagedDownload = IElectronDownloadItem & {
+      item: Electron.DownloadItem;
+      id: string;
+      manuallyPaused: boolean;
+      interrupted: boolean;
+      retrying: boolean;
+      retryAttempts: number;
+      retryBytes: number;
+      retryTimer?: ReturnType<typeof setTimeout>;
+      lastSpeedBytes: number;
+      lastSpeedAt: number;
+      speedBytesPerSecond: number;
+      finished: boolean;
+    };
 
     const getElectronDownloadItem = (
       item: Electron.DownloadItem,
       webContents: Electron.WebContents,
       id: string,
-    ): IElectronDownloadItem => ({
+    ): ManagedDownload => ({
       item,
       webContents,
       id,
+      manuallyPaused: false,
+      interrupted: false,
+      retrying: false,
+      retryAttempts: 0,
+      retryBytes: item.getReceivedBytes(),
+      lastSpeedBytes: item.getReceivedBytes(),
+      lastSpeedAt: Date.now(),
+      speedBytesPerSecond: 0,
+      finished: false,
     });
 
     // 持久化已完成的下载到 storage/downloads.db,使下载页跨重启保留。仅在
@@ -960,13 +1327,30 @@ export class SessionsService {
     ) => {
       const {windows} = Application.instance;
       if (sourceWebContents && !sourceWebContents.isDestroyed()) {
-        return (
+        const directWindow =
           windows.findByBrowserView(sourceWebContents.id) ||
           windows.list.find(
             (appWindow) =>
               appWindow && appWindow.webContents?.id === sourceWebContents.id,
-          )
-        );
+          );
+        if (directWindow) return directWindow;
+
+        // Extension popups are child BrowserWindows rather than tab
+        // BrowserViews. Route their downloads back to the owning app window so
+        // the toolbar receives download-started/show-download-dialog as usual.
+        const sourceWindow =
+          Electron.BrowserWindow.fromWebContents(sourceWebContents);
+        const parentWindow = sourceWindow?.getParentWindow();
+        const ownerWindow = parentWindow
+          ? windows.list.find(
+              (appWindow) =>
+                appWindow &&
+                appWindow.win &&
+                !appWindow.win.isDestroyed() &&
+                appWindow.win.id === parentWindow.id,
+            )
+          : undefined;
+        if (ownerWindow) return ownerWindow;
       }
 
       return (
@@ -986,24 +1370,165 @@ export class SessionsService {
       targetWindow?.send(channel, ...args);
     };
 
+    const isPrintPreviewDownload = (
+      item: Electron.DownloadItem,
+      sourceWebContents: Electron.WebContents | null,
+    ) => {
+      const protocolPrefix = `${PRINT_PREVIEW_PROTOCOL}://`;
+      const urls = [item.getURL()];
+      if (sourceWebContents && !sourceWebContents.isDestroyed()) {
+        urls.push(sourceWebContents.getURL());
+      }
+      return urls.some((downloadUrl) =>
+        downloadUrl.toLowerCase().startsWith(protocolPrefix),
+      );
+    };
+
+    const foregroundDownloadWindow = (
+      targetWindow: ReturnType<typeof resolveDownloadWindow>,
+    ) => {
+      const browserWindow = targetWindow?.win;
+      if (!browserWindow || browserWindow.isDestroyed()) return;
+      if (browserWindow.isMinimized()) browserWindow.restore();
+      browserWindow.show();
+      browserWindow.focus();
+      browserWindow.moveTop();
+    };
+
     const downloads: IDownloadItem[] = [];
-    const electronDownloads: IElectronDownloadItem[] = [];
+    const electronDownloads: ManagedDownload[] = [];
+
+    const releaseElectronDownload = (download: ManagedDownload) => {
+      download.finished = true;
+      if (download.retryTimer) clearTimeout(download.retryTimer);
+      download.retryTimer = undefined;
+
+      const index = electronDownloads.indexOf(download);
+      if (index > -1) electronDownloads.splice(index, 1);
+    };
+
+    const resetDownloadSpeed = (download: ManagedDownload) => {
+      download.lastSpeedBytes = download.item.getReceivedBytes();
+      download.lastSpeedAt = Date.now();
+      download.speedBytesPerSecond = 0;
+    };
+
+    const sampleDownloadSpeed = (download: ManagedDownload) => {
+      if (download.manuallyPaused || download.interrupted || download.finished) {
+        download.speedBytesPerSecond = 0;
+        return;
+      }
+
+      const now = Date.now();
+      const elapsed = now - download.lastSpeedAt;
+      if (elapsed < 250) return;
+
+      const received = download.item.getReceivedBytes();
+      const instant = Math.max(0, received - download.lastSpeedBytes) * 1000 / elapsed;
+      download.speedBytesPerSecond = normalizeDownloadSpeed(
+        download.speedBytesPerSecond > 0
+          ? download.speedBytesPerSecond * 0.35 + instant * 0.65
+          : instant,
+      );
+      download.lastSpeedBytes = received;
+      download.lastSpeedAt = now;
+    };
+
+    const publishDownload = (download: ManagedDownload) => {
+      sampleDownloadSpeed(download);
+      const data = getDownloadItem(
+        download.item,
+        download.id,
+        download.speedBytesPerSecond,
+        download.manuallyPaused || download.interrupted || download.item.isPaused(),
+        download.interrupted,
+        download.retrying,
+      );
+      const model = downloads.find((x) => x.id === download.id);
+      if (model) Object.assign(model, data);
+      downloadsDialog()?.send('download-progress', data);
+      emitDownloadEvent(
+        resolveDownloadWindow(download.webContents),
+        'download-progress',
+        data,
+      );
+      return data;
+    };
+
+    const resumeDownload = (download: ManagedDownload, resetRetries = true) => {
+      if (download.finished) return;
+      if (download.retryTimer) clearTimeout(download.retryTimer);
+      download.retryTimer = undefined;
+      download.manuallyPaused = false;
+      download.interrupted = false;
+      download.retrying = false;
+      if (resetRetries) download.retryAttempts = 0;
+      resetDownloadSpeed(download);
+      if (download.item.canResume()) {
+        download.item.resume();
+      } else {
+        download.interrupted = true;
+      }
+      publishDownload(download);
+    };
+
+    const scheduleDownloadRetry = (download: ManagedDownload) => {
+      if (download.finished || download.manuallyPaused) return false;
+      if (download.retryTimer) return true;
+      if (!download.item.canResume()) return false;
+
+      const received = download.item.getReceivedBytes();
+      if (received > download.retryBytes) download.retryAttempts = 0;
+      download.retryBytes = received;
+
+      const delays = [1000, 2000, 5000, 10000, 15000];
+      if (download.retryAttempts >= delays.length) {
+        download.interrupted = true;
+        download.retrying = false;
+        publishDownload(download);
+        return true;
+      }
+
+      const delay = delays[download.retryAttempts++];
+      download.interrupted = true;
+      download.retrying = true;
+      resetDownloadSpeed(download);
+      publishDownload(download);
+      download.retryTimer = setTimeout(() => {
+        download.retryTimer = undefined;
+        resumeDownload(download, false);
+      }, delay);
+      console.log(
+        `Download interrupted, retry ${download.retryAttempts}/${delays.length} in ${delay}ms`,
+      );
+      return true;
+    };
 
     ipcMain.on('download-pause', (e, id) => {
       const found = electronDownloads.find((x) => x.id === id);
       if (!found) return; // 媒体下载等非原生任务交由各自管理器处理
+      if (found.retryTimer) clearTimeout(found.retryTimer);
+      found.retryTimer = undefined;
+      found.manuallyPaused = true;
+      found.interrupted = false;
+      found.retrying = false;
+      resetDownloadSpeed(found);
       found.item.pause();
+      publishDownload(found);
     });
 
     ipcMain.on('download-resume', (e, id) => {
       const found = electronDownloads.find((x) => x.id === id);
       if (!found) return;
-      found.item.resume();
+      resumeDownload(found);
     });
 
     ipcMain.on('download-cancel', (e, id) => {
       const found = electronDownloads.find((x) => x.id === id);
       if (!found) return;
+      if (found.retryTimer) clearTimeout(found.retryTimer);
+      found.retryTimer = undefined;
+      found.retrying = false;
       found.item.cancel();
     });
 
@@ -1078,19 +1603,14 @@ export class SessionsService {
       return this.installExtensionFromCrxInfo(crxInfo, force, true);
     }
 
-    // 拓展商店:拉取后台维护的扩展列表(https://admin.yujianpay.com/api/crx/getAll)。
+    // 拓展商店(开源版):无后台列表服务,使用内置的精选 Edge 扩展清单,
+    // 安装仍走 Edge 官方 crx 下载通道(见 extension-store-install)。
     ipcMain.handle('extension-store-list', async () => {
       try {
-        const res = await fetch('https://admin.yujianpay.com/api/crx/getAll');
-        if (res.status !== 200) return [];
-        const body = await res.json().catch(() => null);
-        const list = body?.data?.data;
-        if (!Array.isArray(list)) return [];
-        // 标记已安装状态,供前端区分「安装/已安装」。
         const installed = new Set(this.extensions.map((x) => x.id));
-        return list.map((it: any) => ({
-          ...it,
-          installed: installed.has(it.crxkey),
+        return BUILTIN_STORE_LIST.map((crxkey) => ({
+          crxkey,
+          installed: installed.has(crxkey),
         }));
       } catch (e) {
         console.error('extension-store-list failed', e);
@@ -1125,7 +1645,7 @@ export class SessionsService {
       }
     });
 
-    ipcMain.on('download-remove', (e, id) => {
+    const removeDownloadRecord = (id: string) => {
       // 媒体下载由 MediaDownloadManager 管理，但仍需广播 download-removed 给面板。
       const electronDownloadsIndex = electronDownloads.findIndex(
         (x) => x.id === id,
@@ -1136,13 +1656,15 @@ export class SessionsService {
       );
 
       if (electronDownloadsIndex > -1) {
-        electronDownloads.splice(electronDownloadsIndex, 1);
+        const managed = electronDownloads[electronDownloadsIndex];
+        releaseElectronDownload(managed);
       }
 
       const downloadsIndex = downloads.findIndex((x) => x.id === id);
       if (downloadsIndex > -1) {
         downloads.splice(downloadsIndex, 1);
       }
+      if (MediaDownloadManager.has(id)) MediaDownloadManager.remove(id);
 
       // 同步删除持久化的历史记录(若存在)。进行中、尚未完成的下载没有 DB 记录,
       // remove 是空操作。
@@ -1155,8 +1677,49 @@ export class SessionsService {
 
       if (electronDownloads.length === 0 && downloads.length === 0
         && MediaDownloadManager.list().length === 0) {
-        Application.instance.dialogs.getDynamic('downloads-dialog').hide();
+        Application.instance.dialogs.getDynamic('downloads-dialog')?.hide();
       }
+    };
+
+    ipcMain.on('download-remove', (e, id) => {
+      removeDownloadRecord(id);
+    });
+
+    ipcMain.handle('download-trash', async (e, id: string) => {
+      const downloadItem =
+        downloads.find((x) => x.id === id) ||
+        MediaDownloadManager.list().find((x) => x.id === id);
+
+      if (!downloadItem?.completed || !downloadItem.savePath) {
+        return {ok: false};
+      }
+
+      const managed = electronDownloads.find((x) => x.id === id);
+      if (managed) releaseElectronDownload(managed);
+
+      // Windows 在 Chromium 刚写完文件时可能短暂保留句柄。主进程等待并重试，
+      // 避免用户立刻点击“删除文件”时误报文件正在使用。
+      const retryDelays = [0, 100, 250, 500, 1000, 2000];
+      for (const delay of retryDelays) {
+        if (delay > 0) {
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, delay));
+        }
+
+        if (!existsSync(downloadItem.savePath)) {
+          removeDownloadRecord(id);
+          return {ok: true};
+        }
+
+        try {
+          await Electron.shell.trashItem(downloadItem.savePath);
+          removeDownloadRecord(id);
+          return {ok: true};
+        } catch {
+          // 下一轮重试；最终失败时由渲染层显示原有提示。
+        }
+      }
+
+      return {ok: false};
     });
 
     ipcMain.on('download-open-when-done', (e, id) => {
@@ -1174,12 +1737,158 @@ export class SessionsService {
       return [...downloads, ...MediaDownloadManager.list()];
     });
 
+    ipcMain.handle('download-clear-history', async () => {
+      const removedIds = downloads
+        .filter((item) => item.completed || item.canceled)
+        .map((item) => item.id);
+      const removedIdSet = new Set(removedIds);
+
+      for (let i = downloads.length - 1; i >= 0; i--) {
+        if (removedIdSet.has(downloads[i].id)) downloads.splice(i, 1);
+      }
+      for (let i = electronDownloads.length - 1; i >= 0; i--) {
+        if (removedIdSet.has(electronDownloads[i].id)) {
+          electronDownloads[i].finished = true;
+          if (electronDownloads[i].retryTimer) {
+            clearTimeout(electronDownloads[i].retryTimer);
+          }
+          electronDownloads.splice(i, 1);
+        }
+      }
+
+      const mediaIds = MediaDownloadManager.clearHistory();
+      const allRemovedIds = [...removedIds, ...mediaIds];
+
+      await Application.instance.storage
+        .remove({scope: 'downloads', query: {}, multi: true})
+        .catch(() => 0);
+
+      for (const id of allRemovedIds) {
+        downloadsDialog()?.send('download-removed', id);
+        Application.instance.windows.broadcast('download-removed', id);
+      }
+
+      if (
+        downloads.length === 0 &&
+        MediaDownloadManager.list().length === 0
+      ) {
+        Application.instance.dialogs.getDynamic('downloads-dialog')?.hide();
+      }
+
+      return allRemovedIds.length;
+    });
+
+    const uniqueDownloadPath = (directory: string, fileName: string) => {
+      let index = 1;
+      let savePath = resolve(directory, fileName);
+      while (existsSync(savePath)) {
+        const {name, ext} = parse(fileName);
+        savePath = resolve(directory, `${name} (${index})${ext}`);
+        index++;
+      }
+      return savePath;
+    };
+
+    const promptBeforeDownload = (
+      item: Electron.DownloadItem,
+      sourceWebContents: Electron.WebContents | null,
+      onBrowserDownload: (openWhenDone: boolean) => void,
+    ) => {
+      const settings = Application.instance.settings.object;
+      const owner = resolveDownloadWindow(sourceWebContents);
+      const initialPath = uniqueDownloadPath(
+        settings.downloadsPath,
+        item.getFilename(),
+      );
+      // 占位路径阻止 Electron 自己弹另存为窗口；暂停后等待自定义浮层。
+      item.savePath = initialPath;
+      item.pause();
+
+      const prompt = Application.instance.dialogs.getPersistent(
+        'download-prompt',
+      ) as DownloadPromptDialog;
+      if (!owner?.win || owner.win.isDestroyed() || !prompt) {
+        item.cancel();
+        return;
+      }
+
+      void (async () => {
+        const allowExternal =
+          !item.getURL().toLowerCase().startsWith('blob:') &&
+          extname(item.getFilename()).toLowerCase() !== '.crx';
+        const available = allowExternal
+          ? await getAvailableDownloaders(settings)
+          : [];
+        let source = item.getURL();
+        try {
+          source = new url.URL(source).hostname || source;
+        } catch {
+          // 非标准 URL 保留原始值。
+        }
+
+        const result = await prompt.prompt(owner.win, {
+          fileName: basename(initialPath),
+          directory: settings.downloadsPath,
+          source,
+          url: item.getURL(),
+          downloaders: available.map(({type, name}) => ({type, name})),
+        });
+
+        if (result.action === 'cancel') {
+          item.cancel();
+          return;
+        }
+
+        const selectedDownloader = available.find(
+          (downloader) => downloader.type === result.downloaderType,
+        );
+        if (settings.downloadsPath !== result.directory) {
+          Application.instance.settings.updateSettings({
+            downloadsPath: result.directory,
+          });
+        }
+        if (selectedDownloader) {
+          const handedOff = await launchExternalDownload({
+            type: selectedDownloader.type,
+            customPath: selectedDownloader.path,
+            customArgs: settings.downloaderArgs,
+            url: item.getURL(),
+            filename: result.fileName,
+            path: result.directory,
+          });
+          if (handedOff) {
+            item.cancel();
+            return;
+          }
+        }
+
+        const selectedPath = resolve(result.directory, result.fileName);
+        const currentSavePath = resolve(item.savePath);
+        const isOriginalPath =
+          process.platform === 'win32'
+            ? selectedPath.toLowerCase() === currentSavePath.toLowerCase()
+            : selectedPath === currentSavePath;
+
+        // will-download 已为弹窗预留了唯一保存路径。确认时再次去重会把这个
+        // 预留文件误判为重名，导致下载记录显示“(1)”而实际文件名未改变。
+        item.savePath = isOriginalPath
+          ? currentSavePath
+          : uniqueDownloadPath(result.directory, result.fileName);
+        onBrowserDownload(result.action === 'open');
+        if (item.isPaused()) item.resume();
+      })().catch((error) => {
+        console.error('Download prompt failed:', error);
+        item.cancel();
+      });
+    };
+
     // TODO(sentialx): clean up the download listeners
     this.view.on('will-download', (event, item, webContents) => {
       // 外部下载器自动接管:必须同步 preventDefault(await 之后无效)。同步预判能否
       // 唤起(迅雷走协议默认可;其它需路径已配置且存在)。.crx 走扩展安装分支,不接管。
       const s = Application.instance.settings.object;
       if (
+        !s.downloadsDialog &&
         s.downloaderEnabled &&
         s.downloaderAutoIntercept &&
         !item.getURL().toLowerCase().startsWith('blob:') &&
@@ -1198,10 +1907,14 @@ export class SessionsService {
         return;
       }
 
-      const fileName = item.getFilename();
-      const id = makeId(32);
+      // 下载前确认允许用户改名；是否自动安装必须以原始下载类型为准，不能再依赖
+      // 最终文件名，否则把 foo.crx 改名后会被误认为普通下载。
+      const isCrxDownload = extname(item.getFilename()).toLowerCase() === '.crx';
       const sourceWebContents =
         webContents && !webContents.isDestroyed() ? webContents : null;
+      const startBrowserDownload = (openWhenDone = false) => {
+      const fileName = item.getFilename();
+      const id = makeId(32);
       const window = resolveDownloadWindow(sourceWebContents);
 
       if (!Application.instance.settings.object.downloadsDialog) {
@@ -1220,6 +1933,7 @@ export class SessionsService {
       }
 
       const downloadItem = getDownloadItem(item, id);
+      downloadItem.openWhenDone = openWhenDone;
       downloads.push(downloadItem);
 
       const electronDownloadItem = getElectronDownloadItem(
@@ -1249,23 +1963,22 @@ export class SessionsService {
 
       item.on('updated', (event, state) => {
         if (state === 'interrupted') {
-          downloadsDialog()?.send('download-paused', id);
-          emitDownloadEvent(window, 'download-paused', id);
-          console.log('Download is interrupted but can be resumed');
+          if (!scheduleDownloadRetry(electronDownloadItem)) {
+            electronDownloadItem.interrupted = true;
+            electronDownloadItem.retrying = false;
+          }
         } else if (state === 'progressing') {
           if (item.isPaused()) {
             downloadsDialog()?.send('download-paused', id);
             emitDownloadEvent(window, 'download-paused', id);
             console.log('Download is paused');
+          } else {
+            electronDownloadItem.interrupted = false;
+            electronDownloadItem.retrying = false;
           }
         }
 
-        const data = getDownloadItem(item, id);
-
-        downloadsDialog()?.send('download-progress', data);
-        emitDownloadEvent(window, 'download-progress', data);
-
-        Object.assign(downloadItem, data);
+        publishDownload(electronDownloadItem);
         if (
           sourceWebContents &&
           !sourceWebContents.isDestroyed() &&
@@ -1274,29 +1987,42 @@ export class SessionsService {
           sourceWebContents.goBack();
         }
       });
-      item.once('done', async (event, state) => {
+      item.on('done', async (event, state) => {
+        if (electronDownloadItem.finished) return;
         if (state === 'completed') {
+          releaseElectronDownload(electronDownloadItem);
+          downloadItem.completed = true;
+          downloadItem.paused = false;
+          downloadItem.interrupted = false;
+          downloadItem.retrying = false;
+          downloadItem.speedBytesPerSecond = 0;
+
           const dialog = downloadsDialog();
           dialog?.send('download-completed', id);
           emitDownloadEvent(window, 'download-completed', id, !!dialog);
 
-          downloadItem.completed = true;
-
           persistDownload(downloadItem);
 
-          if (process.env.ENABLE_EXTENSIONS && extname(fileName) === '.crx') {
-            const extension = await installItem(item, true);
-            if (extension != null) {
-              if (window) {
-                if (!window.incognito) {
+          if (downloadItem.openWhenDone) {
+            void Electron.shell.openPath(item.savePath);
+          }
+
+          if (process.env.ENABLE_EXTENSIONS && isCrxDownload) {
+            try {
+              const extension = await installItem(item, true);
+              if (extension != null) {
+                if (window && !window.incognito) {
                   window.send('load-browserAction', extension);
+                } else if (!window?.incognito) {
+                  this.broadcastNormal('load-browserAction', extension);
                 }
-              } else {
-                this.broadcastNormal('load-browserAction', extension);
               }
+            } catch (error) {
+              console.error('Failed to install downloaded CRX:', error);
             }
           }
         } else if ((item as any).__crxExtIntercepted) {
+          releaseElectronDownload(electronDownloadItem);
           // An extension claimed this download via chrome.downloads.onCreated
           // and cancelled it (e.g. MotrixNext, which forwards the URL to its
           // desktop app). Drop it silently — no "canceled" UI, no history
@@ -1304,8 +2030,6 @@ export class SessionsService {
           // taken over. The 400 ms popup-grace above keeps it off-screen too.
           const dlIdx = downloads.findIndex((x) => x.id === id);
           if (dlIdx > -1) downloads.splice(dlIdx, 1);
-          const edlIdx = electronDownloads.findIndex((x) => x.id === id);
-          if (edlIdx > -1) electronDownloads.splice(edlIdx, 1);
           downloadsDialog()?.send('download-removed', id);
           emitDownloadEvent(window, 'download-removed', id);
           if (
@@ -1315,7 +2039,10 @@ export class SessionsService {
           ) {
             Application.instance.dialogs.getDynamic('downloads-dialog').hide();
           }
+        } else if (state === 'interrupted' && scheduleDownloadRetry(electronDownloadItem)) {
+          return;
         } else {
+          releaseElectronDownload(electronDownloadItem);
           downloadItem.completed = false;
           downloadItem.canceled = true;
           downloadsDialog()?.send('download-canceled', id);
@@ -1323,13 +2050,21 @@ export class SessionsService {
           console.log(`Download failed: ${state}`);
         }
       });
+      };
+
+      if (s.downloadsDialog) {
+        promptBeforeDownload(item, sourceWebContents, startBrowserDownload);
+      } else {
+        startBrowserDownload();
+      }
     });
 
     // 无痕 session 下载:外部下载器接管 + 存盘(文件保留),但不进下载历史
     // (downloads 列表 / persistDownload DB)——符合 Chrome 无痕语义。
-    this.viewIncognito.on('will-download', (event, item, _webContents) => {
+    this.viewIncognito.on('will-download', (event, item, webContents) => {
       const s = Application.instance.settings.object;
       if (
+        !s.downloadsDialog &&
         s.downloaderEnabled &&
         s.downloaderAutoIntercept &&
         !item.getURL().toLowerCase().startsWith('blob:') &&
@@ -1347,24 +2082,26 @@ export class SessionsService {
         });
         return;
       }
-      // 存盘(文件保留);不 push downloads、不 persistDownload(无痕不记录)。
-      if (!s.downloadsDialog) {
-        const fileName = item.getFilename();
-        let i = 1;
-        let savePath = resolve(s.downloadsPath, fileName);
-        while (existsSync(savePath)) {
-          const {name, ext} = parse(fileName);
-          savePath = resolve(s.downloadsPath, `${name} (${i})${ext}`);
-          i++;
-        }
-        item.savePath = savePath;
+      const sourceWebContents =
+        webContents && !webContents.isDestroyed() ? webContents : null;
+      if (s.downloadsDialog) {
+        promptBeforeDownload(item, sourceWebContents, (openWhenDone) => {
+          if (!openWhenDone) return;
+          item.once('done', (_event, state) => {
+            if (state === 'completed') void Electron.shell.openPath(item.savePath);
+          });
+        });
+        return;
       }
+      // 存盘(文件保留);不 push downloads、不 persistDownload(无痕不记录)。
+      item.savePath = uniqueDownloadPath(s.downloadsPath, item.getFilename());
     });
 
     session.defaultSession.on('will-download', (event, item, webContents) => {
       // 外部下载器自动接管(同 view 分支)。
       const s = Application.instance.settings.object;
       if (
+        !s.downloadsDialog &&
         s.downloaderEnabled &&
         s.downloaderAutoIntercept &&
         !item.getURL().toLowerCase().startsWith('blob:') &&
@@ -1383,12 +2120,27 @@ export class SessionsService {
         return;
       }
 
-      const id = makeId(32);
+      // defaultSession 的下载同样可能来自普通页面；保留原始 CRX 标记，完成后
+      // 走与 persist:view 完全相同的安装路径。
+      const isCrxDownload = extname(item.getFilename()).toLowerCase() === '.crx';
       const sourceWebContents =
         webContents && !webContents.isDestroyed() ? webContents : null;
+      const isPrintPreviewDownloadItem = isPrintPreviewDownload(
+        item,
+        sourceWebContents,
+      );
+      const startBrowserDownload = (openWhenDone = false) => {
+      const id = makeId(32);
       const window = resolveDownloadWindow(sourceWebContents);
 
+      // PDF 打印预览的下载由用户显式点击触发，不应再拦到“下载前询问”。
+      // 同时设置路径，避免 Electron 退回系统另存为窗口。
+      if (!s.downloadsDialog || isPrintPreviewDownloadItem) {
+        item.savePath = uniqueDownloadPath(s.downloadsPath, item.getFilename());
+      }
+
       const downloadItem = getDownloadItem(item, id);
+      downloadItem.openWhenDone = openWhenDone;
       downloads.push(downloadItem);
 
       const electronDownloadItem = getElectronDownloadItem(
@@ -1400,38 +2152,68 @@ export class SessionsService {
 
       downloadsDialog()?.send('download-started', downloadItem);
       emitDownloadEvent(window, 'download-started', downloadItem);
+      if (isPrintPreviewDownloadItem) {
+        foregroundDownloadWindow(window);
+      }
       emitDownloadEvent(window, 'show-download-dialog');
 
       item.on('updated', (event, state) => {
         if (state === 'interrupted') {
-          downloadsDialog()?.send('download-paused', id);
-          emitDownloadEvent(window, 'download-paused', id);
-          console.log('Download is interrupted but can be resumed');
+          if (!scheduleDownloadRetry(electronDownloadItem)) {
+            electronDownloadItem.interrupted = true;
+            electronDownloadItem.retrying = false;
+          }
         } else if (state === 'progressing') {
           if (item.isPaused()) {
             downloadsDialog()?.send('download-paused', id);
             emitDownloadEvent(window, 'download-paused', id);
             console.log('Download is paused');
+          } else {
+            electronDownloadItem.interrupted = false;
+            electronDownloadItem.retrying = false;
           }
         }
 
-        const data = getDownloadItem(item, id);
-
-        Object.assign(downloadItem, data);
-
-        downloadsDialog()?.send('download-progress', data);
-        emitDownloadEvent(window, 'download-progress', data);
+        publishDownload(electronDownloadItem);
       });
-      item.once('done', async (event, state) => {
+      item.on('done', async (event, state) => {
+        if (electronDownloadItem.finished) return;
         const dialog = downloadsDialog();
         if (state === 'completed') {
+          releaseElectronDownload(electronDownloadItem);
+          downloadItem.completed = true;
+          downloadItem.paused = false;
+          downloadItem.interrupted = false;
+          downloadItem.retrying = false;
+          downloadItem.speedBytesPerSecond = 0;
+
           dialog?.send('download-completed', id);
           emitDownloadEvent(window, 'download-completed', id, !!dialog);
 
-          downloadItem.completed = true;
-
           persistDownload(downloadItem);
+
+          if (downloadItem.openWhenDone) {
+            void Electron.shell.openPath(item.savePath);
+          }
+
+          if (process.env.ENABLE_EXTENSIONS && isCrxDownload) {
+            try {
+              const extension = await installItem(item, true);
+              if (extension != null) {
+                if (window && !window.incognito) {
+                  window.send('load-browserAction', extension);
+                } else if (!window?.incognito) {
+                  this.broadcastNormal('load-browserAction', extension);
+                }
+              }
+            } catch (error) {
+              console.error('Failed to install downloaded CRX:', error);
+            }
+          }
+        } else if (state === 'interrupted' && scheduleDownloadRetry(electronDownloadItem)) {
+          return;
         } else {
+          releaseElectronDownload(electronDownloadItem);
           downloadItem.completed = false;
           downloadItem.canceled = true;
           downloadsDialog()?.send('download-canceled', id);
@@ -1439,6 +2221,13 @@ export class SessionsService {
           console.log(`Download failed: ${state}`);
         }
       });
+      };
+
+      if (s.downloadsDialog && !isPrintPreviewDownloadItem) {
+        promptBeforeDownload(item, sourceWebContents, startBrowserDownload);
+      } else {
+        startBrowserDownload();
+      }
     });
 
     // 读回持久化的已完成下载历史到内存列表,使下载页跨重启保留(get-downloads
@@ -1479,39 +2268,69 @@ export class SessionsService {
 
     // 无痕 newtab 页同步询问:本页所在 view 是否无痕(决定渲染本地无痕页而非 pcapp iframe)。
     ipcMain.on('is-newtab-incognito', (e) => {
-      const sender = e.sender;
-      let incognito = false;
-      outer: for (const win of Application.instance.windows.list) {
-        for (const view of win.viewManager.views.values()) {
-          if (view.browserView && view.browserView.webContents === sender) {
-            incognito = !!view.incognito;
-            break outer;
+      const sender: any = e.sender;
+      // 优先用 view.ts 构造时打的 __rainseeIncognito 标记(构造即设,先于任何加载/渲染),
+      // 消除「view 尚未注册进 viewManager」时遍历落空的竞态。标记缺失才回退遍历。
+      let incognito: boolean;
+      if (typeof sender.__rainseeIncognito === 'boolean') {
+        incognito = sender.__rainseeIncognito;
+      } else {
+        incognito = false;
+        outer: for (const win of Application.instance.windows.list) {
+          for (const view of win.viewManager.views.values()) {
+            if (view.browserView && view.browserView.webContents === sender) {
+              incognito = !!view.incognito;
+              break outer;
+            }
           }
         }
       }
       e.returnValue = incognito;
     });
 
-    // 无痕 newtab 搜索框提交:用默认搜索引擎导航当前 view。
-    ipcMain.on('newtab-search', (e, query: string) => {
+    // 本地 newtab 搜索框提交:按(可选指定的)引擎导航当前 view。
+    // 注意:不再限制无痕页 —— 普通新标签页同样通过此通道搜索。
+    ipcMain.on('newtab-search', (e, query: string, engineIndex?: number) => {
       if (!query || typeof query !== 'string' || query.length > 2048) return;
-      const view = Application.instance.windows.list
-        .flatMap((window) => Array.from(window.viewManager.views.values()))
-        .find((candidate) => candidate.webContents === e.sender);
-      if (
-        !view?.incognito ||
-        !view.webContents.getURL().startsWith(getWebUIURL('newtab'))
-      ) {
-        return;
+      // 直接用 sender webContents + 构造标记判定,避免遍历 viewManager 的注册竞态
+      // (旧实现偶发查不到 view → 静默 return → 搜索无反应)。
+      const wc: any = e.sender;
+      if (!wc || wc.isDestroyed() || !wc.getURL().startsWith(getWebUIURL('newtab'))) return;
+      const settings = Application.instance.settings.object;
+      const engines = settings.searchEngines;
+      const byIndex =
+        typeof engineIndex === 'number' && engines && engines[engineIndex]
+          ? engines[engineIndex]
+          : undefined;
+      const engine =
+        byIndex ||
+        engines?.[settings.searchEngine] ||
+        engines?.find((x: any) => x && x.url);
+      if (!engine || !engine.url) return;
+      const url = (engine.url as string).replace('%s', encodeURIComponent(query));
+      wc.loadURL(url).catch(() => {});
+    });
+
+    // 引擎 chip 点击:由本地 newtab 发起,切换默认引擎设置。
+    ipcMain.handle('set-search-engine-by-index', (e, index: number) => {
+      const wc: any = e.sender;
+      if (!wc || wc.isDestroyed() || !wc.getURL().startsWith(getWebUIURL('newtab'))) {
+        return false;
       }
       const settings = Application.instance.settings.object;
       const engines = settings.searchEngines;
-      const engine = engines?.[settings.searchEngine] || engines?.find((x: any) => x && x.url);
-      if (!engine || !engine.url) return;
-      const url = (engine.url as string).replace('%s', encodeURIComponent(query));
-      if (!view.webContents.isDestroyed()) {
-        view.webContents.loadURL(url).catch(() => {});
-      }
+      if (!Array.isArray(engines) || typeof index !== 'number') return false;
+      if (index < 0 || index >= engines.length) return false;
+      Application.instance.settings.updateSettings({ searchEngine: index });
+      return true;
+    });
+
+    // URL 直达:仅接受 http(s)/file 协议。
+    ipcMain.on('newtab-search-url', (e, url: string) => {
+      if (typeof url !== 'string' || !/^(https?:\/\/|file:\/\/)/i.test(url)) return;
+      const wc: any = e.sender;
+      if (!wc || wc.isDestroyed() || !wc.getURL().startsWith(getWebUIURL('newtab'))) return;
+      wc.loadURL(url).catch(() => {});
     });
   }
 
@@ -1537,13 +2356,275 @@ export class SessionsService {
     });
   }
 
+  private getPersistSessionCookieHosts(): string[] {
+    const settings = Application.instance.settings.object;
+    if (!settings.persistSessionCookies) return [];
+    const hosts = settings.persistSessionCookieHosts || [];
+    return Array.from(
+      new Set(
+        hosts
+          .map((host) => normalizePersistSessionCookieHost(host))
+          .filter((host): host is string => host !== null),
+      ),
+    );
+  }
+
+  private getPersistSessionCookieHost(cookieDomain: string): string | null {
+    return (
+      this.getPersistSessionCookieHosts().find((host) =>
+        cookieMatchesHost(cookieDomain, host),
+      ) || null
+    );
+  }
+
+  private getManagedSessionCookiesPath(): string {
+    return resolve(app.getPath('userData'), MANAGED_SESSION_COOKIES_FILE);
+  }
+
+  private async ensureManagedSessionCookiesLoaded(): Promise<void> {
+    if (this.managedSessionCookiesLoad) return this.managedSessionCookiesLoad;
+    this.managedSessionCookiesLoad = (async () => {
+      try {
+        const raw = await promises.readFile(this.getManagedSessionCookiesPath(), 'utf8');
+        const parsed = JSON.parse(raw) as {cookies?: unknown};
+        if (!Array.isArray(parsed.cookies)) return;
+        const seen = new Set<string>();
+        this.managedSessionCookies = parsed.cookies.reduce<ManagedSessionCookie[]>(
+          (items, item: any) => {
+            const host = typeof item?.host === 'string'
+              ? normalizePersistSessionCookieHost(item.host)
+              : null;
+            if (
+              !host ||
+              typeof item?.name !== 'string' ||
+              typeof item?.domain !== 'string' ||
+              typeof item?.path !== 'string' ||
+              typeof item?.secure !== 'boolean'
+            ) {
+              return items;
+            }
+            const record = {
+              host,
+              name: item.name,
+              domain: item.domain,
+              path: item.path,
+              secure: item.secure,
+            };
+            const key = this.managedSessionCookieKey(record);
+            if (!seen.has(key)) {
+              seen.add(key);
+              items.push(record);
+            }
+            return items;
+          },
+          [],
+        );
+      } catch {
+        // 首次使用或元数据损坏时从空记录开始，不影响正常 Cookie 使用。
+        this.managedSessionCookies = [];
+      }
+    })();
+    return this.managedSessionCookiesLoad;
+  }
+
+  private async saveManagedSessionCookies(): Promise<void> {
+    try {
+      await promises.writeFile(
+        this.getManagedSessionCookiesPath(),
+        JSON.stringify({version: 1, cookies: this.managedSessionCookies}),
+        'utf8',
+      );
+    } catch (error) {
+      console.error('[cookies] save managed session cookies failed', error);
+    }
+  }
+
+  private managedSessionCookieKey(cookie: ManagedSessionCookie): string {
+    return [cookie.name, cookie.domain, cookie.path, cookie.secure ? '1' : '0'].join('\u0000');
+  }
+
+  private toManagedSessionCookie(
+    cookie: Electron.Cookie,
+    host: string,
+  ): ManagedSessionCookie {
+    return {
+      host,
+      name: cookie.name,
+      domain: cookie.domain,
+      path: cookie.path || '/',
+      secure: cookie.secure,
+    };
+  }
+
+  private async removeManagedSessionCookie(record: ManagedSessionCookie): Promise<void> {
+    const domain = record.domain.replace(/^\./, '');
+    if (!domain) return;
+    try {
+      await this.view.cookies.remove(
+        `${record.secure ? 'https' : 'http'}://${domain}${record.path || '/'}`,
+        record.name,
+      );
+    } catch {
+      // Cookie 已过期、路径不再匹配等都可视为清理完成。
+    }
+  }
+
+  /** 清理已不再受用户配置管理的 Cookie，例如关闭开关或移除主域名。 */
+  public async reconcilePersistedSessionCookies(): Promise<void> {
+    await this.ensureManagedSessionCookiesLoaded();
+    const activeHosts = new Set(this.getPersistSessionCookieHosts());
+    const obsolete = this.managedSessionCookies.filter(
+      (record) => !activeHosts.has(record.host),
+    );
+    if (obsolete.length === 0) return;
+    await Promise.all(obsolete.map((record) => this.removeManagedSessionCookie(record)));
+    this.managedSessionCookies = this.managedSessionCookies.filter(
+      (record) => activeHosts.has(record.host),
+    );
+    await this.saveManagedSessionCookies();
+  }
+
+  private isLoginPage(urlText: string): string | null {
+    try {
+      const url = new URL(urlText);
+      const host = normalizePersistSessionCookieHost(url.hostname);
+      if (!host) return null;
+      const configuredHost = this.getPersistSessionCookieHosts().find((item) =>
+        cookieMatchesHost(host, item),
+      );
+      if (!configuredHost) return null;
+      const path = url.pathname.toLowerCase();
+      return /(?:^|\/)(?:login|signin|sign-in|signon|passport)(?:\/|$)/.test(path)
+        ? configuredHost
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private installLoginPageCookieCleanup(): void {
+    app.on('web-contents-created', (_event, contents) => {
+      contents.on('did-navigate', (_navigationEvent, urlText) => {
+        if (contents.isDestroyed() || contents.session !== this.view) return;
+        const host = this.isLoginPage(urlText);
+        if (!host || this.loginCookieCleanupHosts.has(host)) return;
+        this.loginCookieCleanupHosts.add(host);
+        void this.clearCookiesBeforeRelogin(host).finally(() => {
+          // 登录页内跳转可能多次触发；短时间内只清一次，避免清掉刚登录成功的 Cookie。
+          setTimeout(() => this.loginCookieCleanupHosts.delete(host), 5 * 60 * 1000);
+        });
+      });
+    });
+  }
+
+  /**
+   * 恢复态失效后站点通常会跳到登录页。此时清除该主域名下所有 Cookie，确保用户
+   * 随后重新登录得到的是唯一的一组登录态，而非旧 session 与新 session 共存。
+   */
+  private async clearCookiesBeforeRelogin(host: string): Promise<void> {
+    await this.ensureManagedSessionCookiesLoaded();
+    let cookies: Electron.Cookie[] = [];
+    try {
+      cookies = await this.view.cookies.get({});
+    } catch (error) {
+      console.error('[cookies] get before relogin cleanup failed', error);
+      return;
+    }
+
+    const targets = cookies.filter((cookie) => cookieMatchesHost(cookie.domain, host));
+    await Promise.all(
+      targets.map((cookie) =>
+        this.removeManagedSessionCookie(this.toManagedSessionCookie(cookie, host)),
+      ),
+    );
+    this.managedSessionCookies = this.managedSessionCookies.filter(
+      (record) => record.host !== host,
+    );
+    await this.saveManagedSessionCookies();
+    console.log(`[cookies] cleared ${targets.length} cookie(s) before relogin for ${host}`);
+  }
+
+  /**
+   * 退出前只把用户明确添加的主域名下的会话 Cookie 重写为持久 Cookie。
+   * 不启用 Chromium 的全局 session Cookie 持久化，避免无关站点的 Cookie 残留。
+   */
+  public async persistSessionCookies(): Promise<void> {
+    await this.reconcilePersistedSessionCookies();
+    const hosts = this.getPersistSessionCookieHosts();
+    if (hosts.length === 0) return;
+
+    let cookies: Electron.Cookie[] = [];
+    try {
+      cookies = await this.view.cookies.get({});
+    } catch (error) {
+      console.error('[cookies] persistSessionCookies: get failed', error);
+      return;
+    }
+
+    const sessionCookies = cookies
+      .map((cookie) => ({cookie, host: this.getPersistSessionCookieHost(cookie.domain)}))
+      .filter(
+        (item): item is {cookie: Electron.Cookie; host: string} =>
+          item.cookie.session && item.host !== null,
+      );
+    const farFuture = Math.floor(Date.now() / 1000) + 180 * 24 * 3600;
+    const convertedRecords: ManagedSessionCookie[] = [];
+    await Promise.all(
+      sessionCookies.map(({cookie, host}) =>
+        (async () => {
+          try {
+            const domain = (cookie.domain || '').replace(/^\./, '');
+            if (!domain) return;
+            await this.view.cookies.set({
+              url: `${cookie.secure ? 'https' : 'http'}://${domain}${cookie.path || '/'}`,
+              name: cookie.name,
+              value: cookie.value,
+              domain: cookie.domain,
+              path: cookie.path,
+              secure: cookie.secure,
+              httpOnly: cookie.httpOnly,
+              sameSite: cookie.sameSite,
+              expirationDate: farFuture,
+            });
+            convertedRecords.push(this.toManagedSessionCookie(cookie, host));
+          } catch {
+            // 单条失败跳过,不阻断整体。
+          }
+        })(),
+      ),
+    );
+
+    const activeHosts = new Set(hosts);
+    const currentCookieKeys = new Set(
+      cookies.map((cookie) =>
+        this.managedSessionCookieKey(
+          this.toManagedSessionCookie(cookie, this.getPersistSessionCookieHost(cookie.domain) || ''),
+        ),
+      ),
+    );
+    const records = new Map<string, ManagedSessionCookie>();
+    this.managedSessionCookies.forEach((record) => {
+      if (activeHosts.has(record.host) && currentCookieKeys.has(this.managedSessionCookieKey(record))) {
+        records.set(this.managedSessionCookieKey(record), record);
+      }
+    });
+    convertedRecords.forEach((record) => {
+      records.set(this.managedSessionCookieKey(record), record);
+    });
+    this.managedSessionCookies = Array.from(records.values());
+    await this.saveManagedSessionCookies();
+    console.log(
+      `[cookies] persistSessionCookies: ${convertedRecords.length}/${sessionCookies.length} session cookie(s) persisted for ${hosts.join(', ')}`,
+    );
+  }
+
   public unloadIncognitoExtensions(): Promise<void> {
     return this.queueIncognitoExtensionTask(() =>
       this.unloadIncognitoExtensionsImpl(),
     );
   }
 
-  private getLoadedExtension(id: string): Electron.Extension | undefined {
+  public getLoadedExtension(id: string): Electron.Extension | undefined {
     try {
       return (
         this.view.getExtension(id) ||
@@ -1798,17 +2879,26 @@ export class SessionsService {
     }
   }
 
-  private isExtensionWorkerRunning(scope: string) {
-    return Object.values(this.view.serviceWorkers.getAllRunning()).some(
-      (info) => info.scope === scope,
+  private isExtensionWorkerRunning(
+    scope: string,
+    serviceWorkers: any = this.view.serviceWorkers,
+  ) {
+    return Object.values(serviceWorkers.getAllRunning()).some(
+      (info: any) => info.scope === scope,
     );
   }
 
-  private waitForExtensionWorkerRunning(scope: string, timeoutMs: number) {
-    if (this.isExtensionWorkerRunning(scope)) return Promise.resolve(true);
+  private waitForExtensionWorkerRunning(
+    scope: string,
+    timeoutMs: number,
+    serviceWorkers: any = this.view.serviceWorkers,
+  ) {
+    if (this.isExtensionWorkerRunning(scope, serviceWorkers)) {
+      return Promise.resolve(true);
+    }
 
     return new Promise<boolean>((resolve) => {
-      const workers = this.view.serviceWorkers;
+      const workers = serviceWorkers;
       let finished = false;
       let timer: NodeJS.Timeout | undefined;
 
@@ -1831,11 +2921,11 @@ export class SessionsService {
       workers.on('running-status-changed' as any, onStatus);
       timer = setTimeout(() => finish(false), timeoutMs);
       // 避免 Worker 在初次检查与事件监听注册之间已进入 running 的竞态。
-      if (this.isExtensionWorkerRunning(scope)) finish(true);
+      if (this.isExtensionWorkerRunning(scope, workers)) finish(true);
     });
   }
 
-  private async inspectExtensionTarget(id: string, targetId: string) {
+  public async inspectExtensionTarget(id: string, targetId: string) {
     const extension = this.getLoadedExtension(id);
     if (!extension) {
       return {ok: false, message: '扩展未启用或已经被卸载。'};
@@ -1935,30 +3025,36 @@ export class SessionsService {
       const scope = extension.url || `chrome-extension://${extension.id}/`;
       tlog(`startBackgroundWorker: startWorkerForScope -> ${scope}`);
 
-      // Heartbeat: if these keep ticking during the gap, the main process event
-      // loop is alive and we're waiting on Chromium to boot the worker. If they
-      // STOP, something is blocking the main thread synchronously.
-      let beats = 0;
-      const hb = setInterval(() => {
-        beats++;
-        tlog(`heartbeat ${beats} (waiting for SW ${extension.id})`);
-        if (beats >= 20) clearInterval(hb);
-      }, 2000);
-
+      const workers: any = extensionSession.serviceWorkers as any;
       const t0 = process.uptime();
-      (extensionSession.serviceWorkers as any)
-        .startWorkerForScope(scope)
-        .then(() => {
-          clearInterval(hb);
-          tlog(
-            `startBackgroundWorker: startWorkerForScope resolved ${extension.id} (waited ${(process.uptime() - t0).toFixed(2)}s)`,
-          );
-        })
-        .catch((err: any) => {
-          clearInterval(hb);
-          tlog(`startBackgroundWorker: startWorkerForScope REJECTED ${extension.id}`, err);
-          console.error('startWorkerForScope failed', extension.id, err);
-        });
+      if (this.isExtensionWorkerRunning(scope, workers)) {
+        tlog(`startBackgroundWorker: already running ${extension.id}`);
+        return;
+      }
+      // Register the lifecycle waiter before requesting startup. Electron may
+      // reject this request while Chromium is already moving the worker through
+      // starting; the running event, rather than the request Promise, is the
+      // authoritative success signal.
+      const runningPromise = this.waitForExtensionWorkerRunning(
+        scope,
+        20000,
+        workers,
+      );
+      workers.startWorkerForScope(scope).then(() => {
+        tlog(
+          `startBackgroundWorker: startWorkerForScope resolved ${extension.id} (waited ${(process.uptime() - t0).toFixed(2)}s)`,
+        );
+      }).catch((err: any) => {
+        tlog(
+          `startBackgroundWorker: start request rejected ${extension.id}; waiting for lifecycle event`,
+          err,
+        );
+      });
+      void runningPromise.then((running) => {
+        if (!running) {
+          console.error('startWorkerForScope failed', extension.id, 'worker did not enter running state');
+        }
+      });
     } catch (e) {
       console.error(e);
     }
@@ -1972,6 +3068,108 @@ export class SessionsService {
     if (this.extensionsLoading) return this.extensionsLoading;
     this.extensionsLoading = this.doLoadExtensions();
     return this.extensionsLoading;
+  }
+
+  public allowStartupExtensionLoad() {
+    this.startupExtensionLoadAllowed = true;
+    if (!this.startupExtensionLoadRequested) return;
+    this.startupExtensionLoadRequested = false;
+    void this.loadExtensions().catch((error) =>
+      console.error('[extensions] queued renderer load request failed', error),
+    );
+  }
+
+  /**
+   * 若 targetUrl 是当前扩展主页且对应扩展尚未注册，返回一个等待注册结果；
+   * 非扩展主页或扩展已可用时返回 null，调用方可立即正常导航。
+   */
+  public waitForExtensionNewTabReady(
+    targetUrl: string,
+    incognito: boolean,
+  ): Promise<boolean> | null {
+    const configured = [
+      Application.instance.tempTabUrl,
+      ...(Application.instance.settings.object.newtab || '').split('\n'),
+    ].filter(Boolean);
+    const overrideUrl = configured.find((entry) =>
+      this.isSameNewTabPage(targetUrl, entry),
+    );
+    if (!overrideUrl) return null;
+
+    let extensionId = '';
+    try {
+      const parsed = new URL(overrideUrl);
+      if (parsed.protocol !== 'chrome-extension:') return null;
+      extensionId = parsed.hostname;
+    } catch {
+      return null;
+    }
+
+    const ses = incognito ? this.viewIncognito : this.view;
+    const key = `${incognito ? 'incognito' : 'normal'}:${extensionId}`;
+    if (
+      ses.getExtension(extensionId) &&
+      !this.transitioningExtensions.has(key)
+    ) {
+      return null;
+    }
+
+    if (!process.env.ENABLE_EXTENSIONS) return Promise.resolve(false);
+
+    // 未获无痕权限的主页扩展不会在无痕 Session 注册，直接保留内置主页。
+    if (
+      incognito &&
+      !(Application.instance.settings.object.incognitoAllowedExtensions || [])
+        .includes(extensionId)
+    ) {
+      return Promise.resolve(false);
+    }
+
+    const disabled = Application.instance.settings.object.disabledExtensions || [];
+    if (disabled.includes(extensionId)) return Promise.resolve(false);
+
+    const existing = this.extensionReadyWaiters.get(key);
+    if (existing) return existing;
+
+    const sessionExtensions: any = (ses as any).extensions || ses;
+    const waiter = new Promise<boolean>((resolveReady) => {
+      let settled = false;
+      const finish = (ready: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        sessionExtensions.removeListener('extension-loaded', onLoaded);
+        resolveReady(ready);
+      };
+      const onLoaded = (_event: any, extension: Electron.Extension) => {
+        if (extension?.id === extensionId) finish(true);
+      };
+      const timer = setTimeout(() => finish(false), 120000);
+
+      sessionExtensions.on('extension-loaded', onLoaded);
+      // 消除 getExtension 与监听器注册之间的竞态。
+      if (ses.getExtension(extensionId)) finish(true);
+    }).finally(() => {
+      this.extensionReadyWaiters.delete(key);
+    });
+
+    this.extensionReadyWaiters.set(key, waiter);
+    if (incognito) {
+      void this.loadIncognitoExtensions();
+    } else {
+      void this.loadExtensions();
+    }
+    return waiter;
+  }
+
+  public setExtensionTransitioning(
+    id: string,
+    incognito: boolean,
+    transitioning: boolean,
+  ) {
+    const key = `${incognito ? 'incognito' : 'normal'}:${id}`;
+    if (transitioning) this.transitioningExtensions.add(key);
+    else this.transitioningExtensions.delete(key);
   }
 
   // 删除体积超过阈值的扩展 storage.local LevelDB 分区,防止主进程启动读取时
@@ -2028,7 +3226,34 @@ export class SessionsService {
     }
   }
 
+  // 启动前清掉已安装扩展在 persist:view 里的 Service Worker 持久化状态。
+  // 现网现象:某些 MV3 扩展(如 Tampermonkey)在“正常关闭”时会把当时已异常的 SW
+  // 运行态/注册态写回 Partitions/view/Service Worker，下次启动继续复用这份脏状态，
+  // 表现为 popup 一直 loading、后台反复 starting/stopped。任务管理器强杀之所以
+  // “正常”，本质上是跳过了这次坏状态落盘。这里在每次从目录加载扩展前，按
+  // chrome-extension://<id> 定向清理 serviceworkers，让本次启动总是从干净的
+  // SW 注册态开始。只作用于扩展 origin，不影响普通网站的 Service Worker。
+  private async cleanupExtensionServiceWorkersAtStartup(extDirs: string[]) {
+    const candidates = extDirs.filter((id) => /^[a-p]{32}$/.test(id));
+    for (const id of candidates) {
+      try {
+        await this.view.clearStorageData({
+          origin: `chrome-extension://${id}`,
+          storages: ['serviceworkers'],
+        });
+        tlog(`cleanupExtensionServiceWorkersAtStartup: cleared serviceworkers for ${id}`);
+      } catch (e) {
+        console.error(
+          `cleanupExtensionServiceWorkersAtStartup: ${id} 清理失败`,
+          e,
+        );
+      }
+    }
+  }
+
   private async doLoadExtensions() {
+    const extensionLoadTimer = startupTimer();
+    startupMark('main.extensions.load.begin');
     try {
       const context = this.view;
 
@@ -2040,12 +3265,23 @@ export class SessionsService {
       // dev work. Fresh copy each start → source edits picked up, stale SHIM
       // patches cleared. See extensiontest/README.md.
       await this.syncDevTestExtensions();
+      const scanTimer = startupTimer();
       tlog('doLoadExtensions: begin, reading', extensionsPath);
       const dirs = await promises.readdir(extensionsPath);
       tlog(`doLoadExtensions: readdir -> ${dirs.length} dir(s): ${dirs.join(', ')}`);
+      startupMark('main.extensions.directory_scan.end', {
+        count: dirs.length,
+        durationMs: scanTimer(),
+      });
+      this.installServiceWorkerRecovery(this.chromeExtensions, this.view);
 
       const disabled =
         Application.instance.settings.object.disabledExtensions || [];
+
+      // 兼容旧版本遗留状态:过去停用扩展时没有移除其 newtab 覆盖，重启后新建
+      // 标签仍会加载已停用扩展的 chrome-extension:// URL，最终显示 -20。
+      // 在扫描扩展前清理一次，保证本次启动创建的首个标签也使用有效主页。
+      this.removeExtensionNewTabOverrides(disabled);
 
       // 扩展 storage.local 膨胀清理(防 0xE0000008 主进程 OOM)。
       // uBlock 等扩展把编译后的过滤引擎缓存(~100MB)无条件镜像写入 chrome.storage.local
@@ -2055,29 +3291,80 @@ export class SessionsService {
       // 这个多 GB LevelDB → 原生内存分配失败 0xE0000008 → 启动即崩(此为原生内存,
       // --max-old-space-size 无效)。这里在加载扩展前检查每个扩展的 storage 分区大小,
       // 超阈值则删除(等同手动清空:扩展下次启动重建缓存,功能不受损,仅丢可重建的缓存)。
+      const storageCleanupTimer = startupTimer();
+      startupMark('main.extensions.storage_cleanup.begin', {count: dirs.length});
       await this.cleanupBloatedExtensionStorage(dirs);
+      startupMark('main.extensions.storage_cleanup.end', {
+        durationMs: storageCleanupTimer(),
+      });
+
+      // 正常关闭可能把某些 MV3 扩展的坏 Service Worker 持久化状态写回磁盘。
+      // 启动时先按扩展 origin 定向清掉 serviceworkers，再 loadExtension/startWorker，
+      // 避免把上次异常态直接带进这次启动。
+      // Clean every installed extension, including disabled ones. A disabled
+      // extension can be re-enabled later without another startup cleanup pass.
+      const serviceWorkerCleanupTimer = startupTimer();
+      startupMark('main.extensions.service_worker_cleanup.begin', {
+        count: dirs.length,
+      });
+      await this.cleanupExtensionServiceWorkersAtStartup(dirs);
+      startupMark('main.extensions.service_worker_cleanup.end', {
+        durationMs: serviceWorkerCleanupTimer(),
+      });
+
+      let activeThemeFound = false;
 
       for (const dir of dirs) {
+        const itemTimer = startupTimer();
+        let attemptedLoad = false;
         try {
+          const path = resolve(extensionsPath, dir);
+          const manifestPath = resolve(path, 'manifest.json');
+          if (dir.startsWith('.') || !existsSync(manifestPath)) {
+            tlog(`loadExtension: skip non-extension dir ${dir}`);
+            continue;
+          }
+          const diskManifest = JSON.parse(
+            await promises.readFile(manifestPath, 'utf8'),
+          );
+
+          if (this.isThemeManifest(diskManifest)) {
+            if (disabled.includes(dir)) {
+              if (Application.instance.settings.object.activeChromeTheme?.id === dir) {
+                this.clearChromeTheme(dir);
+              }
+              tlog(`loadExtension: skip disabled theme ${dir}`);
+              continue;
+            }
+            const configuredId =
+              Application.instance.settings.object.activeChromeTheme?.id;
+            if (!configuredId || configuredId === dir) {
+              activeThemeFound = !!this.activateChromeTheme(
+                dir,
+                path,
+                diskManifest,
+              );
+            }
+            tlog(`loadExtension: recognized Chrome theme ${dir}`);
+            continue;
+          }
+
           if (disabled.includes(dir)) {
             tlog(`loadExtension: skip disabled ${dir}`);
             continue;
           }
-          const path = resolve(extensionsPath, dir);
           // Skip non-extension entries: IDE/VCS dot-dirs (.idea/.git) and any
           // folder without a manifest.json. Without this, loadExtension throws
           // "清单文件缺失或不可读取" on .idea at every startup, and
           // patchExtensionStorage needlessly scans it for JS entries.
           // manifest.json is the canonical signal that a folder is a Chrome ext.
-          if (dir.startsWith('.') || !existsSync(resolve(path, 'manifest.json'))) {
-            tlog(`loadExtension: skip non-extension dir ${dir}`);
-            continue;
-          }
           if (this.hasLoadedExtension(dir)) {
             tlog(`loadExtension: skip already loaded ${dir}`);
             continue;
           }
           tlog(`loadExtension: begin ${dir}`);
+          attemptedLoad = true;
+          startupMark('main.extension.load.begin', {extensionId: dir});
           // Prepend the chrome.storage.sync->local shim to JS entries BEFORE
           // load, so every extension context (SW/content/popup) gets it on the
           // native chrome object regardless of preload/sandbox flakiness.
@@ -2106,19 +3393,37 @@ export class SessionsService {
           // onInstalled(update) and onStartup on the session that picks up the
           // new version.
           if (installDetails) {
-            this.notifyRuntimeInstalled(extension, installDetails);
+            await this.queueRuntimeInstalled(extension, installDetails);
+          } else {
+            await this.saveRuntimeInstalledState(extension.id, extVersion);
           }
           // Every extension loaded at app start gets onStartup (Chrome fires it
           // when a profile with the extension installed starts). The router's
           // pending-event buffer holds this until the SW/background registers
           // its listener.
-          this.chromeExtensions?.notifyRuntimeStartup(extension.id);
-          await this.saveRuntimeInstalledState(extension.id, extVersion);
+          void this.chromeExtensions?.notifyRuntimeStartup(extension.id);
 
           this.broadcastNormal('load-browserAction', extension);
+          startupMark('main.extension.load.end', {
+            durationMs: itemTimer(),
+            extensionId: extension.id,
+            manifestVersion: mv,
+          });
         } catch (e) {
+          if (attemptedLoad) {
+            startupMark('main.extension.load.failed', {
+              durationMs: itemTimer(),
+              extensionId: dir,
+            });
+          }
           console.error(e);
         }
+      }
+
+      const configuredThemeId =
+        Application.instance.settings.object.activeChromeTheme?.id;
+      if (configuredThemeId && !activeThemeFound) {
+        this.clearChromeTheme(configuredThemeId);
       }
 
       /*if (session === 'incognito') {
@@ -2127,11 +3432,19 @@ export class SessionsService {
 
       this.extensionsLoaded = true;
       tlog('doLoadExtensions: all done, extensionsLoaded=true');
+      startupMark('main.extensions.load.end', {
+        durationMs: extensionLoadTimer(),
+        loadedCount: this.extensions.length,
+      });
     } catch (e) {
-      // e.g. extensions dir missing. Clear the in-flight guard so a later
-      // caller (renderer 'load-extensions') can retry.
+      // e.g. extensions dir missing. Reject after clearing the in-flight guard
+      // so the Application-level bounded retry can make another attempt.
       console.error(e);
+      startupMark('main.extensions.load.failed', {
+        durationMs: extensionLoadTimer(),
+      });
       this.extensionsLoading = null;
+      throw e;
     }
   }
 
@@ -2330,6 +3643,7 @@ export class SessionsService {
       hostPermissions: manifest?.host_permissions || [],
       optionalPermissions: manifest?.optional_permissions || [],
       enabled,
+      type: this.isThemeManifest(manifest) ? 'theme' : 'extension',
       incognitoAllowed: (
         Application.instance.settings.object.incognitoAllowedExtensions || []
       ).includes(id),
@@ -2360,8 +3674,17 @@ export class SessionsService {
         if (seen.has(dir)) continue;
         const manifest = await this.readManifestForDir(dir);
         if (!manifest) continue;
+        const isActiveTheme =
+          this.isThemeManifest(manifest) &&
+          Application.instance.settings.object.activeChromeTheme?.id === dir &&
+          !(Application.instance.settings.object.disabledExtensions || []).includes(dir);
         tasks.push(
-          this.toExtItem(dir, manifest, resolve(extensionsPath, dir), false),
+          this.toExtItem(
+            dir,
+            manifest,
+            resolve(extensionsPath, dir),
+            isActiveTheme,
+          ),
         );
       }
     } catch (e) {
@@ -2432,6 +3755,10 @@ export class SessionsService {
       this.chromeExtensionsIncognito = new ElectronChromeExtensions(
         this.buildIncognitoExtensionsOptions(),
       );
+      this.installServiceWorkerRecovery(
+        this.chromeExtensionsIncognito,
+        this.viewIncognito,
+      );
       this.attachIncognitoExtensionEvents(this.chromeExtensionsIncognito);
       this.registerExtensionWebRequest(this.chromeExtensionsIncognito);
       Application.instance.windows.list
@@ -2447,7 +3774,7 @@ export class SessionsService {
     for (const extension of loaded) {
       if (allowed.has(extension.id)) continue;
       try {
-        this.viewIncognito.removeExtension(extension.id);
+        await removeSessionExtension(this.viewIncognito, extension.id);
       } catch (error) {
         console.error(`[incognito-ext] failed to unload ${extension.id}`, error);
       }
@@ -2464,6 +3791,8 @@ export class SessionsService {
       const path = resolve(getPath('extensions'), id);
       if (!existsSync(resolve(path, 'manifest.json'))) continue;
       try {
+        const manifest = await this.readManifestForDir(id);
+        if (this.isThemeManifest(manifest)) continue;
         await patchExtensionStorage(path);
         const extension = await this.viewIncognito.loadExtension(path, {
           allowFileAccess: true,
@@ -2490,18 +3819,34 @@ export class SessionsService {
     if (!crx) return;
     const webRequestRouter = (crx as any).ctx?.router;
     const webRequestApi = (crx as any).ctx?.webRequest;
+    if (typeof webRequestApi?.installBeforeRequestListener === 'function') {
+      setWebRequestFallbackInstaller(
+        (crx as any).ctx.session,
+        () => webRequestApi.installBeforeRequestListener(),
+      );
+    }
     if (webRequestRouter) {
-      setWebRequestDispatcher((crx as any).ctx.session, (eventName: string, details: any) => {
-        try {
-          if (webRequestApi?.dispatchChromeEvent) {
-            webRequestApi.dispatchChromeEvent(eventName, details);
-          } else {
-            webRequestRouter.broadcastEvent(`webRequest.${eventName}`, details);
+      const crxContext = (crx as any).ctx;
+      setWebRequestDispatcher(
+        crxContext.session,
+        (eventName: string, details: any) => {
+          try {
+            if (webRequestApi?.dispatchChromeEvent) {
+              webRequestApi.dispatchChromeEvent(eventName, details);
+            } else {
+              webRequestRouter.broadcastEvent(`webRequest.${eventName}`, details);
+            }
+          } catch (err) {
+            console.error('[sessions-service] webRequest dispatch error:', err);
           }
-        } catch (err) {
-          console.error('[sessions-service] webRequest dispatch error:', err);
-        }
-      });
+        },
+        (webContentsId: number) =>
+          crxContext.store?.impl?.resolveTabId?.(webContentsId),
+        typeof webRequestApi?.shouldDispatchChromeEvent === 'function'
+          ? (eventName: string, details: any) =>
+              webRequestApi.shouldDispatchChromeEvent(eventName, details)
+          : undefined,
+      );
     }
     const dnr = (crx as any).ctx?.declarativeNetRequest;
     if (dnr && typeof dnr.decideBeforeRequest === 'function') {
@@ -2514,7 +3859,7 @@ export class SessionsService {
   private async unloadIncognitoExtensionsImpl() {
     for (const extension of this.getIncognitoExtensions()) {
       try {
-        this.viewIncognito.removeExtension(extension.id);
+        await removeSessionExtension(this.viewIncognito, extension.id);
       } catch (error) {
         console.error(`[incognito-ext] failed to unload ${extension.id}`, error);
       }
@@ -2553,10 +3898,20 @@ export class SessionsService {
       assignTabDetails(details: chrome.tabs.Tab) {
         details.incognito = true;
       },
+      resolveTabId(webContentsId: number) {
+        for (const window of Application.instance.windows.list) {
+          if (!window.incognito) continue;
+          const view = window.viewManager.findViewByWebContentsId(webContentsId);
+          if (view) return view.id;
+        }
+        return undefined;
+      },
       createTab(details: any) {
         const appWin = findIncognitoWindow() || Application.instance.windows.open(true);
+        // Keep the Chrome tabs.create active contract in incognito windows too.
+        const createDetails = { ...details, active: details.active !== false }
         const view = appWin.viewManager.create(
-          details,
+          createDetails,
           true,
           true,
         );
@@ -2577,23 +3932,7 @@ export class SessionsService {
         appWin?.viewManager.removeByTabId(tab.id);
       },
       createWindow(details: any) {
-        let appWin: any = Application.instance.windows.list.find(
-          (x) => x.incognito && !x.win.isDestroyed(),
-        );
-        if (!appWin) appWin = Application.instance.windows.open(true);
-        const urls = Array.isArray(details.url)
-          ? details.url
-          : details.url
-            ? [details.url]
-            : [];
-        urls.forEach((u: string, i: number) => {
-          appWin.viewManager.create(
-            {url: u, active: i === urls.length - 1},
-            false,
-            true,
-          );
-        });
-        return appWin.win;
+        return Application.instance.windows.openForExtension(details, true);
       },
       isIncognitoWindow() {
         return true;
@@ -2709,6 +4048,24 @@ export class SessionsService {
     if (!process.env.ENABLE_EXTENSIONS) return false;
     const settings = Application.instance.settings;
     const disabled = new Set(settings.object.disabledExtensions || []);
+    const extensionsPath = getPath('extensions');
+    const path = resolve(extensionsPath, id);
+    const manifest = await this.readManifestForDir(id);
+
+    if (this.isThemeManifest(manifest)) {
+      if (enabled) {
+        return !!this.activateChromeTheme(id, path, manifest);
+      }
+      disabled.add(id);
+      settings.updateSettings({
+        disabledExtensions: [...disabled],
+        activeChromeTheme:
+          settings.object.activeChromeTheme?.id === id
+            ? null
+            : settings.object.activeChromeTheme,
+      });
+      return true;
+    }
 
     if (
       id === RUFFLE_EXTENSION_ID &&
@@ -2723,15 +4080,18 @@ export class SessionsService {
       disabled.delete(id);
       settings.updateSettings({ disabledExtensions: [...disabled] });
       if (this.hasLoadedExtension(id)) {
+        const extension = this.view.getExtension(id);
+        if (extension) {
+          this.saveNewTabUrl(id, extension.manifest, extension);
+        }
         return true;
       }
       try {
-        const extensionsPath = getPath('extensions');
-        const path = resolve(extensionsPath, id);
         await patchExtensionStorage(path);
         const extension = await this.view.loadExtension(path, {
           allowFileAccess: true,
         });
+        this.saveNewTabUrl(id, extension.manifest, extension);
         this.rememberLoadedExtension(extension);
         this.startBackgroundWorker(extension);
         // Re-enabling is a startup-equivalent, NOT an install (Chrome never
@@ -2743,10 +4103,11 @@ export class SessionsService {
           enabledVersion,
         );
         if (enabledInstallDetails) {
-          this.notifyRuntimeInstalled(extension, enabledInstallDetails);
+          await this.queueRuntimeInstalled(extension, enabledInstallDetails);
+        } else {
+          await this.saveRuntimeInstalledState(extension.id, enabledVersion);
         }
-        this.chromeExtensions?.notifyRuntimeStartup(extension.id);
-        await this.saveRuntimeInstalledState(extension.id, enabledVersion);
+        void this.chromeExtensions?.notifyRuntimeStartup(extension.id);
         this.broadcastNormal('load-browserAction', extension);
         if (Application.instance.windows.list.some((window) => window.incognito)) {
           await this.reloadIncognitoExtensions();
@@ -2762,10 +4123,11 @@ export class SessionsService {
     } else {
       disabled.add(id);
       settings.updateSettings({ disabledExtensions: [...disabled] });
+      this.removeExtensionNewTabOverride(id);
       try {
         this.destroyExtensionInspectorHost(id);
         this.extensions = this.extensions.filter((it) => it.id != id);
-        await this.view.removeExtension(id);
+        await removeSessionExtension(this.view, id);
       } catch (e) {
         console.error(e);
       }
@@ -2828,58 +4190,44 @@ export class SessionsService {
   private darknightSyncChain: Promise<void> = Promise.resolve();
 
   // 按生效主题同步 darknight 启用状态。isDark=true→装+启用;false→停用。
-  // reloadOnApply=true 时,仅在 darknight 实际发生启/停切换(状态翻转)后刷新当前网页,
-  // 让 Dark Reader 立即生效/还原——否则已打开的页面要到下次导航才会变。
+  // 仅负责扩展的启停;「刷新当前页让新机制立即生效」由调用方(Settings.update)按需
+  // 调用 reloadCurrentPage(),本方法不再自带 reload。
   // fire-and-forget 调用,内部 catch,绝不向调用方抛错(主题切换不应被扩展故障阻塞)。
-  public syncDarknightForTheme(
-    isDark: boolean,
-    reloadOnApply: boolean = false,
-  ): Promise<void> {
+  public syncDarknightForTheme(isDark: boolean): Promise<void> {
     this.darknightSyncChain = this.darknightSyncChain
-      .then(() => this.doSyncDarknight(isDark, reloadOnApply))
+      .then(() => this.doSyncDarknight(isDark))
       .catch((e) => tlog('syncDarknightForTheme error', e));
     return this.darknightSyncChain;
   }
 
-  private async doSyncDarknight(isDark: boolean, reloadOnApply: boolean) {
+  private async doSyncDarknight(isDark: boolean) {
     if (!process.env.ENABLE_EXTENSIONS) return;
     try {
       const id = await this.resolveDarknightId();
-      // changed:本次调用是否真的翻转了 darknight 的启停状态。用于决定是否刷新当前页。
-      // 幂等调用(状态未变)不会刷新,所以任意设置变更触发的 update() 都是安全的。
-      let changed = false;
       if (isDark) {
-        const wasLoaded = this.hasLoadedExtension(id);
         // 1) 幂等安装(首次暗色 / 被卸载后重新进入暗色)。
         await this.ensureDarknightInstalled();
         // 2) 若仍未装载(被禁用 / 刚安装未自动装 / 启动期被跳过),启用装载。
         //    ensureDarknightInstalled 在新装时会 loadExtension,此分支主要覆盖
         //    「已落盘但处于 disabledExtensions」的回归暗色场景。
         if (!this.hasLoadedExtension(id)) {
-          changed = !!(await this.setExtensionEnabled(id, true));
-        } else {
-          // 首次安装会在 ensureDarknightInstalled() 内直接装载扩展。
-          changed = !wasLoaded;
+          await this.setExtensionEnabled(id, true);
         }
       } else {
         // 浅色:仅在已装载时停用(setExtensionEnabled 会把 id 加入 disabledExtensions,
         // 下次启动 doLoadExtensions 自动跳过)。
         if (this.hasLoadedExtension(id)) {
-          changed = !!(await this.setExtensionEnabled(id, false));
+          await this.setExtensionEnabled(id, false);
         }
-      }
-      // 切换刚发生且由用户实时操作触发:刷新当前网页,让 Dark Reader 立即生效/还原。
-      if (changed && reloadOnApply) {
-        this.reloadCurrentPageForThemeChange();
       }
     } catch (e) {
       console.error('doSyncDarknight 失败', e);
     }
   }
 
-  // 刷新当前窗口的选中网页视图。仅在 darknight 启停切换后调用,确保夜间模式即时生效。
-  // 跳过 about:blank 等无意义目标;webui 页(设置等)若恰好是当前页也会刷新。
-  private reloadCurrentPageForThemeChange() {
+  // 刷新当前窗口的选中网页视图。用于网页暗色模式「实现方式 / 主题」切换后让新机制
+  // (Dark Reader / 浏览器预注入脚本 / 不变色)立即生效。跳过 about:blank 等无意义目标。
+  public reloadCurrentPage() {
     try {
       const win = Application.instance.windows?.current;
       const view = win?.viewManager?.selected;
@@ -2889,7 +4237,7 @@ export class SessionsService {
       if (!u || u === 'about:blank') return;
       wc.reload();
     } catch (e) {
-      tlog('reloadCurrentPageForThemeChange failed', e);
+      tlog('reloadCurrentPage failed', e);
     }
   }
 
@@ -3000,6 +4348,29 @@ export class SessionsService {
     return `${ses === this.viewIncognito ? 'incognito' : 'normal'}:${extId}`;
   }
 
+  /**
+   * Popup pages are short-lived but user-visible. Reloading their extension
+   * while the page is open destroys its renderer and leaves a white/stalled
+   * popup. Recovery may therefore reload only when no live popup for this
+   * extension exists in the target session.
+   */
+  private hasOpenExtensionPopup(
+    ses: Electron.Session,
+    extensionId: string,
+  ): boolean {
+    const prefix = `chrome-extension://${extensionId}/`;
+    try {
+      return Electron.BrowserWindow.getAllWindows().some((win) => {
+        if (!win || win.isDestroyed()) return false;
+        const wc = win.webContents;
+        if (!wc || wc.isDestroyed() || wc.session !== ses) return false;
+        return wc.getURL().startsWith(prefix);
+      });
+    } catch {
+      return false;
+    }
+  }
+
   /** Exact health signal from the service-worker preload IPC event. Unlike
    * serviceWorkers.console-message, this event carries the owning Session and
    * ServiceWorkerMain, so normal/incognito workers with the same extension id
@@ -3011,7 +4382,167 @@ export class SessionsService {
     const extId = this.extIdFromScope(scope || '');
     if (!ses || !extId || (ses !== this.view && ses !== this.viewIncognito)) return;
     const key = this.swContextKey(ses, extId);
+    // `crx-beacon` is diagnostic only. Readiness must come from the explicit
+    // `crx-worker-ready` handshake, which carries the pull-transport protocol
+    // version. Treating this beacon as ready can overwrite protocol 3 with a
+    // legacy protocol and make the host fall back to an unreliable send path.
     tlog(`SW API ready session=${key}`);
+  }
+
+  private installServiceWorkerRecovery(
+    context: ElectronChromeExtensions | null,
+    ses: Electron.Session,
+  ) {
+    context?.setServiceWorkerRecoveryHandler(
+      (extensionId, timeoutMs, provenFailure) =>
+        this.acquireExtensionPopupWorker(
+          ses,
+          extensionId,
+          timeoutMs,
+          provenFailure,
+        ),
+    );
+  }
+
+  /**
+   * Worker acquisition with one bounded, foreground-only reload.
+   * A normally stopped MV3 worker is never considered unhealthy: recovery is
+   * reached only after the hosted bridge failed its explicit readiness probe.
+   */
+  public async acquireExtensionPopupWorker(
+    ses: Electron.Session,
+    extensionId: string,
+    timeoutMs = 8_000,
+    provenFailure = false,
+  ): Promise<(() => void) | undefined> {
+    const context =
+      ses === this.viewIncognito
+        ? this.chromeExtensionsIncognito
+        : this.chromeExtensions;
+    if (!context) return undefined;
+    let firstError: unknown = new Error(
+      `Extension service worker bridge failed: ${extensionId}`,
+    );
+    try {
+      if (!provenFailure) {
+        const release = await context.acquireServiceWorkerRaw(extensionId, timeoutMs);
+        this.swRecoveryCount.delete(this.swContextKey(ses, extensionId));
+        this.swRecoveryCooldown.delete(this.swContextKey(ses, extensionId));
+        return release;
+      }
+    } catch (error) {
+      firstError = error;
+    }
+    // A slow but healthy worker should not be reloaded after one short popup
+    // timeout. The underlying startup promise is coalesced, so this is a bounded
+    // readiness recheck rather than a second worker launch.
+    if (!provenFailure) {
+      try {
+        const release = await context.acquireServiceWorkerRaw(
+          extensionId,
+          Math.max(timeoutMs, SessionsService.SW_RECOVERY_RECHECK_MS),
+        );
+        this.swRecoveryCount.delete(this.swContextKey(ses, extensionId));
+        this.swRecoveryCooldown.delete(this.swContextKey(ses, extensionId));
+        return release;
+      } catch (error) {
+        firstError = error;
+      }
+    }
+    const focusedWindow = Electron.BrowserWindow.getFocusedWindow();
+    const foreground =
+      !!focusedWindow && !focusedWindow.isDestroyed();
+    if (!foreground) throw firstError;
+
+    const key = this.swContextKey(ses, extensionId);
+    const now = Date.now();
+    const count = this.swRecoveryCount.get(key) || 0;
+    const last = this.swRecoveryCooldown.get(key) || 0;
+    if (
+      count >= SessionsService.SW_MAX_RECOVERIES_PER_SESSION ||
+      (last && now - last < SessionsService.SW_RECOVERY_COOLDOWN_MS)
+    ) {
+      throw firstError;
+    }
+
+    // The popup may have been created while the bounded prewarm/recheck was
+    // still in flight. Never tear down a visible popup as a side effect of
+    // background recovery; let its own bridge retry on the next open instead.
+    if (this.hasOpenExtensionPopup(ses, extensionId)) {
+      tlog(`skip SW reload while extension popup is open ext=${extensionId}`);
+      throw firstError;
+    }
+
+    let recovery = this.swRecoveryInFlight.get(key);
+    if (!recovery) {
+      this.swRecoveryCount.set(key, count + 1);
+      this.swRecoveryCooldown.set(key, now);
+      tlog(
+        `SW bridge unhealthy; foreground recovery session=${key} attempt=${count + 1}`,
+      );
+      recovery = this.reloadExtensionForSession(extensionId, ses).finally(() => {
+        this.swRecoveryInFlight.delete(key);
+      });
+      this.swRecoveryInFlight.set(key, recovery);
+    }
+    if (!(await recovery)) throw firstError;
+    const release = await context.acquireServiceWorkerRaw(extensionId, timeoutMs);
+    this.swRecoveryCount.delete(key);
+    this.swRecoveryCooldown.delete(key);
+    return release;
+  }
+
+  /**
+   * Popup-friendly prewarm. A readiness miss must not prevent the popup page
+   * from being created; continue the bounded recovery in the background.
+   */
+  public async prewarmExtensionPopupWorker(
+    ses: Electron.Session,
+    extensionId: string,
+    timeoutMs = 8_000,
+  ): Promise<(() => void) | undefined> {
+    const context =
+      ses === this.viewIncognito
+        ? this.chromeExtensionsIncognito
+        : this.chromeExtensions;
+    if (!context) return undefined;
+    try {
+      return await context.acquireServiceWorkerRaw(extensionId, timeoutMs);
+    } catch (error) {
+      let deferredRelease: (() => void) | undefined;
+      let released = false;
+      void this.acquireExtensionPopupWorker(ses, extensionId, timeoutMs)
+        .then((release) => {
+          if (!release) return;
+          if (released) {
+            release();
+            return;
+          }
+          deferredRelease = release;
+        })
+        .catch((recoveryError) =>
+          tlog(
+            `popup SW background recovery failed ext=${extensionId} error=${String(
+              recoveryError?.message || recoveryError,
+            )}`,
+          ),
+        );
+      tlog(
+        `popup SW prewarm deferred ext=${extensionId} error=${String(
+          error?.message || error,
+        )}`,
+      );
+      // The popup is created immediately after this method returns. Transfer a
+      // late recovery task to that popup's normal close handler instead of
+      // acquiring it in the background and releasing it immediately.
+      return () => {
+        if (released) return;
+        released = true;
+        const release = deferredRelease;
+        deferredRelease = undefined;
+        release?.();
+      };
+    }
   }
 
   private async reloadExtensionForSession(
@@ -3038,12 +4569,13 @@ export class SessionsService {
       ? this.chromeExtensionsIncognito
       : this.chromeExtensions;
     if (incognito && !context) return false;
+    this.setExtensionTransitioning(id, incognito, true);
     try {
       this.destroyExtensionInspectorHost(id);
       const extensionsPath = getPath('extensions');
       const path = resolve(extensionsPath, id);
       try {
-        await ses.removeExtension(id);
+        await removeSessionExtension(ses, id);
       } catch {}
       if (incognito) this.broadcastIncognito('remove-browserAction', id);
       else this.broadcastNormal('remove-browserAction', id);
@@ -3063,10 +4595,23 @@ export class SessionsService {
     } catch (e) {
       console.error(e);
       return false;
+    } finally {
+      this.setExtensionTransitioning(id, incognito, false);
     }
   }
 
   public async reloadExtension(id: string) {
+    const manifest = await this.readManifestForDir(id);
+    if (this.isThemeManifest(manifest)) {
+      if (Application.instance.settings.object.activeChromeTheme?.id !== id) {
+        return true;
+      }
+      return !!this.activateChromeTheme(
+        id,
+        resolve(getPath('extensions'), id),
+        manifest,
+      );
+    }
     return this.reloadExtensionForSession(id, this.view);
   }
 
@@ -3082,17 +4627,11 @@ export class SessionsService {
       if (!(await this.confirmRuffleRemoval('uninstall'))) return false;
       Application.instance.settings.updateSettings({flashSupport: false});
     }
-    const newtab = Application.instance.settings.object.newtab;
-    if (newtab) {
-      let tabs = "";
-      // let tabs = newtab.split("\n").filter(it => !it.includes(id)).join("\n");
-      Application.instance.settings.updateSettings({newtab: tabs});
-      Application.instance.windows.broadcast('update-settings', Application.instance.settings.object);
-    }
+    this.removeExtensionNewTabOverride(id);
 
     await this.queueIncognitoExtensionTask(async () => {
       if (this.viewIncognito.getExtension(id)) {
-        this.viewIncognito.removeExtension(id);
+        await removeSessionExtension(this.viewIncognito, id);
         this.broadcastIncognito('remove-browserAction', id);
       }
     });
@@ -3102,7 +4641,7 @@ export class SessionsService {
     this.destroyExtensionInspectorHost(id);
 
     if (extension) {
-      await this.view.removeExtension(id);
+      await removeSessionExtension(this.view, id);
       await rf(extension.path);
     }
 
@@ -3120,6 +4659,10 @@ export class SessionsService {
     Application.instance.settings.updateSettings({
       disabledExtensions: disabled,
       incognitoAllowedExtensions,
+      activeChromeTheme:
+        Application.instance.settings.object.activeChromeTheme?.id === id
+          ? null
+          : Application.instance.settings.object.activeChromeTheme,
     });
 
     const extensionsPath = getPath('extensions');
@@ -3181,27 +4724,99 @@ export class SessionsService {
     }
   }
 
+  private isExtensionUrlForId(value: string, id: string): boolean {
+    if (!value || !id) return false;
+    try {
+      const parsed = new URL(value);
+      return (
+        parsed.protocol === 'chrome-extension:' &&
+        parsed.hostname.toLowerCase() === id.toLowerCase()
+      );
+    } catch {
+      return value.toLowerCase().startsWith(`chrome-extension://${id.toLowerCase()}/`);
+    }
+  }
+
+  private isSameNewTabPage(value: string, overrideUrl: string): boolean {
+    try {
+      const current = new URL(value);
+      const override = new URL(overrideUrl);
+      return (
+        current.protocol === override.protocol &&
+        current.hostname === override.hostname &&
+        current.pathname === override.pathname
+      );
+    } catch {
+      const base = overrideUrl.split('#')[0].split('?')[0];
+      return value === base || value.startsWith(`${base}#`) || value.startsWith(`${base}?`);
+    }
+  }
+
+  // 移除指定扩展接管的新标签页，并让已经打开的该扩展主页立即回到下一候选主页。
+  // 只按 chrome-extension:// 的 hostname 精确匹配，不能用 includes(id)，避免误删
+  // 用户自定义 URL 中碰巧含有扩展 ID 的页面。
+  private removeExtensionNewTabOverride(id: string): boolean {
+    return this.removeExtensionNewTabOverrides([id]);
+  }
+
+  private removeExtensionNewTabOverrides(ids: string[]): boolean {
+    const extensionIds = ids.filter(Boolean);
+    if (extensionIds.length === 0) return false;
+
+    const application = Application.instance;
+    const current = application.settings.object.newtab || '';
+    const entries = current.split('\n').filter(Boolean);
+    const isOwned = (entry: string) =>
+      extensionIds.some((id) => this.isExtensionUrlForId(entry, id));
+    const removed = entries.filter(isOwned);
+    const remaining = entries.filter((entry) => !isOwned(entry));
+    const tempUrl = application.tempTabUrl;
+    const tempMatches = isOwned(tempUrl);
+
+    if (removed.length === 0 && !tempMatches) return false;
+
+    const next = remaining.join('\n');
+    application.tempTabUrl = '';
+    if (next !== current) {
+      application.settings.updateSettings({newtab: next});
+    }
+    application.windows.broadcast('update-newtab-url', next, '');
+
+    const removedUrls = tempMatches
+      ? [...removed, tempUrl].filter(Boolean)
+      : removed;
+    const fallback = getWebUIURL('newtab');
+    for (const appWindow of application.windows.list) {
+      appWindow.viewManager.views.forEach((view) => {
+        const currentUrl = view.webContents.getURL();
+        if (removedUrls.some((entry) => this.isSameNewTabPage(currentUrl, entry))) {
+          view.load(fallback);
+        }
+      });
+    }
+    return true;
+  }
+
   // 若扩展声明了 chrome_url_overrides.newtab,把它登记为新标签页地址。
-  // (原为 SessionsService 构造函数内的局部函数,提升为方法以便安装/更新链路共用。)
+  // 启用、安装和更新共用此方法；写入前先移除同扩展旧值，避免重复堆叠。
   private saveNewTabUrl(id: string, manifest: any, extension: Electron.Extension) {
     if (extension && manifest.chrome_url_overrides) {
-      let newtab = manifest.chrome_url_overrides.newtab;
-      if (newtab) {
-        newtab = "chrome-extension://" + id + "/" + newtab;
-        let tabs0 = Application.instance.settings.object.newtab;
-        if (tabs0) {
-          let tabs1 = tabs0.split("\n");
-          tabs1.unshift(newtab);
-          tabs0 = tabs1.join("\n");
-        } else {
-          tabs0 = newtab;
-        }
-        //这里加载的url和记忆的不一样，不知道为什么重启软件和这里得到的id和url不一样
-        let nowTabUrl = "chrome-extension://" + extension.id + "/" + manifest.chrome_url_overrides.newtab;
-        console.log('update-newtab-url', newtab, nowTabUrl);
-        Application.instance.settings.updateSettings({newtab: tabs0});
-        Application.instance.windows.broadcast('update-newtab-url', tabs0, nowTabUrl);
-        Application.instance.tempTabUrl = nowTabUrl;
+      const overridePath = manifest.chrome_url_overrides.newtab;
+      if (overridePath) {
+        // Electron 实际注册协议时使用 extension.id；持久化也必须使用这个 ID，
+        // 否则应用重启、tempTabUrl 消失后可能访问一个不存在的扩展 origin。
+        const extensionId = extension.id || id;
+        const newtab = `chrome-extension://${extensionId}/${String(overridePath).replace(/^\/+/, '')}`;
+        const current = Application.instance.settings.object.newtab || '';
+        const remaining = current
+          .split('\n')
+          .filter(Boolean)
+          .filter((entry) => !this.isExtensionUrlForId(entry, extensionId));
+        const tabs = [newtab, ...remaining].join('\n');
+        console.log('update-newtab-url', newtab);
+        Application.instance.settings.updateSettings({newtab: tabs});
+        Application.instance.windows.broadcast('update-newtab-url', tabs, newtab);
+        Application.instance.tempTabUrl = newtab;
       }
     }
   }
@@ -3224,6 +4839,116 @@ export class SessionsService {
     Application.instance.settings.updateSettings({
       pinnedExtensions: [...existing, extensionId],
     });
+  }
+
+  private async getInstalledExtensionIds(): Promise<Set<string>> {
+    const ids = new Set(this.extensions.map((extension) => extension.id));
+    const extensionsPath = getPath('extensions');
+    try {
+      const entries = await promises.readdir(extensionsPath, {
+        withFileTypes: true,
+      });
+      entries.forEach((entry) => {
+        if (entry.isDirectory() && /^[a-p]{32}$/i.test(entry.name)) {
+          ids.add(entry.name.toLowerCase());
+        }
+      });
+    } catch {}
+    return ids;
+  }
+
+  private async scanBrowserExtensionImports(
+    selectDirectory: boolean,
+  ): Promise<IBrowserExtensionImportScan> {
+    let customRoot: string | undefined;
+    if (selectDirectory) {
+      const result = await dialog.showOpenDialog({
+        title: '选择 Chrome、Edge 数据目录或 Extensions 目录',
+        properties: ['openDirectory'],
+      });
+      if (result.canceled || !result.filePaths[0]) {
+        return {
+          canceled: true,
+          detected: false,
+          duplicateCount: 0,
+          items: [],
+          sources: [],
+        };
+      }
+      customRoot = result.filePaths[0];
+    }
+
+    const result = await scanBrowserExtensions(
+      await this.getInstalledExtensionIds(),
+      customRoot,
+    );
+    this.browserExtensionImportCandidates = result.candidates;
+    return result.scan;
+  }
+
+  private async importBrowserExtensions(
+    keys: string[],
+  ): Promise<IBrowserExtensionImportResult> {
+    const result: IBrowserExtensionImportResult = {
+      imported: [],
+      skipped: 0,
+      failed: [],
+    };
+    const uniqueKeys = [...new Set((keys || []).filter(Boolean))];
+    const extensionsPath = getPath('extensions');
+
+    for (const key of uniqueKeys) {
+      const candidate = this.browserExtensionImportCandidates.get(key);
+      if (!candidate) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const installPath = resolve(extensionsPath, candidate.id);
+      const alreadyInstalled =
+        (await pathExists(installPath)) || !!this.view.getExtension(candidate.id);
+      if (alreadyInstalled) {
+        result.skipped += 1;
+        this.browserExtensionImportCandidates.delete(key);
+        continue;
+      }
+
+      try {
+        const extension = await this.installExtensionFromDirectorySource(
+          candidate.sourcePath,
+          false,
+          true,
+          candidate.sourceSeed,
+        );
+        if (!extension) {
+          result.skipped += 1;
+          continue;
+        }
+        this.broadcastInstalledExtension(extension);
+        result.imported.push({id: extension.id, name: extension.name});
+        this.browserExtensionImportCandidates.delete(key);
+      } catch (error) {
+        const loaded = this.view.getExtension(candidate.id);
+        if (loaded) {
+          this.broadcastInstalledExtension(loaded);
+          result.imported.push({id: loaded.id, name: loaded.name});
+          this.browserExtensionImportCandidates.delete(key);
+          continue;
+        }
+        // 现有目录安装器会先复制再加载；加载失败时清掉本次新建的半成品。
+        try {
+          if (await pathExists(installPath)) await rf(installPath);
+        } catch {}
+        result.failed.push({
+          key,
+          name: candidate.name,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        console.error('browser extension import failed', candidate.sourcePath, error);
+      }
+    }
+
+    return result;
   }
 
   // 解压 crx(含 publicKey)到 data/extensions/<id>/、修补 storage、加载并启动后台。
@@ -3255,7 +4980,6 @@ export class SessionsService {
     }
 
     await extractZip(crxInfo.zip, path);
-    await patchExtensionStorage(path);
     const manifest = JSON.parse(
       await promises.readFile(manifestPath, 'utf8'),
     );
@@ -3269,6 +4993,19 @@ export class SessionsService {
       }
     }
 
+    if (this.isThemeManifest(manifest)) {
+      const themeExtension = this.activateChromeTheme(
+        crxInfo.id,
+        path,
+        manifest,
+      );
+      if (!themeExtension) throw new Error('Chrome 主题清单无有效主题字段');
+      return themeExtension;
+    }
+
+    this.clearChromeTheme(crxInfo.id);
+    await patchExtensionStorage(path);
+
     const extension = await this.view.loadExtension(path, {allowFileAccess: true});
     console.log(extension);
     if (manifest) {
@@ -3279,12 +5016,13 @@ export class SessionsService {
       this.pinExtensionOnInstall(extension.id);
     }
     this.startBackgroundWorker(extension);
-    this.notifyRuntimeInstalled(extension, this.buildInstalledDetails(previousVersion));
-    await this.saveRuntimeInstalledState(extension.id, manifest?.version);
+    const installDetails = this.buildInstalledDetails(previousVersion);
+    await this.queueRuntimeInstalled(extension, installDetails);
     return extension;
   }
 
   private broadcastInstalledExtension(extension: Electron.Extension) {
+    if (this.isThemeManifest((extension as any)?.manifest)) return;
     this.broadcastNormal('load-browserAction', extension);
   }
 
@@ -3292,8 +5030,23 @@ export class SessionsService {
     extension: Electron.Extension,
     details: chrome.runtime.InstalledDetails,
   ) {
+    const version = (extension?.manifest as any)?.version;
     try {
-      this.chromeExtensions?.notifyRuntimeInstalled(extension.id, details);
+      const delivery =
+        this.chromeExtensions?.notifyRuntimeInstalled(extension.id, details) ||
+        Promise.resolve(false);
+      void delivery
+        .then((delivered) => {
+          if (!delivered || !version) return;
+          return this.markRuntimeInstalledDelivered(
+            extension.id,
+            version,
+            details,
+          );
+        })
+        .catch((e) => {
+          console.error('notifyRuntimeInstalled delivery failed', extension?.id, e);
+        });
     } catch (e) {
       console.error('notifyRuntimeInstalled failed', extension?.id, e);
     }
@@ -3518,6 +5271,17 @@ export class SessionsService {
       );
     }
 
+    if (this.isThemeManifest(manifest)) {
+      const themeExtension = this.activateChromeTheme(
+        extensionId,
+        installPath,
+        manifest,
+      );
+      if (!themeExtension) throw new Error('Chrome 主题清单无有效主题字段');
+      return themeExtension;
+    }
+
+    this.clearChromeTheme(extensionId);
     await patchExtensionStorage(installPath);
     const extension = await this.view.loadExtension(installPath, {
       allowFileAccess: true,
@@ -3529,8 +5293,8 @@ export class SessionsService {
       this.pinExtensionOnInstall(extension.id);
     }
     this.startBackgroundWorker(extension);
-    this.notifyRuntimeInstalled(extension, this.buildInstalledDetails(previousVersion));
-    await this.saveRuntimeInstalledState(extension.id, manifest?.version);
+    const installDetails = this.buildInstalledDetails(previousVersion);
+    await this.queueRuntimeInstalled(extension, installDetails);
     return extension;
   }
 
@@ -3619,19 +5383,37 @@ export class SessionsService {
       // relative to the extension dir.
       if (/^chrome-extension:\/\//i.test(path)) {
         try {
-          path = decodeURIComponent(new url.URL(path).pathname).replace(
-            /^\/+/,
-            '',
-          );
+          const iconUrl = new url.URL(path);
+          if (iconUrl.hostname !== extensionId) return null;
+          path = decodeURIComponent(iconUrl.pathname);
         } catch (e) {
-          /* fall through with original */
+          return null;
         }
       }
 
       const extension = this.view.getExtension(extensionId);
       if (!extension) return null;
 
-      const filePath = resolve(extension.path, path);
+      // Chrome treats a leading slash as extension-root-relative. Node's
+      // path.resolve treats it as drive-root-relative on Windows, which turned
+      // /icons/foo.png into E:\\icons\\foo.png. Normalize it and reject any
+      // traversal/absolute path that would escape the extension directory.
+      path = path.replace(/^[\\/]+/, '');
+      if (!path) return null;
+      const extensionRoot = resolve(extension.path);
+      const filePath = resolve(extensionRoot, path);
+      const relativePath = relative(extensionRoot, filePath);
+      if (
+        !relativePath ||
+        relativePath === '..' ||
+        relativePath.startsWith(`..${sep}`) ||
+        isAbsolute(relativePath)
+      ) {
+        tlog(
+          `resolveActionIcon: rejected path outside extension ${extensionId}: ${path}`,
+        );
+        return null;
+      }
       const data = await promises.readFile(filePath);
       const ext = extname(filePath).slice(1).toLowerCase();
       const mime =

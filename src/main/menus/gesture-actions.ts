@@ -136,26 +136,92 @@ export const GESTURE_LABELS: { [actionId: string]: string } = (() => {
   return m;
 })();
 
+export const LEFT_GESTURE_ACTIONS = [
+  {id: 'copy', label: '复制到剪贴板'},
+  {id: 'download', label: '下载链接文件'},
+  {id: 'open-left', label: '在标签页左侧打开'},
+  {id: 'open-right', label: '在标签页右侧打开'},
+  {id: 'open-left-background', label: '在标签页左侧后台打开'},
+  {id: 'open-right-background', label: '在标签页右侧后台打开'},
+];
+
+const GESTURE_ACTION_IDS = new Set(GESTURE_ACTIONS.map((item) => item.id));
+
+const LEFT_GESTURE_ACTION_IDS = new Set(LEFT_GESTURE_ACTIONS.map((item) => item.id));
+
+export const resolveLeftGestures = (
+  gestures?: { [direction: string]: string | null },
+): { [direction: string]: string | null } => {
+  const defaults: { [direction: string]: string } = {
+    U: 'copy',
+    D: 'download',
+    L: 'open-left-background',
+    R: 'open-right-background',
+  };
+  const map: { [direction: string]: string | null } = {};
+  for (const direction of ['U', 'D', 'L', 'R']) {
+    const value = Object.prototype.hasOwnProperty.call(gestures || {}, direction)
+      ? gestures?.[direction]
+      : defaults[direction];
+    map[direction] = value && LEFT_GESTURE_ACTION_IDS.has(value) ? value : null;
+  }
+  return map;
+};
+
+export const resolveSideButtons = (
+  buttons?: { [button: string]: string | null },
+): { [button: string]: string | null } => {
+  const defaults: { [button: string]: string } = {'3': 'back', '4': 'forward'};
+  const map: { [button: string]: string | null } = {};
+  for (const button of ['3', '4']) {
+    const value = Object.prototype.hasOwnProperty.call(buttons || {}, button)
+      ? buttons?.[button]
+      : defaults[button];
+    map[button] = value && GESTURE_ACTION_IDS.has(value) ? value : null;
+  }
+  return map;
+};
+
 // 下发给网页 preload 的配置快照。
 export interface GestureConfig {
   enabled: boolean;
+  leftEnabled: boolean;
   color: string;
   // shape -> actionId
   map: { [shape: string]: string };
   // actionId -> 中文标签
   labels: { [actionId: string]: string };
+  leftThreshold: number;
+  leftMap: { [direction: string]: string | null };
+  leftLabels: { [actionId: string]: string };
+  sideButtons: { [button: string]: string | null };
 }
 
 export const buildGestureConfig = (s: {
   mouseGesturesEnabled?: boolean;
+  mouseLeftGesturesEnabled?: boolean;
   mouseGestureColor?: string;
   mouseGestures?: { [actionId: string]: string | null };
+  mouseLeftGestureThreshold?: number;
+  mouseLeftGestures?: { [direction: string]: string | null };
+  mouseSideButtons?: { [button: string]: string | null };
 }): GestureConfig => ({
   enabled: s.mouseGesturesEnabled !== false,
+  leftEnabled: s.mouseLeftGesturesEnabled !== false,
   color:
     typeof s.mouseGestureColor === 'string' && s.mouseGestureColor
       ? s.mouseGestureColor
       : '#3b82f6',
   map: resolveGestures(s.mouseGestures || {}),
   labels: GESTURE_LABELS,
+  leftThreshold:
+    typeof s.mouseLeftGestureThreshold === 'number'
+      ? Math.max(8, Math.min(200, Math.round(s.mouseLeftGestureThreshold)))
+      : 24,
+  leftMap: resolveLeftGestures(s.mouseLeftGestures),
+  leftLabels: LEFT_GESTURE_ACTIONS.reduce((map, item) => {
+    map[item.id] = item.label;
+    return map;
+  }, {} as { [actionId: string]: string }),
+  sideButtons: resolveSideButtons(s.mouseSideButtons),
 });

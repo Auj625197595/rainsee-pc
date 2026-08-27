@@ -10,7 +10,7 @@ const V_PADDING = 12;
 const MAX_HEIGHT = 420;
 
 // 地址栏左侧「搜索引擎切换」下拉。独立 BrowserView,覆盖在网页内容之上。
-// 持久弹窗(启动预热),show 时 waitForLoad=false 立即定位,避免每次重载的延迟。
+// 持久弹窗,首次点击时创建并在隐藏后自动回收。
 export class SearchEnginesDialog extends PersistentDialog {
   private pos = { x: 0, y: 0 };
 
@@ -49,9 +49,7 @@ export class SearchEnginesDialog extends PersistentDialog {
   public async open(browserWindow: BrowserWindow, x: number, y: number) {
     this.pos = { x, y };
 
-    // waitForLoad 动态:已加载(hover 预加载过或上次未销毁)则秒开;未加载(销毁重建后
-    // 首次,且没 hover 预加载)则等 dom-ready 避免白屏闪现。
-    await super.show(browserWindow, true, this.isLoaded ? false : true);
+    if (!(await super.show(browserWindow, true))) return;
 
     browserWindow.removeListener('resize', this.onBoundsUpdate);
     browserWindow.removeListener('move', this.onBoundsUpdate);

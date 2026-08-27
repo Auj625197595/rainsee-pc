@@ -1,16 +1,24 @@
 import {app, BrowserWindow, ipcMain, shell} from 'electron';
 import {join} from 'path';
 import {pathToFileURL} from 'url';
-import {existsSync, writeFileSync} from 'fs';
+import {existsSync, statSync, unlinkSync, writeFileSync} from 'fs';
 
+import {
+  PROFILE_ONBOARDING_SKIPPED_NOTICE,
+  PROFILE_ONBOARDING_SKIPPED_NOTICE_SHOWN,
+} from '~/common/profiles';
 import {getPath} from '~/utils';
 import {Application} from './application';
+import {activeProfileName} from './bootstrap-paths';
 
 // userData 下的标志文件：存在即表示已完成引导。完全同步读写，可在 onReady 早期判断，
 // 不依赖 settings 服务的 async load()。仿 device-info.ts 的 devid 模式。
 const ONBOARDING_FLAG = 'onboarding-done';
 
 const isDev = () => process.env.NODE_ENV === 'development';
+
+let onboardingWindow: BrowserWindow | null = null;
+let onboardingPromise: Promise<'continue' | 'quit'> | null = null;
 
 /** 仅首次启动需要引导（标志文件不存在）。 */
 export const isOnboardingNeeded = (): boolean => {
@@ -36,13 +44,24 @@ const markOnboardingDone = () => {
  * 时序：由 application.onReady 在 sessions 创建后、windows.open() 前 await 调用，
  * 故 updateSettings 时 sessions 已就绪（update() 会装配广告拦截/主题等）。
  */
-export const showOnboarding = (): Promise<'continue' | 'quit'> => {
-  return new Promise<'continue' | 'quit'>((resolve) => {
+export const showOnboarding = (
+  options: {manual?: boolean} = {},
+): Promise<'continue' | 'quit'> => {
+  if (onboardingWindow && !onboardingWindow.isDestroyed() && onboardingPromise) {
+    onboardingWindow.show();
+    onboardingWindow.focus();
+    return onboardingPromise;
+  }
+
+  const manual = !!options.manual;
+  onboardingPromise = new Promise<'continue' | 'quit'>((resolve) => {
     let resolved = false;
     let shouldQuit = false;
     const done = () => {
       if (!resolved) {
         resolved = true;
+        onboardingWindow = null;
+        onboardingPromise = null;
         resolve(shouldQuit ? 'quit' : 'continue');
       }
     };
@@ -72,6 +91,7 @@ export const showOnboarding = (): Promise<'continue' | 'quit'> => {
         enableWebSQL: false,
       },
     });
+    onboardingWindow = win;
 
     try {
       require('@electron/remote/main').enable(win.webContents);
@@ -79,9 +99,12 @@ export const showOnboarding = (): Promise<'continue' | 'quit'> => {
       console.error('[onboarding] enable @electron/remote failed', e);
     }
 
-    const url = isDev()
-      ? 'http://localhost:4444/onboarding.html'
-      : pathToFileURL(join(app.getAppPath(), 'build', 'onboarding.html')).href;
+    const url = new URL(
+      isDev()
+        ? 'http://localhost:4444/onboarding.html'
+        : pathToFileURL(join(app.getAppPath(), 'build', 'onboarding.html')).href,
+    );
+    if (manual) url.searchParams.set('manual', '1');
 
     // 协议弹窗用 iframe 加载外部协议页,移除响应里的 X-Frame-Options / CSP frame
     // 限制,避免被拒嵌套而白屏。仅作用于引导窗的独立 partition session。
@@ -109,7 +132,7 @@ export const showOnboarding = (): Promise<'continue' | 'quit'> => {
       console.error('[onboarding] onHeadersReceived setup failed', e);
     }
 
-    win.loadURL(url);
+    win.loadURL(url.href);
 
     win.once('ready-to-show', () => {
       try {
@@ -149,6 +172,10 @@ export const showOnboarding = (): Promise<'continue' | 'quit'> => {
     ipcMain.once('onboarding-complete', onComplete);
 
     const onExit = () => {
+      if (manual) {
+        win.close();
+        return;
+      }
       shouldQuit = true;
       try {
         app.quit();
@@ -159,6 +186,9 @@ export const showOnboarding = (): Promise<'continue' | 'quit'> => {
     };
     ipcMain.once('onboarding-exit', onExit);
 
+    const onClose = () => win.close();
+    ipcMain.once('onboarding-close', onClose);
+
     // 窗口关闭（完成路径或强关均会到这里）：清理 IPC 监听并放行主流程。
     win.on('closed', () => {
       try {
@@ -168,9 +198,52 @@ export const showOnboarding = (): Promise<'continue' | 'quit'> => {
         ipcMain.removeListener('onboarding-exit', onExit);
       } catch {}
       try {
+        ipcMain.removeListener('onboarding-close', onClose);
+      } catch {}
+      try {
         ipcMain.removeHandler('onboarding-open-external');
       } catch {}
       done();
     });
   });
+
+  return onboardingPromise;
 };
+
+ipcMain.handle('show-onboarding', async () => {
+  await showOnboarding({manual: true});
+  return true;
+});
+
+ipcMain.handle('consume-profile-onboarding-skipped-notice', () => {
+  if (!activeProfileName) return false;
+
+  const noticePath = getPath(PROFILE_ONBOARDING_SKIPPED_NOTICE);
+  const noticeShownPath = getPath(PROFILE_ONBOARDING_SKIPPED_NOTICE_SHOWN);
+  if (!noticePath || !noticeShownPath || existsSync(noticeShownPath)) {
+    return false;
+  }
+
+  // 兼容由旧主进程创建的小号：创建流程写入的是空 onboarding-done，
+  // 用户实际完成或跳过引导后，该文件会包含完成时间戳。
+  const onboardingPath = getPath(ONBOARDING_FLAG);
+  let onboardingWasSkipped = existsSync(noticePath);
+  if (!onboardingWasSkipped && onboardingPath && existsSync(onboardingPath)) {
+    try {
+      onboardingWasSkipped = statSync(onboardingPath).size === 0;
+    } catch {}
+  }
+  if (!onboardingWasSkipped) return false;
+
+  try {
+    writeFileSync(noticeShownPath, String(Date.now()), 'utf8');
+  } catch (error) {
+    console.error('[onboarding] consume profile skipped notice failed', error);
+    return false;
+  }
+
+  try {
+    if (existsSync(noticePath)) unlinkSync(noticePath);
+  } catch {}
+  return true;
+});

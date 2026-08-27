@@ -7,7 +7,7 @@ import { getViewBackgroundColor } from '../utils/theme';
 import { PanelLoadingHide } from '../utils/panel-loading-hide';
 import { getViewMenu } from '../menus/view';
 import { injectPanelThemeMode } from '../utils/night-mode-inject';
-import { postBodyToLoadOptions } from '../utils/post-body';
+import { windowOpenToLoadOptions } from '../utils/window-open';
 
 // 双引擎搜索侧边栏顶部告知条高度(px)。其下才是副引擎结果页。
 export const SECONDARY_SEARCH_HEADER_HEIGHT = 36;
@@ -120,7 +120,7 @@ export class SecondarySearchPanel {
     // 面板内 window.open / target=_blank → 交给主浏览器开新标签。
     wc.setWindowOpenHandler((details) => {
       if (details.url && details.url !== 'about:blank') {
-        const loadOptions = postBodyToLoadOptions(details.postBody);
+        const loadOptions = windowOpenToLoadOptions(details);
         queueMicrotask(() => {
           this.window.viewManager.create(
             { url: details.url, active: true, loadOptions } as any,

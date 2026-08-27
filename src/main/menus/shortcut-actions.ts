@@ -216,6 +216,39 @@ export const SHORTCUT_ACTIONS: ShortcutAction[] = [
     category: 'tools',
     defaults: ['CmdOrCtrl+Shift+I', 'CmdOrCtrl+Shift+J', 'F12'],
   },
+  {
+    id: 'screenshot',
+    label: '截图',
+    category: 'tools',
+    defaults: ['CmdOrCtrl+Shift+X'],
+  },
+  {
+    id: 'boss-key',
+    label: '老板键',
+    category: 'tools',
+    defaults: ['Ctrl+`'],
+  },
+  // —— 标签栏整理(工具箱「整理标签栏」子菜单三项的快捷键)——
+  // 动作执行在 renderer 的 LayoutSwitcher,主进程隐藏菜单项只经
+  // organize-tabs IPC 把动作名转过去;defaults 与 main.ts 的 accelerator 逐字一致。
+  {
+    id: 'deduplicate-tabs',
+    label: '标签去重',
+    category: 'tools',
+    defaults: ['CmdOrCtrl+Shift+D'],
+  },
+  {
+    id: 'group-tabs-by-domain',
+    label: '按域名分组标签',
+    category: 'tools',
+    defaults: ['CmdOrCtrl+Shift+G'],
+  },
+  {
+    id: 'group-tabs-with-ai',
+    label: 'AI 智能分组标签',
+    category: 'tools',
+    defaults: ['CmdOrCtrl+Shift+A'],
+  },
 ];
 
 // 工具:把 settings.json 里持久化的覆盖映射合并到注册表默认值上,返回每个动作

@@ -67,9 +67,9 @@ export const buildKoodoReaderUrl = (filePath: string): string | null => {
   return `${WEBUI_PROTOCOL}://web.koodoreader.com/#/${ext}?filePath=${encoded}`;
 };
 
-// 反向:file:/// URL → 本地路径(Windows 反斜杠)。
+// 反向:file:/// URL → 本地路径(Windows 反斜杠)。URL 解析会剥离查询参数和锚点。
 export const filePathFromFileUrl = (url: string): string =>
-  decodeURIComponent(url.replace(/^file:\/\/\//, '')).replace(/\//g, '\\');
+  decodeURIComponent(new URL(url).pathname.replace(/^\//, '')).replace(/\//g, '\\');
 
 export const FILES = {
   'settings.json': DEFAULT_SETTINGS,

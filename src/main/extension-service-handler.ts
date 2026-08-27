@@ -1,5 +1,5 @@
 import { RpcMainEvent, RpcMainHandler } from '~/common/rpc/electron';
-import { session, webContents } from 'electron';
+import { webContents } from 'electron';
 import {
   extensionMainChannel,
   ExtensionMainService,
@@ -13,22 +13,36 @@ export class ExtensionServiceHandler
     extensionMainChannel.getReceiver().handler = this;
   }
 
-  inspectBackgroundPage(e: RpcMainEvent, id: string): void {
-    const hostOf = (wc: Electron.WebContents): string => {
-      try {
-        const url = wc.getURL();
-        return url ? new URL(url).hostname : '';
-      } catch {
-        return '';
+  async inspectBackgroundPage(e: RpcMainEvent, id: string): Promise<void> {
+    const sessions = Application.instance.sessions;
+    const extension = sessions.getLoadedExtension(id);
+    const manifest = extension?.manifest;
+
+    if (manifest?.manifest_version === 3 && manifest.background?.service_worker) {
+      // MV3 extensions do not have a persistent background WebContents. Route
+      // them through the service-worker inspector used by the details view.
+      const result = await sessions.inspectExtensionTarget(id, 'service-worker');
+      if (!result.ok) {
+        console.warn('[extension-inspect] service worker unavailable', id, result.message);
       }
-    };
-    webContents
-      .getAllWebContents()
-      .find(
-        (x) =>
-          x.session === Application.instance.sessions.view &&
-          hostOf(x) === id,
-      )?.openDevTools({ mode: 'detach' });
+      return;
+    }
+
+    // Keep MV2 support for extensions that still expose a generated background
+    // page. Their background page is a regular WebContents.
+    const target = webContents.getAllWebContents().find((wc) => {
+      if (wc.session !== sessions.view) return false;
+      try {
+        return new URL(wc.getURL()).hostname === id;
+      } catch {
+        return false;
+      }
+    });
+    if (target && !target.isDestroyed()) {
+      target.openDevTools({ mode: 'detach' });
+    } else {
+      console.warn('[extension-inspect] background page unavailable', id);
+    }
   }
 
   async uninstall(e: RpcMainEvent, id: string): Promise<boolean> {

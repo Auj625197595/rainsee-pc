@@ -1,12 +1,39 @@
 import { protocol } from 'electron';
-import { join, normalize } from 'path';
-import { createReadStream, existsSync } from 'fs';
+import { randomUUID } from 'crypto';
+import { join, normalize, resolve, relative, isAbsolute } from 'path';
+import { createReadStream, existsSync, realpathSync, statSync } from 'fs';
 import { parse } from 'url';
-import { ERROR_PROTOCOL, WEBUI_PROTOCOL, buildKoodoReaderUrl, filePathFromFileUrl } from '~/constants/files';
+import { ERROR_PROTOCOL, WEBUI_PROTOCOL, buildKoodoReaderUrl, filePathFromFileUrl, getFileExt } from '~/constants/files';
 import {
   LOCAL_IMAGE_HOST,
   resolveLocalImageToken,
 } from '../services/local-image-registry';
+import {getPath} from '~/utils';
+
+const THEME_ASSET_HOST = 'theme-assets';
+
+// 打印预览 PDF 只在内存中保存，窗口关闭后立即释放。使用独立协议而非 file://，
+// 避免被本项目的本地电子书重定向规则交给 KoodoReader。
+export const PRINT_PREVIEW_PROTOCOL = 'yjllq-print-preview';
+const PRINT_PREVIEW_HOST = 'document';
+const printPreviewDocuments = new Map<string, Buffer>();
+
+export const createPrintPreviewUrl = (data: Buffer): string => {
+  const id = randomUUID();
+  printPreviewDocuments.set(id, data);
+  return `${PRINT_PREVIEW_PROTOCOL}://${PRINT_PREVIEW_HOST}/${id}.pdf`;
+};
+
+export const releasePrintPreviewUrl = (url: string) => {
+  try {
+    const parsed = parse(url);
+    if (parsed.hostname !== PRINT_PREVIEW_HOST) return;
+    const id = (parsed.pathname || '').replace(/^\//, '').replace(/\.pdf$/i, '');
+    printPreviewDocuments.delete(id);
+  } catch {
+    // 窗口清理不应因 URL 解析异常而中断
+  }
+};
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -51,9 +78,71 @@ protocol.registerSchemesAsPrivileged([
       codeCache: true
     },
   },
+  {
+    scheme: PRINT_PREVIEW_PROTOCOL,
+    privileges: {
+      standard: true,
+      secure: true,
+      stream: true,
+    },
+  },
 ]);
 
+// file:// 非电子书资源按扩展名直给 MIME。
+// 不给 mimeType 时 Chromium 嗅探 Content-Type,在 persist:view 扩展会话下会把
+// SVG 等子资源误判为 text/html → <img> naturalWidth=0(见 view-preload 的
+// installLocalSvgImageFallback,本处是根因修复)。未命中扩展名回落 undefined,
+// 保留旧行为(嗅探),避免对未覆盖类型回归。
+const MIME_BY_EXT: Record<string, string> = {
+  htm: 'text/html',
+  html: 'text/html',
+  svg: 'image/svg+xml',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+  css: 'text/css',
+  js: 'text/javascript',
+  mjs: 'text/javascript',
+  json: 'application/json',
+  xml: 'application/xml',
+  txt: 'text/plain',
+  woff: 'font/woff',
+  woff2: 'font/woff2',
+  ttf: 'font/ttf',
+  otf: 'font/otf',
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+  ogg: 'application/ogg',
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  flac: 'audio/flac',
+  pdf: 'application/pdf',
+};
+
 export const registerProtocol = (session: Electron.Session) => {
+  // BrowserWindow 的默认会话和网页标签的隔离会话都会走这里注册。PDF 数据不落地，
+  // 仅允许由 createPrintPreviewUrl 创建的随机 URL 读取。
+  if (!session.protocol.isProtocolRegistered(PRINT_PREVIEW_PROTOCOL)) {
+    session.protocol.registerBufferProtocol(
+      PRINT_PREVIEW_PROTOCOL,
+      (request, callback) => {
+        const parsed = parse(request.url);
+        if (parsed.hostname !== PRINT_PREVIEW_HOST) {
+          callback({ error: -6 });
+          return;
+        }
+
+        const id = (parsed.pathname || '').replace(/^\//, '').replace(/\.pdf$/i, '');
+        const data = printPreviewDocuments.get(id);
+        callback(data ? { data, mimeType: 'application/pdf' } : { error: -6 });
+      },
+    );
+  }
+
   session.protocol.registerFileProtocol(
     ERROR_PROTOCOL,
     (request, callback: any) => {
@@ -94,6 +183,7 @@ export const registerProtocol = (session: Electron.Session) => {
       if (existsSync(localPath)) {
         callback({
           data: createReadStream(localPath),
+          mimeType: MIME_BY_EXT[getFileExt(localPath)],
         });
         return;
       }
@@ -120,6 +210,37 @@ export const registerProtocol = (session: Electron.Session) => {
           return callback({path: localImagePath});
         }
         return callback({error: -6});
+      }
+
+      // Theme resources use a read-only host and stay inside their extension.
+      // realpathSync also prevents a symlink/junction from escaping that root.
+      if (parsed.hostname === THEME_ASSET_HOST) {
+        try {
+          const parts = (parsed.pathname || '')
+            .split('/')
+            .filter(Boolean)
+            .map((part) => decodeURIComponent(part));
+          const id = parts.shift() || '';
+          if (!/^[a-p]{32}$/.test(id) || parts.length === 0) {
+            return callback({error: -6});
+          }
+          const extensionRoot = realpathSync(
+            resolve(getPath('extensions'), id),
+          );
+          const assetPath = realpathSync(resolve(extensionRoot, ...parts));
+          const rel = relative(extensionRoot, assetPath);
+          if (
+            !rel ||
+            rel.startsWith('..') ||
+            isAbsolute(rel) ||
+            !statSync(assetPath).isFile()
+          ) {
+            return callback({error: -6});
+          }
+          return callback({path: assetPath});
+        } catch {
+          return callback({error: -6});
+        }
       }
 
       // koodoreader 阅读器:相对资源解析回 yjllq://web.koodoreader.com/...,

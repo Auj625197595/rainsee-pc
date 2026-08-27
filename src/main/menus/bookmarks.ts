@@ -1,4 +1,5 @@
 import {
+  clipboard,
   Menu,
   nativeImage,
   NativeImage,
@@ -6,11 +7,29 @@ import {
   app,
 } from 'electron';
 import { join } from 'path';
-import { IBookmark } from '~/interfaces';
+import { BookmarkBarDisplay, IBookmark } from '~/interfaces';
 import { getIconByUrlNet, parseBookmarklet } from '~/utils/url';
 import { Application } from '../application';
 import { AppWindow } from '../windows/app';
 import { AddBookmarkDialog } from '../dialogs/add-bookmark';
+import { getWebUIURL } from '~/common/webui-main';
+import { normalizeBookmarkBarDisplay } from '~/common/bookmark-bar';
+
+type BookmarkClipboard = {
+  mode: 'cut' | 'copy';
+  ids: string[];
+  copies?: BookmarkSnapshot[];
+};
+
+type BookmarkSnapshot = {
+  title?: string;
+  url?: string;
+  favicon?: string;
+  isFolder?: boolean;
+  children: BookmarkSnapshot[];
+};
+
+let bookmarkClipboard: BookmarkClipboard | null = null;
 
 function getPath(file: string) {
   if (process.env.NODE_ENV === 'development') {
@@ -42,7 +61,9 @@ function toImg(dataURL: string | undefined): NativeImage | null {
     d = d.split(':').join(':image/');
   }
   try {
-    const img = nativeImage.createFromDataURL(d).resize({ width: 16, height: 16 });
+    const img = nativeImage
+      .createFromDataURL(d)
+      .resize({ width: 16, height: 16 });
     return img.isEmpty() ? null : img;
   } catch {
     return null;
@@ -121,9 +142,17 @@ export async function createDropdown(
   defaults: DefaultBookmarkIcons = {},
   opts: { allowNetwork?: boolean } = {},
 ): Promise<Electron.Menu> {
-  const folderBookmarks = bookmarks.filter(
-    ({ static: staticName, parent }) => !staticName && parent === parentID,
-  );
+  const folderBookmarks = bookmarks
+    .filter(
+      ({ static: staticName, parent }) => !staticName && parent === parentID,
+    )
+    .slice()
+    .sort((left, right) => {
+      const orderDifference = (left.order || 0) - (right.order || 0);
+      if (orderDifference !== 0) return orderDifference;
+      // 相同 order 时用持久化 _id 作为确定性 tie-breaker。
+      return String(left._id).localeCompare(String(right._id));
+    });
 
   // 关键性能策略:只有"根层"(用户实际点击的那一级,opts.allowNetwork 默认 true)
   // 允许走网络预取 favicon;嵌套子菜单一律 allowNetwork:false——只用本地缓存 +
@@ -166,7 +195,7 @@ export async function createDropdown(
             }
             // 从溢出浮层的子菜单打开书签后,关掉一级浮层(若开着);幂等。
             Application.instance.dialogs
-              .getPersistent('bookmark-overflow')
+              .getExistingPersistent('bookmark-overflow')
               ?.hide();
           }
         : undefined,
@@ -182,20 +211,356 @@ export async function createDropdown(
     : Menu.buildFromTemplate([{ label: '(empty)', enabled: false }]);
 }
 
-export function createMenu(appWindow: AppWindow, item: IBookmark) {
-  const { isFolder, url } = item;
-  const folderItems: MenuItemConstructorOptions[] = [
+function getSortedChildren(parentId: string): IBookmark[] {
+  return Application.instance.storage.bookmarks
+    .filter((bookmark) => bookmark.parent === parentId)
+    .slice()
+    .sort((a, b) => (a.order || 0) - (b.order || 0));
+}
+
+function getBookmarkUrls(item: IBookmark): string[] {
+  if (!item.isFolder) return item.url ? [item.url] : [];
+
+  return getSortedChildren(item._id).reduce<string[]>(
+    (urls, child) => urls.concat(getBookmarkUrls(child)),
+    [],
+  );
+}
+
+function openInTabs(
+  appWindow: AppWindow,
+  urls: string[],
+  activateFirst = false,
+) {
+  urls.forEach((url, index) => {
+    const bookmarklet = parseBookmarklet(url);
+    if (bookmarklet !== null) {
+      appWindow.viewManager.runBookmarklet(bookmarklet);
+      return;
+    }
+    appWindow.viewManager.create({
+      url,
+      active: activateFirst && index === 0,
+    });
+  });
+}
+
+function openInWindow(urls: string[], incognito: boolean) {
+  if (urls.length === 0) return;
+
+  const normalUrls = urls.filter((url) => {
+    const bookmarklet = parseBookmarklet(url);
+    if (bookmarklet === null) return true;
+    Application.instance.windows.current?.viewManager.runBookmarklet(
+      bookmarklet,
+    );
+    return false;
+  });
+  if (normalUrls.length === 0) return;
+
+  const existing = incognito
+    ? Application.instance.windows.list.find(
+        (window) => window.incognito && !window.win.isDestroyed(),
+      )
+    : undefined;
+  if (existing) {
+    normalUrls.forEach((url, index) => {
+      existing.viewManager.create({ url, active: index === 0 });
+    });
+    existing.win.focus();
+    return;
+  }
+
+  const [firstUrl, ...remainingUrls] = normalUrls;
+  const targetWindow = Application.instance.windows.open(incognito, firstUrl);
+  targetWindow.webContents.once('did-finish-load', () => {
+    if (targetWindow.win.isDestroyed()) return;
+    remainingUrls.forEach((url) => {
+      targetWindow.viewManager.create({ url, active: false });
+    });
+  });
+  targetWindow.win.focus();
+}
+
+function openEditor(appWindow: AppWindow, item: IBookmark) {
+  const windowBounds = appWindow.win.getBounds();
+  const dialog = Application.instance.dialogs.getPersistent(
+    'add-bookmark',
+  ) as AddBookmarkDialog;
+  void dialog.open(appWindow.win, windowBounds.width - 20, 72, {
+    url: item.url || '',
+    title: item.title || '',
+    bookmark: item,
+    favicon: item.favicon,
+  });
+}
+
+function replaceWithCurrentUrl(appWindow: AppWindow, item: IBookmark) {
+  if (!item._id) return;
+  const current = appWindow.viewManager.selected;
+  const url = current?.url || current?.webContents.getURL();
+  if (!url || url === item.url) return;
+
+  void Application.instance.storage.updateBookmark(item._id, {
+    url,
+    favicon: current.favicon || '',
+  });
+}
+
+function getMainFolder(): IBookmark | undefined {
+  return Application.instance.storage.bookmarks.find(
+    (bookmark) => bookmark.static === 'main',
+  );
+}
+
+function getDestinationFolder(folderId?: string): IBookmark | undefined {
+  const folder = folderId
+    ? Application.instance.storage.bookmarks.find(
+        (bookmark) => bookmark._id === folderId,
+      )
+    : undefined;
+  return folder?.isFolder ? folder : getMainFolder();
+}
+
+async function addFolder(appWindow: AppWindow, folderId?: string) {
+  const parent = getDestinationFolder(folderId);
+  if (!parent?._id) return;
+
+  const folder = await Application.instance.storage.addBookmark({
+    title: '新建文件夹',
+    isFolder: true,
+    parent: parent._id,
+  });
+  openEditor(appWindow, folder);
+}
+
+function addPage(appWindow: AppWindow, folderId?: string) {
+  const windowBounds = appWindow.win.getBounds();
+  const dialog = Application.instance.dialogs.getPersistent(
+    'add-bookmark',
+  ) as AddBookmarkDialog;
+  if (!folderId) {
+    void dialog.open(appWindow.win, windowBounds.width - 20, 72);
+    return;
+  }
+
+  const { url, title, bookmark, favicon } = appWindow.viewManager.selected;
+  void dialog.open(appWindow.win, windowBounds.width - 20, 72, {
+    url,
+    title,
+    bookmark,
+    favicon,
+    folderId,
+  });
+}
+
+function openBookmarkManager(appWindow: AppWindow) {
+  appWindow.viewManager.create({
+    url: getWebUIURL('bookmarks'),
+    active: true,
+  });
+}
+
+function setClipboard(item: IBookmark, mode: 'cut' | 'copy') {
+  if (!item._id) return;
+  bookmarkClipboard = {
+    mode,
+    ids: [item._id],
+    copies: mode === 'copy' ? [snapshotBookmark(item)] : undefined,
+  };
+
+  const urls = getBookmarkUrls(item);
+  clipboard.clear();
+  if (urls.length > 0) clipboard.writeText(urls.join('\n'));
+}
+
+function snapshotBookmark(item: IBookmark): BookmarkSnapshot {
+  return {
+    title: item.title,
+    url: item.url,
+    favicon: item.favicon,
+    isFolder: item.isFolder,
+    children: item.isFolder
+      ? getSortedChildren(item._id).map(snapshotBookmark)
+      : [],
+  };
+}
+
+function isDescendant(folderId: string, possibleAncestorId: string): boolean {
+  let current = Application.instance.storage.bookmarks.find(
+    (bookmark) => bookmark._id === folderId,
+  );
+  const visited = new Set<string>();
+
+  while (current?.parent && !visited.has(current._id)) {
+    if (current.parent === possibleAncestorId) return true;
+    visited.add(current._id);
+    current = Application.instance.storage.bookmarks.find(
+      (bookmark) => bookmark._id === current.parent,
+    );
+  }
+  return false;
+}
+
+function canPasteInto(parentId: string | undefined): boolean {
+  if (!bookmarkClipboard || !parentId) return false;
+  const target = Application.instance.storage.bookmarks.find(
+    (bookmark) => bookmark._id === parentId,
+  );
+  if (!target?.isFolder) return false;
+
+  return bookmarkClipboard.ids.some((id) => {
+    const source = Application.instance.storage.bookmarks.find(
+      (bookmark) => bookmark._id === id,
+    );
+    if (!source || source.static) return false;
+    if (bookmarkClipboard.mode === 'copy') return true;
+    return (
+      source.parent !== parentId &&
+      source._id !== parentId &&
+      (!source.isFolder || !isDescendant(parentId, source._id))
+    );
+  });
+}
+
+async function cloneBookmark(item: BookmarkSnapshot, parentId: string) {
+  const clone = await Application.instance.storage.addBookmark({
+    title: item.title,
+    url: item.url,
+    favicon: item.favicon,
+    isFolder: item.isFolder,
+    parent: parentId,
+  });
+
+  if (item.isFolder && clone._id) {
+    for (const child of item.children) {
+      await cloneBookmark(child, clone._id);
+    }
+  }
+}
+
+async function pasteBookmarks(parentId: string | undefined) {
+  if (!canPasteInto(parentId) || !bookmarkClipboard) return;
+  const currentClipboard = bookmarkClipboard;
+
+  if (currentClipboard.mode === 'copy') {
+    for (const copy of currentClipboard.copies || []) {
+      await cloneBookmark(copy, parentId);
+    }
+    return;
+  }
+
+  for (const id of currentClipboard.ids) {
+    const source = Application.instance.storage.bookmarks.find(
+      (bookmark) => bookmark._id === id,
+    );
+    if (!source) continue;
+
+    await Application.instance.storage.updateBookmark(id, {
+      parent: parentId,
+    });
+  }
+
+  bookmarkClipboard = null;
+}
+
+function commonMenuItems(appWindow: AppWindow): MenuItemConstructorOptions[] {
+  const settings = Application.instance.settings.object;
+  const bookmarkBarDisplay = normalizeBookmarkBarDisplay(
+    settings.bookmarksBarDisplay,
+    settings.bookmarksBar,
+  );
+  const setBookmarkBarDisplay = (display: BookmarkBarDisplay) => {
+    Application.instance.settings.updateSettings({
+      bookmarksBarDisplay: display,
+    });
+  };
+
+  return [
     {
-      label: '在新标签页打开',
+      label: '书签管理器',
+      accelerator: 'CmdOrCtrl+Shift+O',
+      click: () => openBookmarkManager(appWindow),
+    },
+    {
+      label: '显示书签栏',
+      submenu: [
+        {
+          label: '始终显示',
+          type: 'radio',
+          checked: bookmarkBarDisplay === 'always',
+          click: () => setBookmarkBarDisplay('always'),
+        },
+        {
+          label: '只在新标签页',
+          type: 'radio',
+          checked: bookmarkBarDisplay === 'newtab',
+          click: () => setBookmarkBarDisplay('newtab'),
+        },
+        {
+          label: '永不显示',
+          type: 'radio',
+          checked: bookmarkBarDisplay === 'never',
+          click: () => setBookmarkBarDisplay('never'),
+        },
+      ],
+    },
+  ];
+}
+
+function createBarMenu(appWindow: AppWindow, folderId?: string) {
+  const destinationFolder = getDestinationFolder(folderId);
+  const template: MenuItemConstructorOptions[] = [
+    {
+      label: '添加网页…',
+      accelerator: 'CmdOrCtrl+D',
+      click: () => addPage(appWindow, destinationFolder?._id),
+    },
+    {
+      label: '添加文件夹…',
+      click: () => void addFolder(appWindow, destinationFolder?._id),
+    },
+    {
+      label: '粘贴',
+      enabled: canPasteInto(destinationFolder?._id),
+      click: () => void pasteBookmarks(destinationFolder?._id),
+    },
+    { type: 'separator' },
+    ...commonMenuItems(appWindow),
+  ];
+
+  return Menu.buildFromTemplate(template);
+}
+
+export function createMenu(
+  appWindow: AppWindow,
+  item?: IBookmark | null,
+  source: 'bar' | 'manager' = 'bar',
+  barFolderId?: string,
+) {
+  if (!item?._id) return createBarMenu(appWindow, barFolderId);
+
+  const { isFolder } = item;
+  const urls = getBookmarkUrls(item);
+  const pasteTargetId = isFolder ? item._id : item.parent;
+  const currentUrl = appWindow.viewManager.selected?.url;
+  const openItems: MenuItemConstructorOptions[] = [
+    {
+      label: isFolder ? `全部打开（${urls.length} 项）` : '在新标签页中打开',
+      enabled: urls.length > 0,
       click: () => {
-        // bookmarklet:不开新标签,在当前网页执行。
-        const bookmarklet = parseBookmarklet(url);
-        if (bookmarklet !== null) {
-          appWindow.viewManager.runBookmarklet(bookmarklet);
-        } else {
-          appWindow.viewManager.create({ url, active: true });
-        }
+        openInTabs(appWindow, urls, !isFolder);
       },
+    },
+    {
+      label: isFolder ? '全部在新窗口中打开' : '在新窗口中打开',
+      enabled: urls.length > 0,
+      click: () => openInWindow(urls, false),
+    },
+    {
+      label: isFolder ? '全部在无痕窗口中打开' : '在无痕窗口中打开',
+      enabled: urls.length > 0,
+      click: () => openInWindow(urls, true),
     },
     {
       type: 'separator',
@@ -203,34 +568,50 @@ export function createMenu(appWindow: AppWindow, item: IBookmark) {
   ];
 
   const template: MenuItemConstructorOptions[] = [
-    ...(!isFolder ? folderItems : []),
+    ...openItems,
     {
-      label: '编辑',
-      click: () => {
-        const windowBounds = appWindow.win.getBounds();
-        const dialog = Application.instance.dialogs.getPersistent(
-          'add-bookmark',
-        ) as AddBookmarkDialog;
-        dialog.open(appWindow.win, windowBounds.width - 20, 72, {
-          url: item.url,
-          title: item.title,
-          bookmark: item,
-          favicon: item.favicon,
-        });
-      },
+      label: isFolder ? '重命名' : '编辑',
+      click: () => openEditor(appWindow, item),
+    },
+    ...(!isFolder && source === 'bar'
+      ? [
+          {
+            label: '替换为当前网址',
+            enabled: !!currentUrl && currentUrl !== item.url,
+            click: () => replaceWithCurrentUrl(appWindow, item),
+          } as MenuItemConstructorOptions,
+        ]
+      : []),
+    {
+      label: '剪切',
+      accelerator: 'CmdOrCtrl+X',
+      click: () => setClipboard(item, 'cut'),
+    },
+    {
+      label: '复制',
+      accelerator: 'CmdOrCtrl+C',
+      click: () => setClipboard(item, 'copy'),
+    },
+    {
+      label: '粘贴',
+      accelerator: 'CmdOrCtrl+V',
+      enabled: canPasteInto(pasteTargetId),
+      click: () => void pasteBookmarks(pasteTargetId),
     },
     {
       label: '删除',
       click: () => {
-        Application.instance.storage.removeBookmark(item._id);
+        void Application.instance.storage.removeBookmark(item._id);
         // 删除后关闭书签溢出浮层(若开着)。reload-bookmarks 只广播到窗口
         // webContents,到不了浮层 BrowserView,浮层不会自动刷新——直接关掉,
         // 用户重开即看到更新。书签栏右键时浮层未开,hide 幂等无副作用。
         Application.instance.dialogs
-          .getPersistent('bookmark-overflow')
+          .getExistingPersistent('bookmark-overflow')
           ?.hide();
       },
     },
+    { type: 'separator' },
+    ...commonMenuItems(appWindow),
   ];
 
   return Menu.buildFromTemplate(template);

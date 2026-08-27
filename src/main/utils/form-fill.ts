@@ -2,6 +2,7 @@ import { parse } from 'url';
 
 import { IFormFillData } from '~/interfaces';
 import { getFormFillValue, getFormFillSubValue } from '~/utils/form-fill';
+import { hasSameHostname, hostMatches } from '~/utils/url';
 import { Application } from '../application';
 
 const getType = (name: string) => {
@@ -23,13 +24,18 @@ export const getFormFillMenuItems = async (name: string, value: string) => {
   });
 
   return items
+    .filter(
+      (item: IFormFillData) =>
+        dataType !== 'password' || hostMatches(item.url, hostname),
+    )
+    .sort(
+      (a: IFormFillData, b: IFormFillData) =>
+        Number(!hasSameHostname(a.url, hostname)) -
+        Number(!hasSameHostname(b.url, hostname)),
+    )
     .map((item: IFormFillData) => {
       const text = getFormFillValue(name, item, true);
       const subtext = getFormFillSubValue(name, item);
-
-      if (dataType === 'password' && item.url !== hostname) {
-        return null;
-      }
 
       if (
         text &&

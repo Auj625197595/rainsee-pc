@@ -44,8 +44,7 @@ export class ExtensionsListDialog extends PersistentDialog {
   ) {
     this.pos = {x, y};
 
-    // waitForLoad 动态:已加载(hover 预加载过或上次未销毁)则秒开;未加载则等 dom-ready。
-    await super.show(browserWindow, true, this.isLoaded ? false : true);
+    if (!(await super.show(browserWindow, true))) return;
 
     browserWindow.removeListener('resize', this.onBoundsUpdate);
     browserWindow.removeListener('move', this.onBoundsUpdate);

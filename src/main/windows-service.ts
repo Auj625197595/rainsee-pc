@@ -3,6 +3,14 @@ import { app, BrowserWindow, ipcMain } from 'electron';
 import { WEBUI_BASE_URL } from '~/constants/files';
 import { dumpMemoryReport } from './services/memory-report';
 import { Application } from './application';
+import { IWorkspace } from '~/interfaces';
+import { getWebUIURL } from '~/common/webui-main';
+
+interface ExtensionWindowHostOptions {
+  focused?: boolean;
+  minimumSize?: {width: number; height: number};
+  persistWindowState?: boolean;
+}
 
 export class WindowsService {
   public list: AppWindow[] = [];
@@ -44,8 +52,9 @@ export class WindowsService {
     }
 
     ipcMain.handle('get-tab-zoom', (e, tabId) => {
-      return this.findByBrowserView(tabId).viewManager.views.get(tabId)
-        .webContents.zoomFactor;
+      const appWindow = this.findByBrowserView(tabId);
+      return appWindow?.viewManager.findViewByWebContentsId(tabId)?.webContents
+        .zoomFactor ?? 1;
     });
 
     ipcMain.handle('add-to-homepage', async (_e, item: any) => {
@@ -85,7 +94,7 @@ export class WindowsService {
       const win = this.list.find((x) => x.id === windowId);
       const view = win?.viewManager?.selected;
       if (win && view && !view.browserView.webContents.isDestroyed()) {
-        win.win.removeBrowserView(view.browserView);
+        view.detachFromWindow();
       }
     });
 
@@ -94,7 +103,7 @@ export class WindowsService {
       const win = this.list.find((x) => x.id === windowId);
       const view = win?.viewManager?.selected;
       if (win && view && !view.browserView.webContents.isDestroyed()) {
-        win.win.addBrowserView(view.browserView);
+        view.attachToWindow();
         win.viewManager.fixBounds();
       }
     });
@@ -120,10 +129,11 @@ export class WindowsService {
       } else {
         // 源窗只有一个标签时,撕离建新窗只是平移窗口,无意义 → 取消撕离,
         // 把 tearing-start 摘下的 BrowserView 挂回源窗。
-        if (source.viewManager.views.size <= 1) {
+        // 计数用 renderer 上报列表:views map 的幽灵 view 会让单标签误判为多标签。
+        if (source.viewManager.rendererTabCount <= 1) {
           const view = source.viewManager.selected;
           if (view && !view.browserView.webContents.isDestroyed()) {
-            source.win.addBrowserView(view.browserView);
+            view.attachToWindow();
             source.viewManager.fixBounds();
           }
           return;
@@ -137,7 +147,7 @@ export class WindowsService {
       const {sourceWindowId, tabId, tabState} = payload;
       const source = this.list.find((x) => x.id === sourceWindowId);
       if (!source) return;
-      if (source.viewManager.views.size <= 1) return; // 单标签不允许
+      if (source.viewManager.rendererTabCount <= 1) return; // 单标签不允许
 
       const b = source.win.getBounds();
       this.detachToNewWindow(
@@ -237,7 +247,19 @@ export class WindowsService {
   private closeIfEmpty(source: AppWindow) {
     if (source.viewManager.views.size === 0 && !source.win.isDestroyed()) {
       source.win.close();
+      return;
     }
+    // 同步检查时 renderer 的空列表上报可能仍在途(其到达后 reconcile 才销毁
+    // 幽灵 view)。延迟复检一次:若届时 views 已清空(真实迁出完成、幽灵已对账),
+    // 仍按空窗口关闭,避免泄漏。
+    setTimeout(() => {
+      if (
+        !source.win.isDestroyed() &&
+        source.viewManager.views.size === 0
+      ) {
+        source.win.close();
+      }
+    }, 1500).unref?.();
   }
 
   // 最后一个浏览器窗口关闭后退出整个应用。
@@ -277,8 +299,193 @@ export class WindowsService {
     }, 4000).unref?.();
   }
 
-  public open(incognito = false) {
-    const window = new AppWindow(incognito);
+  private waitForRenderer(window: AppWindow) {
+    const contents = window.webContents;
+    if (!contents.isLoadingMainFrame() && contents.getURL()) {
+      return Promise.resolve();
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error('Timed out while creating extension window'));
+      }, 10000);
+      timeout.unref?.();
+
+      const cleanup = () => {
+        clearTimeout(timeout);
+        contents.removeListener('did-finish-load', onReady);
+        contents.removeListener('render-process-gone', onGone);
+      };
+      const onReady = () => {
+        cleanup();
+        resolve();
+      };
+      const onGone = (_event: Electron.Event, details: Electron.RenderProcessGoneDetails) => {
+        cleanup();
+        reject(new Error(`Extension window renderer exited: ${details.reason}`));
+      };
+
+      contents.once('did-finish-load', onReady);
+      contents.once('render-process-gone', onGone);
+    });
+  }
+
+  private extensionWindowBounds(details: chrome.windows.CreateData) {
+    const reference =
+      this.lastFocused?.win && !this.lastFocused.win.isDestroyed()
+        ? this.lastFocused.win.getBounds()
+        : this.current?.win && !this.current.win.isDestroyed()
+          ? this.current.win.getBounds()
+          : {x: 80, y: 80, width: 900, height: 600};
+    const popup = details.type === 'popup' || details.type === 'panel';
+
+    return {
+      x: Math.round(details.left ?? reference.x + 24),
+      y: Math.round(details.top ?? reference.y + 24),
+      width: Math.round(details.width ?? (popup ? 500 : reference.width)),
+      height: Math.round(details.height ?? (popup ? 650 : reference.height)),
+    };
+  }
+
+  /** Create the distinct browser window required by chrome.windows.create. */
+  public async openForExtension(
+    details: chrome.windows.CreateData,
+    forceIncognito = false,
+  ): Promise<BrowserWindow> {
+    const requestedTabId = details.tabId;
+    const source =
+      requestedTabId === undefined
+        ? undefined
+        : this.list.find((window) => window.viewManager.getById(requestedTabId));
+    if (requestedTabId !== undefined && !source) {
+      throw new Error(`No tab with id: ${requestedTabId}`);
+    }
+
+    const incognito = forceIncognito || details.incognito === true;
+    if (source && source.incognito !== incognito) {
+      throw new Error('Tabs cannot be moved between normal and incognito windows');
+    }
+
+    const previouslyFocused = this.lastFocused || this.current;
+    const popup = details.type === 'popup' || details.type === 'panel';
+    const bounds = this.extensionWindowBounds(details);
+    // The host currently renders popup/panel windows through the regular app
+    // shell. Preserve Chrome's lifecycle, sizing and reported type even though
+    // the chrome-less popup presentation is an application-level concern.
+    const window = this.openAt(incognito, bounds, {
+      focused: details.focused !== false,
+      minimumSize: popup ? {width: 100, height: 100} : {width: 800, height: 450},
+      persistWindowState: false,
+    });
+    (window.win as any).__crxWindowType = details.type || 'normal';
+    (window.win as any).__crxExtensionCreated = true;
+
+    try {
+      await this.waitForRenderer(window);
+
+      if (source && requestedTabId !== undefined) {
+        const view = source.viewManager.detachView(requestedTabId);
+        if (!view) throw new Error(`No tab with id: ${requestedTabId}`);
+        try {
+          window.viewManager.adoptView(view, false);
+          window.viewManager.select(view.id, false);
+          source.send('tab-detached-local', view.id);
+          window.send('tab-adopt', {
+            id: view.id,
+            url: view.url,
+            title: view.title,
+            favicon: view.favicon,
+            pinned: false,
+            incognito: view.incognito,
+          });
+          this.closeIfEmpty(source);
+        } catch (error) {
+          this.restoreToSource(source, view);
+          throw error;
+        }
+      } else {
+        const urls = Array.isArray(details.url)
+          ? details.url
+          : details.url
+            ? [details.url]
+            : [getWebUIURL('newtab')];
+        urls.forEach((url, index) => {
+          window.viewManager.create(
+            {
+              url,
+              // Chrome creates each URL as an active tab in sequence, leaving
+              // the final URL selected once the batch is complete.
+              active: index === urls.length - 1,
+              openerTabId: (details as any).__openerTabId,
+            } as chrome.tabs.CreateProperties,
+            false,
+            true,
+            (details as any).__openerTabId,
+          );
+        });
+      }
+
+      switch (details.state) {
+        case 'minimized':
+          window.win.minimize();
+          break;
+        case 'maximized':
+          window.win.maximize();
+          break;
+        case 'fullscreen':
+          window.win.setFullScreen(true);
+          break;
+      }
+
+      if (details.focused === false) {
+        previouslyFocused?.showAndFocus();
+      } else if (details.state !== 'minimized') {
+        window.showAndFocus();
+      }
+      return window.win;
+    } catch (error) {
+      if (!window.win.isDestroyed()) window.win.destroy();
+      throw error;
+    }
+  }
+
+  private registerWindowLifecycle(window: AppWindow) {
+    window.win.on('focus', () => {
+      this.lastFocused = window;
+    });
+
+    // AppWindow/功能模块还会注册自己的 closed 清理。放在队首，保证即使后续
+    // 某个监听器抛错，窗口登记和最后实例退出也已经完成。
+    window.win.prependOnceListener('closed', () => {
+      this.tabStripRects.delete(window.id);
+      Application.instance.workspaces?.unbindWindow(window.id);
+      this.list = this.list.filter((item) => item !== window);
+      const fallback = this.list.find((item) => !item.win.isDestroyed());
+      if (this.current === window) this.current = fallback;
+      if (this.lastFocused === window) this.lastFocused = fallback;
+
+      if (window.incognito && !this.list.some((item) => item.incognito)) {
+        Application.instance.sessions.endIncognitoSession().catch((error) => {
+          console.error('[incognito] cleanup failed', error);
+        });
+      }
+      this.quitIfNoBrowserWindows();
+    });
+  }
+
+  public open(
+    incognito = false,
+    initialUrl?: string,
+    restoreSessionWithInitialUrl = false,
+  ) {
+    const window = new AppWindow(
+      incognito,
+      undefined,
+      initialUrl,
+      undefined,
+      restoreSessionWithInitialUrl,
+    );
     this.list.push(window);
 
     if (incognito) {
@@ -291,27 +498,28 @@ export class WindowsService {
       //extensions.windows.observe(window.win);
     }
 
-    window.win.on('focus', () => {
-      this.lastFocused = window;
-    });
-
-    window.win.on('closed', () => {
-      this.tabStripRects.delete(window.id);
-      if (window.incognito && !this.list.some((item) => item.incognito)) {
-        Application.instance.sessions.endIncognitoSession().catch((error) => {
-          console.error('[incognito] cleanup failed', error);
-        });
-      }
-      this.quitIfNoBrowserWindows();
-    });
+    this.registerWindowLifecycle(window);
 
     return window;
   }
 
   // 在指定屏幕坐标生成一个新窗口(标签撕离落点)。返回的窗口尚未就绪,
   // 调用方需等待其渲染层 ready 后再 adoptView / adopt-tab。
-  public openAt(incognito: boolean, bounds: Electron.Rectangle) {
-    const window = new AppWindow(incognito, bounds);
+  public openAt(
+    incognito: boolean,
+    bounds: Electron.Rectangle,
+    options: ExtensionWindowHostOptions = {},
+  ) {
+    const window = new AppWindow(
+      incognito,
+      bounds,
+      undefined,
+      undefined,
+      false,
+      options.focused !== false,
+      options.minimumSize,
+      options.persistWindowState !== false,
+    );
     this.list.push(window);
 
     if (incognito) {
@@ -320,19 +528,18 @@ export class WindowsService {
       });
     }
 
-    window.win.on('focus', () => {
-      this.lastFocused = window;
-    });
+    this.registerWindowLifecycle(window);
 
-    window.win.on('closed', () => {
-      this.tabStripRects.delete(window.id);
-      if (window.incognito && !this.list.some((item) => item.incognito)) {
-        Application.instance.sessions.endIncognitoSession().catch((error) => {
-          console.error('[incognito] cleanup failed', error);
-        });
-      }
-      this.quitIfNoBrowserWindows();
-    });
+    return window;
+  }
+
+  // 工作区窗口使用工作区快照作为唯一启动来源,不读取普通窗口的 startupTabs。
+  public openWorkspace(workspace: IWorkspace) {
+    const window = new AppWindow(false, undefined, undefined, workspace);
+    this.list.push(window);
+    Application.instance.workspaces?.bindWindow(workspace.id, window.id);
+
+    this.registerWindowLifecycle(window);
 
     return window;
   }
@@ -371,7 +578,9 @@ export class WindowsService {
   }
 
   public findByBrowserView(webContentsId: number) {
-    return this.list.find((x) => !!x.viewManager.views.get(webContentsId));
+    return this.list.find((x) =>
+      !!x.viewManager.findViewByWebContentsId(webContentsId),
+    );
   }
 
   public fromBrowserWindow(browserWindow: BrowserWindow) {

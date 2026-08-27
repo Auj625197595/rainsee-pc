@@ -12,11 +12,36 @@ import { isURL, prefixHttp } from '~/utils';
 import { saveAs, viewSource, printPage, copyPageAsMarkdown } from './common-actions';
 import { enterImageViewer } from '../services/image-viewer';
 import { Application } from '../application';
+// 开源版：AI 右键菜单与账号体系已移除。
 import { ShareDialog } from '../dialogs/share';
 import {
   DOWNLOADER_PRESETS,
   launchExternalDownload,
 } from '../services/external-downloader';
+
+// 在新的(可选无痕)应用窗口中打开 URL。
+// 无痕场景复用已存在的无痕窗口(Chrome 行为),没有再新开;普通场景总是新开窗口。
+// 注意:viewManager.create 内部按所属窗口的 incognito 决定会话(忽略 details.incognito),
+// 故无痕与否完全由 windows.open(incognitoWindow) 创建的目标窗口决定。
+const openUrlInNewWindow = (url: string, incognitoWindow: boolean) => {
+  // 复用已有无痕窗口:renderer 已就绪,直接建标签并 select。
+  const existing = incognitoWindow
+    ? Application.instance.windows.list.find(
+        (w) => w.incognito && !w.win.isDestroyed(),
+      )
+    : undefined;
+  if (existing) {
+    existing.viewManager.create({url, active: true} as any, true, true);
+    existing.win.focus();
+    return;
+  }
+
+  // 新开窗口:把 URL 作为窗口的 initialUrl 注入。新窗口的 startup-tabs 会优先打开它
+  // (而非默认 newtab),既保证建标签发生在 renderer 就绪后,又避免 startup 的 newtab
+  // select 覆盖目标标签。详见 startup-tabs.ts 与 windows/app.ts。
+  const appWin = Application.instance.windows.open(incognitoWindow, url);
+  appWin.win.focus();
+};
 
 export const getViewMenu = (
   appWindow: AppWindow,
@@ -25,7 +50,8 @@ export const getViewMenu = (
   incognito = false,
 ) => {
   let menuItems: Electron.MenuItemConstructorOptions[] = [];
-  const view = appWindow.viewManager.getById(webContents.id);
+  // 覆盖页没有独立的 renderer tab 模型，按物理 WebContents 找回根标签。
+  const view = appWindow.viewManager.findViewByWebContentsId(webContents.id);
   const trimmedSelectionText = params.selectionText.trim();
   const hasSelectionText = trimmedSelectionText !== '';
 
@@ -37,12 +63,33 @@ export const getViewMenu = (
           appWindow.viewManager.create(
             {
               url: params.linkURL,
+              active: true,
+              incognito,
+            } as any,
+            true,
+          );
+        },
+      },
+      {
+        label: '在新标签页打开链接（不切换）',
+        click: () => {
+          appWindow.viewManager.create(
+            {
+              url: params.linkURL,
               active: false,
               incognito,
             } as any,
             true,
           );
         },
+      },
+      {
+        label: '在新窗口打开链接',
+        click: () => openUrlInNewWindow(params.linkURL, false),
+      },
+      {
+        label: '在无痕窗口打开链接',
+        click: () => openUrlInNewWindow(params.linkURL, true),
       },
       {
         type: 'separator',
@@ -90,6 +137,19 @@ export const getViewMenu = (
     menuItems = menuItems.concat([
       {
         label: '在新标签页打开图片',
+        click: () => {
+          appWindow.viewManager.create(
+            {
+              url: params.srcURL,
+              active: true,
+              incognito,
+            } as any,
+            true,
+          );
+        },
+      },
+      {
+        label: '在新标签页打开图片（不切换）',
         click: () => {
           appWindow.viewManager.create(
             {
@@ -192,6 +252,31 @@ export const getViewMenu = (
   }
 
   if (hasSelectionText) {
+    const settings = Application.instance.settings.object;
+    const searchEngine =
+      settings.searchEngines?.[settings.searchEngine] ||
+      settings.searchEngines?.[0];
+    const searchEngineName = searchEngine?.name?.trim();
+
+    menuItems = menuItems.concat([
+      {
+        label:  '搜索',
+        click: () => {
+          const keyword = encodeURIComponent(trimmedSelectionText);
+          const url = searchEngine?.url
+            ? searchEngine.url.replace('%s', keyword)
+            : `https://www.google.com/search?q=${keyword}`;
+
+          appWindow.viewManager.create({url, active: true});
+        },
+      },
+      {
+        type: 'separator',
+      },
+    ]);
+  }
+
+  if (hasSelectionText) {
     const trimmedText = trimmedSelectionText;
 
     if (isURL(trimmedText)) {
@@ -245,6 +330,17 @@ export const getViewMenu = (
         click: () => {
           webContents.reload();
         },
+      },
+      {
+        type: 'separator',
+      },
+      {
+        label: '在新窗口打开',
+        click: () => openUrlInNewWindow(webContents.getURL(), false),
+      },
+      {
+        label: '在无痕窗口打开',
+        click: () => openUrlInNewWindow(webContents.getURL(), true),
       },
       {
         type: 'separator',

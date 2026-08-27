@@ -1,5 +1,6 @@
 export interface IFormFillData {
   _id?: string;
+  updatedAt?: number;
   type?: 'password' | 'address';
   url?: string;
   favicon?: string;
@@ -21,4 +22,6 @@ export interface IFormFillMenuItem {
   _id?: string;
   text?: string;
   subtext?: string;
+  passwordMask?: string;
+  host?: string;
 }
