@@ -234,7 +234,15 @@ export const initLogger = () => {
   ipcMain.on('renderer-diagnostic', (event: any, payload: any) => {
     const phase = typeof payload?.phase === 'string' ? payload.phase.slice(0, 80) : 'unknown';
     const detail = typeof payload?.detail === 'string' ? payload.detail.slice(0, 400) : '';
-    const url = typeof payload?.url === 'string' ? payload.url.slice(0, 600) : '';
+    let url = typeof payload?.url === 'string' ? payload.url.slice(0, 600) : '';
+    try {
+      const parsed = new URL(url);
+      parsed.search = '';
+      parsed.hash = '';
+      url = parsed.toString();
+    } catch {
+      url = '';
+    }
     const readyState = typeof payload?.readyState === 'string' ? payload.readyState : '';
     const visibility = typeof payload?.visibility === 'string' ? payload.visibility : '';
     recordRendererDiagnostic(
