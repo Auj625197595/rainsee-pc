@@ -652,9 +652,34 @@ export class PopupView {
     // 尚未确定尺寸时不应定位(弹窗此时也隐藏);避免拿到 -1 的占位值。
     if (this.lastWidth < 0 || this.lastHeight < 0) return
 
-    // anchorRect 来自渲染进程的 getBoundingClientRect，坐标基于父窗口的网页内容区，
-    // 因此这里统一用 content bounds 计算与定位，避免把窗口不可见边框算进去导致偏移。
-    const winBounds = this.parent.getContentBounds()
+    // anchorRect 来自渲染进程的 getBoundingClientRect，坐标基于父窗口的网页内容区。
+    // 保持 content bounds 原点与 Chromium action popup 一致；Windows 在窗口切换/隐藏
+    // 期间偶尔会返回无效的 content bounds，此时才回退到 window bounds，避免弹窗落到屏幕外。
+    const contentBounds = this.parent.getContentBounds()
+    const windowBounds = this.parent.getBounds()
+    const isValidBounds = (bounds: Electron.Rectangle) =>
+      Number.isFinite(bounds.x) &&
+      Number.isFinite(bounds.y) &&
+      Number.isFinite(bounds.width) &&
+      Number.isFinite(bounds.height) &&
+      bounds.width > 0 &&
+      bounds.height > 0 &&
+      Math.abs(bounds.x) < 10_000_000 &&
+      Math.abs(bounds.y) < 10_000_000
+    const windowBoundsValid = isValidBounds(windowBounds)
+    // A stale Windows content rectangle can still be finite (for example
+    // -20321,-21310), so finite/range checks alone are insufficient. Content
+    // and window origins should differ only by the native frame thickness.
+    const contentBoundsUsable =
+      isValidBounds(contentBounds) &&
+      (!windowBoundsValid ||
+        (Math.abs(contentBounds.x - windowBounds.x) < 4096 &&
+          Math.abs(contentBounds.y - windowBounds.y) < 4096))
+    const winBounds = contentBoundsUsable
+      ? contentBounds
+      : windowBoundsValid
+        ? windowBounds
+        : {x: 0, y: 0, width: 1, height: 1}
 
     // 直接用最近一次计算出的 lastWidth/lastHeight,而不是回读 getContentBounds():
     // frameless 不可缩放窗口在 Windows 上反复读内容边界会因
@@ -669,6 +694,24 @@ export class PopupView {
     // Convert to ints
     x = Math.floor(x)
     y = Math.floor(y)
+
+    // Chrome keeps action popups inside the display work area. Besides matching
+    // that behavior, clamping protects against stale renderer coordinates and
+    // transient invalid parent bounds during window state restoration.
+    try {
+      const {workArea} = screen.getDisplayMatching({
+        x: winBounds.x,
+        y: winBounds.y,
+        width: Math.max(1, winBounds.width),
+        height: Math.max(1, winBounds.height),
+      })
+      const maxX = Math.max(workArea.x, workArea.x + workArea.width - width)
+      const maxY = Math.max(workArea.y, workArea.y + workArea.height - height)
+      x = Math.max(workArea.x, Math.min(x, maxX))
+      y = Math.max(workArea.y, Math.min(y, maxY))
+    } catch {
+      // Keep the calculated position if display metrics are unavailable.
+    }
 
     debug(`updatePosition`, { x, y })
 
