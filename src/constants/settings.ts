@@ -189,6 +189,7 @@ export const BAIDU_SUGGEST_URL = 'https://www.baidu.com/sugrec?prod=pc&wd=%s';
 export const MAX_CUSTOM_CHROME_CSS_LENGTH = 64 * 1024;
 
 export const DEFAULT_SETTINGS: ISettings = {
+  language: 'auto',
   theme: 'wexond-light',
   darkContents: false,
   shield: true,

@@ -35,6 +35,8 @@ export type TabHoverActivationBehavior =
 export type BookmarkBarDisplay = 'always' | 'newtab' | 'never';
 
 export interface ISettings {
+  // 应用界面语言。auto 在每次启动时按操作系统语言解析，显式值覆盖系统语言。
+  language: import('../common/i18n').AppLanguage;
   theme: string;
   themeAuto: boolean;
   // 网页暗色模式实现方式(仅在暗色生效主题下作用于普通网页内容):
@@ -114,7 +116,7 @@ export interface ISettings {
   topBarVariant: TopBarVariant;
   tabsLayout: TabsLayout;
   // 自定义工具栏:left/right 为地址栏左/右两侧按钮 id 的有序列表(可在所属区域内
-  // 拖拽排序,不跨区);hidden 为用户隐藏的普通按钮 id(集群按钮 + 地址栏内图标通用)。
+  // 拖拽排序,不跨区);hidden 为用户隐藏的普通按钮 id(集群按钮 + 地址栏内按钮通用)。
   // 下载按钮单独使用三态配置:始终显示、触发下载时显示、隐藏。
   // 归一化由 resolveToolbarLayout 处理(丢弃未知 id、补齐默认按钮)。
   toolbarLayout: {

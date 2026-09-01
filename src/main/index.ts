@@ -61,6 +61,8 @@ import { ChromeUserAgent } from './user-agent';
 import { isHeavyUI } from './utils/hardware-profile';
 import { setupProfilesIpc } from './profiles';
 import { setupProfileNetworkIpc } from './profile-network';
+import { normalizeAppLanguage, resolveAppLanguage } from '~/common/i18n';
+import { getMainTranslator } from './i18n';
 
 // 兼容旧的 `import { isNightly } from '..'`(src/main/windows/app.ts)。
 export { isNightly };
@@ -83,6 +85,15 @@ try {
   hasPersistedFile = true;
 } catch {
   // 首次启动/无配置:persistedSettings 保持空对象,下面按机器档位给默认。
+}
+
+// Explicit language choices can be applied immediately. For `auto`, Electron's
+// system locale is only reliable after app ready (before that getLocale APIs can
+// report Chromium's en-US default); application.ts resolves it before opening
+// the first BrowserWindow.
+const startupLanguage = normalizeAppLanguage(persistedSettings.language);
+if (startupLanguage !== 'auto') {
+  app.commandLine.appendSwitch('lang', resolveAppLanguage(startupLanguage));
 }
 
 // 硬件加速:app.disableHardwareAcceleration() 必须在 app.ready 之前调用才能生效。
