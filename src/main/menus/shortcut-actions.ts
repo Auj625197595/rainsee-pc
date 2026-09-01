@@ -1,6 +1,6 @@
 // 快捷键动作注册表(纯数据,无 Electron import)。
 //
-// 这里只登记「面向用户、可配置」的内置快捷键动作的元数据(id / 中文标签 /
+// 这里只登记「面向用户、可配置」的内置快捷键动作的元数据(id / 文案 key /
 // 分组 / 默认 accelerator)。动作的真实执行逻辑仍然留在 main.ts 的
 // getMainMenu() 里 —— 本注册表只服务于:
 //   1. 设置页「快捷键」分区的列表展示;
@@ -11,6 +11,8 @@
 // (非 Mac)accelerator 数组逐字一致,否则设置页展示的「默认」会与菜单实际生效
 // 的绑定不符,「恢复默认」也会恢复到错误值。main.ts 只在「用户存在覆盖」时才
 // 使用覆盖数组,未覆盖时仍用它自己硬编码的 shortcuts。
+
+import type { MessageKey, Translator } from '~/common/i18n';
 
 export type ShortcutCategory =
   | 'file'
@@ -23,21 +25,25 @@ export type ShortcutCategory =
 export interface ShortcutAction {
   // 稳定标识,持久化到 settings.shortcuts 的 key
   id: string;
-  // 设置页展示的中文名称
-  label: string;
+  // 设置页和应用菜单共享的翻译 key
+  labelKey: MessageKey;
+  labelParams?: Record<string, string | number>;
   category: ShortcutCategory;
   // 默认 accelerator 数组(可能含多个绑定,如关闭标签页 Ctrl+W / Ctrl+F4)
   defaults: string[];
 }
 
 // 设置页分组的展示顺序
-export const SHORTCUT_CATEGORIES: { id: ShortcutCategory; label: string }[] = [
-  { id: 'file', label: '文件与标签' },
-  { id: 'view', label: '视图与缩放' },
-  { id: 'tabs', label: '标签页切换' },
-  { id: 'history', label: '历史' },
-  { id: 'bookmarks', label: '书签' },
-  { id: 'tools', label: '工具' },
+export const SHORTCUT_CATEGORIES: {
+  id: ShortcutCategory;
+  labelKey: MessageKey;
+}[] = [
+  { id: 'file', labelKey: 'shortcutCategoryFile' },
+  { id: 'view', labelKey: 'shortcutCategoryView' },
+  { id: 'tabs', labelKey: 'shortcutCategoryTabs' },
+  { id: 'history', labelKey: 'shortcutCategoryHistory' },
+  { id: 'bookmarks', labelKey: 'shortcutCategoryBookmarks' },
+  { id: 'tools', labelKey: 'shortcutCategoryTools' },
 ];
 
 // Ctrl+1..8 切到第 N 个标签:8 个独立动作,defaults 与 main.ts 的
@@ -47,7 +53,8 @@ const selectTabActions: ShortcutAction[] = Array.from(
   (_, k) => k + 1,
 ).map((i) => ({
   id: `select-tab-${i}`,
-  label: `切换到第 ${i} 个标签`,
+  labelKey: 'shortcutSelectTab',
+  labelParams: { index: i },
   category: 'tabs' as ShortcutCategory,
   defaults: [`CmdOrCtrl+${i}`],
 }));
@@ -56,175 +63,175 @@ export const SHORTCUT_ACTIONS: ShortcutAction[] = [
   // —— 文件与标签 ——
   {
     id: 'new-window',
-    label: '打开新窗口',
+    labelKey: 'shortcutNewWindow',
     category: 'file',
     defaults: ['CmdOrCtrl+N'],
   },
   {
     id: 'new-private-window',
-    label: '打开新的无痕窗口',
+    labelKey: 'shortcutNewPrivateWindow',
     category: 'file',
     defaults: ['CmdOrCtrl+Shift+N'],
   },
   {
     id: 'new-tab',
-    label: '打开新标签页',
+    labelKey: 'shortcutNewTab',
     category: 'file',
     defaults: ['CmdOrCtrl+T'],
   },
   {
     id: 'reopen-closed-tab',
-    label: '撤销关闭的标签',
+    labelKey: 'shortcutReopenClosedTab',
     category: 'file',
     defaults: ['CmdOrCtrl+Shift+T'],
   },
   {
     id: 'close-window',
-    label: '关闭窗口',
+    labelKey: 'shortcutCloseWindow',
     category: 'file',
     defaults: ['CmdOrCtrl+Shift+W'],
   },
   {
     id: 'close-tab',
-    label: '关闭标签页',
+    labelKey: 'shortcutCloseTab',
     category: 'file',
     defaults: ['CmdOrCtrl+W', 'CmdOrCtrl+F4'],
   },
   {
     id: 'save-page',
-    label: '保存页面为…',
+    labelKey: 'shortcutSavePage',
     category: 'file',
     defaults: ['CmdOrCtrl+S'],
   },
   {
     id: 'print',
-    label: '打印',
+    labelKey: 'shortcutPrint',
     category: 'file',
     defaults: ['CmdOrCtrl+P'],
   },
   {
     id: 'find-in-page',
-    label: '页内查找',
+    labelKey: 'shortcutFindInPage',
     category: 'file',
     defaults: ['CmdOrCtrl+F'],
   },
   {
     id: 'paste-and-go',
-    label: '粘贴并转到',
+    labelKey: 'shortcutPasteAndGo',
     category: 'tools',
     defaults: ['CmdOrCtrl+Shift+L'],
   },
   // —— 视图与缩放 ——
   {
     id: 'reload',
-    label: '刷新页面',
+    labelKey: 'shortcutReload',
     category: 'view',
     defaults: ['CmdOrCtrl+R', 'F5'],
   },
   {
     id: 'force-reload',
-    label: '强制刷新(忽略缓存)',
+    labelKey: 'shortcutForceReload',
     category: 'view',
     defaults: ['CmdOrCtrl+Shift+R', 'Shift+F5'],
   },
   {
     id: 'zoom-in',
-    label: '放大',
+    labelKey: 'shortcutZoomIn',
     category: 'view',
     defaults: ['CmdOrCtrl+numadd', 'CmdOrCtrl+='],
   },
   {
     id: 'zoom-out',
-    label: '缩小',
+    labelKey: 'shortcutZoomOut',
     category: 'view',
     defaults: ['CmdOrCtrl+numsub', 'CmdOrCtrl+-'],
   },
   {
     id: 'reset-zoom',
-    label: '重置缩放',
+    labelKey: 'shortcutResetZoom',
     category: 'view',
     defaults: ['CmdOrCtrl+0', 'CmdOrCtrl+num0'],
   },
   // —— 标签页切换 ——
   {
     id: 'next-tab',
-    label: '下一个标签',
+    labelKey: 'shortcutNextTab',
     category: 'tabs',
     defaults: ['Ctrl+Tab', 'Ctrl+PageDown'],
   },
   {
     id: 'previous-tab',
-    label: '上一个标签',
+    labelKey: 'shortcutPreviousTab',
     category: 'tabs',
     defaults: ['Ctrl+Shift+Tab', 'Ctrl+PageUp'],
   },
   ...selectTabActions,
   {
     id: 'select-last-tab',
-    label: '切换到最后一个标签',
+    labelKey: 'shortcutSelectLastTab',
     category: 'tabs',
     defaults: ['CmdOrCtrl+9'],
   },
   // —— 历史 ——
   {
     id: 'back',
-    label: '后退',
+    labelKey: 'shortcutBack',
     category: 'history',
     defaults: ['Alt+Left'],
   },
   {
     id: 'forward',
-    label: '前进',
+    labelKey: 'shortcutForward',
     category: 'history',
     defaults: ['Alt+Right'],
   },
   {
     id: 'show-history',
-    label: '打开历史记录',
+    labelKey: 'shortcutShowHistory',
     category: 'history',
     defaults: ['Ctrl+H'],
   },
   // —— 书签 ——
   {
     id: 'manage-bookmarks',
-    label: '打开书签管理',
+    labelKey: 'shortcutManageBookmarks',
     category: 'bookmarks',
     defaults: ['CmdOrCtrl+Shift+O'],
   },
   {
     id: 'toggle-bookmarks-bar',
-    label: '显示/隐藏书签栏',
+    labelKey: 'shortcutToggleBookmarksBar',
     category: 'bookmarks',
     defaults: ['CmdOrCtrl+Shift+B'],
   },
   {
     id: 'add-bookmark',
-    label: '收藏本页到书签',
+    labelKey: 'shortcutAddBookmark',
     category: 'bookmarks',
     defaults: ['CmdOrCtrl+D'],
   },
   // —— 工具 ——
   {
     id: 'view-source',
-    label: '查看网页源代码',
+    labelKey: 'shortcutViewSource',
     category: 'tools',
     defaults: ['CmdOrCtrl+U'],
   },
   {
     id: 'devtools',
-    label: '开发者工具',
+    labelKey: 'shortcutDevTools',
     category: 'tools',
     defaults: ['CmdOrCtrl+Shift+I', 'CmdOrCtrl+Shift+J', 'F12'],
   },
   {
     id: 'screenshot',
-    label: '截图',
+    labelKey: 'shortcutScreenshot',
     category: 'tools',
     defaults: ['CmdOrCtrl+Shift+X'],
   },
   {
     id: 'boss-key',
-    label: '老板键',
+    labelKey: 'shortcutBossKey',
     category: 'tools',
     defaults: ['Ctrl+`'],
   },
@@ -233,23 +240,47 @@ export const SHORTCUT_ACTIONS: ShortcutAction[] = [
   // organize-tabs IPC 把动作名转过去;defaults 与 main.ts 的 accelerator 逐字一致。
   {
     id: 'deduplicate-tabs',
-    label: '标签去重',
+    labelKey: 'shortcutDeduplicateTabs',
     category: 'tools',
     defaults: ['CmdOrCtrl+Shift+D'],
   },
   {
     id: 'group-tabs-by-domain',
-    label: '按域名分组标签',
+    labelKey: 'shortcutGroupTabsByDomain',
     category: 'tools',
     defaults: ['CmdOrCtrl+Shift+G'],
   },
   {
     id: 'group-tabs-with-ai',
-    label: 'AI 智能分组标签',
+    labelKey: 'shortcutGroupTabsWithAi',
     category: 'tools',
     defaults: ['CmdOrCtrl+Shift+A'],
   },
 ];
+
+export const getShortcutActionLabel = (
+  id: string,
+  translator: Translator,
+): string => {
+  const action = SHORTCUT_ACTIONS.find((item) => item.id === id);
+  return action
+    ? translator(action.labelKey, action.labelParams)
+    : id;
+};
+
+export const localizeShortcutCategories = (translator: Translator) =>
+  SHORTCUT_CATEGORIES.map((category) => ({
+    id: category.id,
+    label: translator(category.labelKey),
+  }));
+
+export const localizeShortcutActions = (translator: Translator) =>
+  SHORTCUT_ACTIONS.map((action) => ({
+    id: action.id,
+    label: translator(action.labelKey, action.labelParams),
+    category: action.category,
+    defaults: action.defaults,
+  }));
 
 // 工具:把 settings.json 里持久化的覆盖映射合并到注册表默认值上,返回每个动作
 // 「当前生效」的 accelerator 数组。供主进程 IPC 与菜单构建共用,避免两处分别

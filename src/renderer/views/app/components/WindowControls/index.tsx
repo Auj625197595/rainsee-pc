@@ -4,6 +4,7 @@ import { ipcRenderer } from 'electron';
 import { platform } from 'os';
 
 import store from '../../store';
+import { getShellTranslator } from '../../utils/i18n';
 import { ControlsContainer, ControlButton } from './style';
 
 const onCloseClick = () => ipcRenderer.send(`window-close-${store.windowId}`);
@@ -34,20 +35,21 @@ const ICON_CLOSE = (
 
 export const WindowControls = observer(() => {
   if (platform() === 'darwin') return null;
+  const t = getShellTranslator();
 
   return (
     <ControlsContainer data-rainsee-part="window-controls">
       <ControlButton
         data-rainsee-action="window-minimize"
         onClick={onMinimizeClick}
-        title="最小化"
+        title={t('shellMinimize')}
       >
         {ICON_MIN}
       </ControlButton>
       <ControlButton
         data-rainsee-action="window-maximize"
         onClick={onMaximizeClick}
-        title="最大化"
+        title={t('shellMaximize')}
       >
         {ICON_MAX}
       </ControlButton>
@@ -55,7 +57,7 @@ export const WindowControls = observer(() => {
         data-rainsee-action="window-close"
         close
         onClick={onCloseClick}
-        title="关闭"
+        title={t('close')}
       >
         {ICON_CLOSE}
       </ControlButton>

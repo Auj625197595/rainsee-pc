@@ -28,7 +28,17 @@ import {
   MainInner,
   EmptyState,
   EmptyText,
+  CreateTaskButton,
+  TaskDialog,
+  TaskDialogPanel,
+  TaskDialogTitle,
+  TaskInput,
+  TaskDialogHint,
+  TaskDialogError,
+  TaskDialogActions,
+  TaskDialogButton,
 } from './style';
+import { useI18n } from '~/renderer/components/I18n';
 
 // ===== 内联图标(跟随 currentColor)=====
 
@@ -80,6 +90,12 @@ const IconTrash = () => (
   </svg>
 );
 
+const IconPlus = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+    <path d="M12 5v14M5 12h14"></path>
+  </svg>
+);
+
 const IconEmpty = () => (
   <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
@@ -127,7 +143,29 @@ const FilterItem = observer(
 );
 
 export default observer(() => {
+  const t = useI18n();
   const sections = store.sections;
+  const [dialogOpen, setDialogOpen] = React.useState(false);
+  const [pageUrl, setPageUrl] = React.useState('');
+  const [fileName, setFileName] = React.useState('');
+  const [taskError, setTaskError] = React.useState('');
+  const [creating, setCreating] = React.useState(false);
+
+  const submitTask = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (creating) return;
+    setCreating(true);
+    setTaskError('');
+    const result = await store.createTask(pageUrl.trim(), fileName.trim());
+    setCreating(false);
+    if (!result?.ok) {
+      setTaskError(result?.message || t('dlvCreateFailed'));
+      return;
+    }
+    setDialogOpen(false);
+    setPageUrl('');
+    setFileName('');
+  };
 
   return (
     <ThemeProvider theme={{ ...store.theme }}>
@@ -137,38 +175,42 @@ export default observer(() => {
 
         <Sidebar>
           <SideHeader>
-            <SideTitle>下载管理</SideTitle>
-            <SettingsButton onClick={onSettingsClick} title="下载设置">
+            <SideTitle>{t('dlvTitle')}</SideTitle>
+            <CreateTaskButton type="button" onClick={() => { setTaskError(''); setDialogOpen(true); }} title={t('dlvCreateTaskTitle')}>
+              <IconPlus />
+              {t('dlvNewTask')}
+            </CreateTaskButton>
+            <SettingsButton onClick={onSettingsClick} title={t('dlvSettings')}>
               <GearIcon size={16} weight="bold" />
-              设置
+              {t('dlvSettingsShort')}
             </SettingsButton>
           </SideHeader>
 
           <SearchBox>
             <IconSearch />
-            <SearchInput placeholder="搜索下载内容" onInput={onInput} />
+            <SearchInput placeholder={t('dlvSearchPlaceholder')} onInput={onInput} />
           </SearchBox>
 
-          <SectionLabel>状态</SectionLabel>
+          <SectionLabel>{t('dlvStatusSection')}</SectionLabel>
           <FilterNav>
             <FilterItem icon={<IconAll />} filter="all">
-              全部
+              {t('mgFilterAll')}
             </FilterItem>
             <FilterItem icon={<IconActive />} filter="active">
-              正在下载
+              {t('dlvActive')}
             </FilterItem>
             <FilterItem icon={<IconCompleted />} filter="completed">
-              已完成
+              {t('dlvCompleted')}
             </FilterItem>
             <FilterItem icon={<IconCanceled />} filter="canceled">
-              已取消
+              {t('dlvCanceled')}
             </FilterItem>
           </FilterNav>
 
           <BottomActions>
             <ClearButton onClick={onClearClick}>
               <IconTrash />
-              清除下载记录
+              {t('dlvClearRecords')}
             </ClearButton>
           </BottomActions>
         </Sidebar>
@@ -179,7 +221,7 @@ export default observer(() => {
               <EmptyState>
                 <IconEmpty />
                 <EmptyText>
-                  {store.searched ? '没有找到相关下载' : '暂无下载内容'}
+                  {store.searched ? t('dlvNoResults') : t('dlvEmpty')}
                 </EmptyText>
               </EmptyState>
             ) : (
@@ -189,6 +231,34 @@ export default observer(() => {
             )}
           </MainInner>
         </MainScroll>
+
+        {dialogOpen && (
+          <TaskDialog onMouseDown={(event) => { if (event.target === event.currentTarget) setDialogOpen(false); }}>
+            <TaskDialogPanel onSubmit={submitTask}>
+              <TaskDialogTitle>{t('dlvCreateTaskTitle')}</TaskDialogTitle>
+              <TaskInput
+                autoFocus
+                required
+                type="url"
+                placeholder={t('dlvUrlPlaceholder')}
+                value={pageUrl}
+                onChange={(event) => setPageUrl(event.currentTarget.value)}
+              />
+              <TaskDialogHint>{t('dlvTaskHint')}</TaskDialogHint>
+              <TaskInput
+                style={{marginTop: 12}}
+                placeholder={t('dlvFilenamePlaceholder')}
+                value={fileName}
+                onChange={(event) => setFileName(event.currentTarget.value)}
+              />
+              <TaskDialogError>{taskError}</TaskDialogError>
+              <TaskDialogActions>
+                <TaskDialogButton type="button" onClick={() => setDialogOpen(false)}>{t('cancel')}</TaskDialogButton>
+                <TaskDialogButton primary type="submit" disabled={creating}>{creating ? t('dlvCreating') : t('dlvCreateTask')}</TaskDialogButton>
+              </TaskDialogActions>
+            </TaskDialogPanel>
+          </TaskDialog>
+        )}
       </Container>
     </ThemeProvider>
   );

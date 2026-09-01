@@ -2,6 +2,7 @@ import { observer } from 'mobx-react-lite';
 import * as React from 'react';
 
 import { Preloader } from '~/renderer/components/Preloader';
+import { useI18n } from '~/renderer/components/I18n';
 import {
   StyledTab,
   StyledContent,
@@ -143,6 +144,7 @@ const getTabDensity = (tab: ITab) => {
 };
 
 const Content = observer(({ tab }: { tab: ITab }) => {
+  const t = useI18n();
   const density = getTabDensity(tab);
   // 图标源优先级:本地 favicon(data URL)→ getIconByUrlNet 网络兜底(与书签栏一致)
   // → 地球图标。任一来源解码失败后尝试下一级;tab.url 切换时同步重置失败列表
@@ -206,7 +208,11 @@ const Content = observer(({ tab }: { tab: ITab }) => {
           $density={density}
           incognito={tab.incognito}
         >
-          {tab.isSelected && store.isCompact ? tab.url : tab.title}
+          {tab.isSelected && store.isCompact
+            ? tab.url
+            : tab.title === '新标签页'
+            ? t('newTab')
+            : tab.title}
         </StyledTitle>
       )}
       <ExpandedVolume tab={tab} density={density} />

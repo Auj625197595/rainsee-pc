@@ -1,6 +1,7 @@
 import {ipcRenderer} from 'electron';
 import {resolve} from 'path';
 import * as remote from '@electron/remote';
+import { createLocaleTranslator } from '~/common/i18n';
 
 const getWebContentsId = () => ipcRenderer.sendSync('get-webcontents-id');
 
@@ -62,7 +63,8 @@ const createWebview = (url: string, inspect: boolean) => {
       .addListener('context-menu', (e, params) => {
         const menu = remote.Menu.buildFromTemplate([
           {
-            label: '检查...',
+            // 本弹窗无 settings 源,按系统语言(navigator.language)解析。
+            label: createLocaleTranslator(undefined)('epInspect'),
             click: () => {
               webview.inspectElement(params.x, params.y);
             },

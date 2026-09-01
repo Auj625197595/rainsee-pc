@@ -23,7 +23,8 @@ export interface IProfileFingerprint {
 export interface IProxyValidationResult {
   ok: boolean;
   settings?: IProfileProxySettings;
-  error?: string;
+  // 消息 key(由调用方在展示边界翻译;本模块保持无 Electron 依赖)
+  error?: import('./i18n').MessageKey;
 }
 
 const hashText = (value: string): number => {
@@ -91,7 +92,7 @@ export const normalizeProfileProxy = (
   value: unknown,
 ): IProxyValidationResult => {
   if (!value || typeof value !== 'object') {
-    return { ok: false, error: '代理配置无效' };
+    return { ok: false, error: 'pnetErrInvalidProxy' };
   }
   const raw = value as Record<string, unknown>;
   const mode = raw.mode;
@@ -102,7 +103,7 @@ export const normalizeProfileProxy = (
     mode !== 'socks5' &&
     mode !== 'pac'
   ) {
-    return { ok: false, error: '请选择有效的代理类型' };
+    return { ok: false, error: 'pnetErrInvalidType' };
   }
   if (mode === 'system') {
     return {
@@ -140,20 +141,20 @@ export const normalizeProfileProxy = (
     const pacScript =
       typeof raw.pacScript === 'string' ? raw.pacScript.trim() : '';
     if (!pacScript) {
-      return { ok: false, error: '请提供 PAC 脚本或 URL' };
+      return { ok: false, error: 'pnetErrPacRequired' };
     }
     const isUrl = /^https?:\/\/|^file:\/\//i.test(pacScript);
     // 非_URL 时必须是含 FindProxyForURL 的脚本文本。
     if (!isUrl && !/FindProxyForURL/.test(pacScript)) {
-      return { ok: false, error: 'PAC 脚本必须包含 FindProxyForURL 函数' };
+      return { ok: false, error: 'pnetErrPacMissingFn' };
     }
     if (pacScript.length > 200000) {
-      return { ok: false, error: 'PAC 脚本过长' };
+      return { ok: false, error: 'pnetErrPacTooLong' };
     }
     const bypass =
       typeof raw.bypass === 'string' ? raw.bypass.trim() : '<local>';
     if (bypass.length > 1000 || /[\r\n]/.test(bypass)) {
-      return { ok: false, error: '不代理地址列表格式不正确' };
+      return { ok: false, error: 'pnetErrBypassInvalid' };
     }
     return {
       ok: true,
@@ -170,27 +171,27 @@ export const normalizeProfileProxy = (
   }
 
   const host = typeof raw.host === 'string' ? raw.host.trim() : '';
-  if (!host) return { ok: false, error: '请输入代理服务器地址' };
+  if (!host) return { ok: false, error: 'pnetErrHostRequired' };
   if (host.length > 253 || /\s|:\/\/|[/?#@]/.test(host)) {
-    return { ok: false, error: '代理服务器地址格式不正确' };
+    return { ok: false, error: 'pnetErrHostInvalid' };
   }
   if (host.includes(':') && !/^\[[0-9a-f:]+\]$/i.test(host)) {
-    return { ok: false, error: 'IPv6 地址需要使用方括号，例如 [::1]' };
+    return { ok: false, error: 'pnetErrIpv6Brackets' };
   }
 
   const port = Number(raw.port);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    return { ok: false, error: '代理端口必须在 1 到 65535 之间' };
+    return { ok: false, error: 'pnetErrPortRange' };
   }
 
   const username = typeof raw.username === 'string' ? raw.username.trim() : '';
   const password = typeof raw.password === 'string' ? raw.password : '';
   const bypass = typeof raw.bypass === 'string' ? raw.bypass.trim() : '';
   if (username.length > 200 || password.length > 200) {
-    return { ok: false, error: '代理账号或密码过长' };
+    return { ok: false, error: 'pnetErrCredentialTooLong' };
   }
   if (bypass.length > 1000 || /[\r\n]/.test(bypass)) {
-    return { ok: false, error: '不代理地址列表格式不正确' };
+    return { ok: false, error: 'pnetErrBypassInvalid' };
   }
 
   return {

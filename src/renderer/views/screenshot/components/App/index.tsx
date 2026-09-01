@@ -42,6 +42,7 @@ import {
 } from './style';
 import store from '../../store';
 import { UIStyle } from '~/renderer/mixins/default-styles';
+import { useI18n } from '~/renderer/components/I18n';
 
 interface Point {
   x: number;
@@ -297,6 +298,7 @@ const drawAnnotations = (
 };
 
 export const App = observer(() => {
+  const t = useI18n();
   const [rect, setRect] = React.useState<Rect | null>(null);
   const [committed, setCommitted] = React.useState(false);
   const [tool, setTool] = React.useState<Tool>('rectangle');
@@ -709,7 +711,7 @@ export const App = observer(() => {
       if (action === 'search') store.searchImage(dataURL);
       if (action === 'copy' || action === 'save') close();
     } catch {
-      store.setHint('处理失败');
+      store.setHint(t('shotProcessFailed'));
     }
   };
 
@@ -727,17 +729,17 @@ export const App = observer(() => {
   };
 
   const tools: Array<{ id: Tool; title: string; icon: React.ReactNode }> = [
-    { id: 'rectangle', title: '矩形', icon: <Rectangle size={19} /> },
-    { id: 'ellipse', title: '椭圆', icon: <Circle size={19} /> },
-    { id: 'arrow', title: '箭头', icon: <ArrowUpRight size={19} /> },
-    { id: 'line', title: '直线', icon: <Minus size={19} /> },
+    { id: 'rectangle', title: 'shotToolRectangle', icon: <Rectangle size={19} /> },
+    { id: 'ellipse', title: 'shotToolEllipse', icon: <Circle size={19} /> },
+    { id: 'arrow', title: 'shotToolArrow', icon: <ArrowUpRight size={19} /> },
+    { id: 'line', title: 'shotToolLine', icon: <Minus size={19} /> },
     {
       id: 'pen',
-      title: '画笔（Shift + 单击连直线）',
+      title: 'shotToolBrush',
       icon: <PencilSimple size={19} />,
     },
-    { id: 'text', title: '文字', icon: <TextT size={19} /> },
-    { id: 'mosaic', title: '马赛克', icon: <GridFour size={19} /> },
+    { id: 'text', title: 'shotToolText', icon: <TextT size={19} /> },
+    { id: 'mosaic', title: 'shotToolMosaic', icon: <GridFour size={19} /> },
   ];
 
   const renderToolbar = () => (
@@ -749,8 +751,8 @@ export const App = observer(() => {
         <ToolIconButton
           key={item.id}
           type="button"
-          title={item.title}
-          aria-label={item.title}
+          title={t(item.title)}
+          aria-label={t(item.title)}
           $active={tool === item.id}
           onClick={() => setTool(item.id)}
         >
@@ -761,8 +763,8 @@ export const App = observer(() => {
       <ColorSwatch
         type="color"
         value={color}
-        title="颜色"
-        aria-label="颜色"
+        title={t('shotColorTitle')}
+        aria-label={t('shotColorTitle')}
         onChange={(event) => setColor(event.target.value)}
       />
       <SizeInput
@@ -770,14 +772,14 @@ export const App = observer(() => {
         min="1"
         max="8"
         value={size}
-        title="粗细"
-        aria-label="粗细"
+        title={t('shotStrokeTitle')}
+        aria-label={t('shotStrokeTitle')}
         onChange={(event) => setSize(Number(event.target.value))}
       />
       <ToolIconButton
         type="button"
-        title="撤销 (Ctrl+Z)"
-        aria-label="撤销"
+        title={t('shotUndoTitle')}
+        aria-label={t('shotUndoAria')}
         disabled={annotations.length === 0}
         onClick={() => setAnnotations((items) => items.slice(0, -1))}
       >
@@ -786,8 +788,8 @@ export const App = observer(() => {
       <ToolDivider />
       <ToolIconButton
         type="button"
-        title="以图搜索"
-        aria-label="以图搜索"
+        title={t('shotSearchImageTitle')}
+        aria-label={t('shotSearchImageTitle')}
         onClick={() => void finish('search')}
       >
         <MagnifyingGlass size={19} />
@@ -795,16 +797,16 @@ export const App = observer(() => {
       <ToolDivider />
       <ToolIconButton
         type="button"
-        title="保存"
-        aria-label="保存"
+        title={t('shotSaveTitle')}
+        aria-label={t('shotSaveTitle')}
         onClick={() => void finish('save')}
       >
         <FloppyDisk size={19} />
       </ToolIconButton>
       <ToolIconButton
         type="button"
-        title="取消"
-        aria-label="取消"
+        title={t('shotCancelTitle')}
+        aria-label={t('shotCancelTitle')}
         $danger
         onClick={close}
       >
@@ -812,12 +814,12 @@ export const App = observer(() => {
       </ToolIconButton>
       <ToolButton
         type="button"
-        title="完成"
-        aria-label="完成"
+        title={t('shotFinishTitle')}
+        aria-label={t('shotFinishTitle')}
         primary
         onClick={() => void finish('copy')}
       >
-        完成
+        {t('shotFinish')}
       </ToolButton>
     </Toolbar>
   );
@@ -924,13 +926,13 @@ export const App = observer(() => {
       ) : null}
       <TopBar>
         {store.source === 'desktop'
-          ? '雨见截图'
-          : '拖动鼠标框选区域 · Esc 取消'}
+          ? t('shotAppName')
+          : t('shotDragHint')}
         <TopBarCloseButton
           type="button"
           onClick={close}
-          aria-label="关闭截图"
-          title="关闭"
+          aria-label={t('shotCloseAria')}
+          title={t('shotClose')}
         >
           <X size={14} weight="bold" />
         </TopBarCloseButton>
@@ -941,7 +943,7 @@ export const App = observer(() => {
             disabled={store.capturing}
           >
             <Rectangle size={14} />
-            {store.capturing ? '截取中…' : '截长图'}
+            {store.capturing ? t('shotCapturing') : t('shotCaptureLong')}
           </TopBarLongButton>
         ) : null}
       </TopBar>
@@ -961,7 +963,7 @@ export const App = observer(() => {
             if (store.longshot) store.searchImage(store.longshot);
           }}
         >
-          以图搜索
+          {t('shotSearchImage')}
         </ToolButton>
         <ToolDivider />
         <ToolButton
@@ -971,7 +973,7 @@ export const App = observer(() => {
             close();
           }}
         >
-          复制
+          {t('shotCopy')}
         </ToolButton>
         <ToolButton
           type="button"
@@ -981,11 +983,11 @@ export const App = observer(() => {
             close();
           }}
         >
-          保存
+          {t('shotSaveTitle')}
         </ToolButton>
         <ToolDivider />
         <ToolButton type="button" onClick={close}>
-          关闭
+          {t('shotClose')}
         </ToolButton>
       </FullPageActions>
     </FullPageRoot>

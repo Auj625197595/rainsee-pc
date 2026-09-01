@@ -10,6 +10,8 @@ import {
 } from 'electron';
 import {WEBUI_BASE_URL, WEBUI_URL_SUFFIX} from '~/constants/files';
 import {PopupView} from '~/main/dialogs/popup';
+import {Application} from '../application';
+import {getMainTranslator} from '../i18n';
 
 // PWA「安装」后运行的独立应用窗口,以及从快捷方式 / --app 命令行冷启动的入口。
 // Electron 主窗口只承载应用头部，网站运行在下方独立 BrowserView 中。
@@ -265,7 +267,13 @@ const getExtensionMenuItems = async (): Promise<AppExtensionMenuItem[]> => {
       .filter((item: any) => item.enabled && item.type === 'extension')
       .map((item: any) => ({
         id: String(item.id || ''),
-        name: String(item.name || item.id || '扩展'),
+        name: String(
+          item.name ||
+            item.id ||
+            getMainTranslator(Application.instance.settings?.object?.language)(
+              'amExtensionFallback',
+            ),
+        ),
         icon: String(item.icon || ''),
         popup: String(item.popup || ''),
       }))
@@ -282,6 +290,8 @@ const showAppMenu = (
 ) => {
   const {win, page, name} = context;
   if (win.isDestroyed() || page.isDestroyed()) return;
+  // 应用菜单对用户可见,按当前语言即时翻译。
+  const t = getMainTranslator(Application.instance.settings?.object?.language);
 
   const adjustZoom = (multiplier: number) => {
     page.setZoomFactor(
@@ -296,53 +306,53 @@ const showAppMenu = (
     }),
   );
   if (extensionItems.length === 0) {
-    extensionItems.push({label: '没有已安装的扩展', enabled: false});
+    extensionItems.push({label: t('amNoExtensions'), enabled: false});
   }
   extensionItems.push({type: 'separator'});
-  extensionItems.push({label: '管理扩展', click: openExtensionsManager});
+  extensionItems.push({label: t('amManageExtensions'), click: openExtensionsManager});
 
   const menu = Menu.buildFromTemplate([
     {
-      label: name || '应用',
+      label: name || t('iaAppFallback'),
       icon: context.iconDataUrl
         ? nativeImage.createFromDataURL(context.iconDataUrl)
         : undefined,
       enabled: false,
     },
     {type: 'separator'},
-    {label: '固定到任务栏', enabled: false},
-    {label: '固定到开始菜单', enabled: false},
-    {label: '应用设置', enabled: false},
+    {label: t('amPinTaskbar'), enabled: false},
+    {label: t('amPinStartMenu'), enabled: false},
+    {label: t('amAppSettings'), enabled: false},
     {type: 'separator'},
     {
-      label: '缩放',
+      label: t('amZoom'),
       submenu: [
-        {label: '放大', click: () => adjustZoom(1.1)},
-        {label: '缩小', click: () => adjustZoom(1 / 1.1)},
-        {label: '重置缩放', click: () => page.setZoomFactor(1)},
+        {label: t('shortcutZoomIn'), click: () => adjustZoom(1.1)},
+        {label: t('shortcutZoomOut'), click: () => adjustZoom(1 / 1.1)},
+        {label: t('shortcutResetZoom'), click: () => page.setZoomFactor(1)},
       ],
     },
     {
-      label: '扩展',
+      label: t('amExtensions'),
       submenu: extensionItems,
     },
     {
-      label: '更多工具',
+      label: t('amMoreTools'),
       submenu: [
-        {label: '复制页面链接', click: () => clipboard.writeText(page.getURL())},
+        {label: t('amCopyPageLink'), click: () => clipboard.writeText(page.getURL())},
         {
-          label: '在浏览器中打开',
+          label: t('amOpenInBrowser'),
           click: () => {
             const url = page.getURL();
             if (/^https?:/i.test(url))
               shell.openExternal(url).catch(() => undefined);
           },
         },
-        {label: '重新加载应用', click: () => page.reload()},
+        {label: t('amReloadApp'), click: () => page.reload()},
       ],
     },
     {type: 'separator'},
-    {label: '退出应用', click: () => win.close()},
+    {label: t('amQuitApp'), click: () => win.close()},
   ]);
   const [contentWidth] = win.getContentSize();
   menu.popup({
@@ -413,7 +423,7 @@ const shellHtml = (title: string) =>
 export const openAppModeWindow = (opts: AppModeOptions): BrowserWindow => {
   const width = opts.bounds?.width || 1024;
   const height = opts.bounds?.height || 768;
-  const appName = opts.name || '应用';
+  const appName = opts.name || getMainTranslator(Application.instance.settings?.object?.language)('iaAppFallback');
   const themeColor = normalizeThemeColor(opts.themeColor);
   const foregroundColor = foregroundFor(themeColor);
   const win = new BrowserWindow({

@@ -14,6 +14,7 @@ import { AppWindow } from '../windows/app';
 import { AddBookmarkDialog } from '../dialogs/add-bookmark';
 import { getWebUIURL } from '~/common/webui-main';
 import { normalizeBookmarkBarDisplay } from '~/common/bookmark-bar';
+import { getMainTranslator } from '../i18n';
 
 type BookmarkClipboard = {
   mode: 'cut' | 'copy';
@@ -46,6 +47,15 @@ function getPath(file: string) {
     return join(app.getAppPath(), `build`, path);
   }
 }
+
+// 菜单文案走统一 i18n 目录(见 docs/internationalization.md)。每次构建菜单时
+// 解析语言:显式选择优先,auto 回落系统 locale——与启动时 --lang 的解析一致,
+// 不依赖 Chromium 应用 locale(显式选择时 --lang 未设置)。
+const getTranslator = () => {
+  return getMainTranslator(
+    Application.instance.settings?.object?.language,
+  );
+};
 
 // 渲染进程栅格化后传入的默认图标 PNG data URL(黄文件夹/灰地球),
 // 使 popup 默认图标与书签栏一致。未传入时回退到 themed PNG 兜底。
@@ -97,7 +107,7 @@ async function resolveIcon(
     if (img) return img;
   }
 
-  // 2. 无本地 favicon:走在线图标服务(icon.rainsee.cn)按域名取图标。
+  // 2. 无本地 favicon:走在线图标服务(DuckDuckGo)按域名取图标。
   //    addFavicon fetch + 转 data URL 并缓存(后续命中直接返回)。加超时并用
   //    clearTimeout 清理,避免 race 中未中标的 timeout 产生 unhandled rejection。
   //    仅根层允许(opts.allowNetwork 默认 true);子层跳过以保证 popup 不被网络阻塞。
@@ -208,7 +218,9 @@ export async function createDropdown(
 
   return template.length > 0
     ? Menu.buildFromTemplate(template)
-    : Menu.buildFromTemplate([{ label: '(empty)', enabled: false }]);
+    : Menu.buildFromTemplate([
+        { label: getTranslator()('bookmarksEmpty'), enabled: false },
+      ]);
 }
 
 function getSortedChildren(parentId: string): IBookmark[] {
@@ -327,7 +339,7 @@ async function addFolder(appWindow: AppWindow, folderId?: string) {
   if (!parent?._id) return;
 
   const folder = await Application.instance.storage.addBookmark({
-    title: '新建文件夹',
+    title: getTranslator()('newFolder'),
     isFolder: true,
     parent: parent._id,
   });
@@ -465,6 +477,7 @@ async function pasteBookmarks(parentId: string | undefined) {
 }
 
 function commonMenuItems(appWindow: AppWindow): MenuItemConstructorOptions[] {
+  const t = getTranslator();
   const settings = Application.instance.settings.object;
   const bookmarkBarDisplay = normalizeBookmarkBarDisplay(
     settings.bookmarksBarDisplay,
@@ -478,27 +491,27 @@ function commonMenuItems(appWindow: AppWindow): MenuItemConstructorOptions[] {
 
   return [
     {
-      label: '书签管理器',
+      label: t('bookmarkManager'),
       accelerator: 'CmdOrCtrl+Shift+O',
       click: () => openBookmarkManager(appWindow),
     },
     {
-      label: '显示书签栏',
+      label: t('showBookmarksBar'),
       submenu: [
         {
-          label: '始终显示',
+          label: t('bookmarksBarAlways'),
           type: 'radio',
           checked: bookmarkBarDisplay === 'always',
           click: () => setBookmarkBarDisplay('always'),
         },
         {
-          label: '只在新标签页',
+          label: t('bookmarksBarNewTab'),
           type: 'radio',
           checked: bookmarkBarDisplay === 'newtab',
           click: () => setBookmarkBarDisplay('newtab'),
         },
         {
-          label: '永不显示',
+          label: t('bookmarksBarNever'),
           type: 'radio',
           checked: bookmarkBarDisplay === 'never',
           click: () => setBookmarkBarDisplay('never'),
@@ -509,19 +522,20 @@ function commonMenuItems(appWindow: AppWindow): MenuItemConstructorOptions[] {
 }
 
 function createBarMenu(appWindow: AppWindow, folderId?: string) {
+  const t = getTranslator();
   const destinationFolder = getDestinationFolder(folderId);
   const template: MenuItemConstructorOptions[] = [
     {
-      label: '添加网页…',
+      label: t('addPage'),
       accelerator: 'CmdOrCtrl+D',
       click: () => addPage(appWindow, destinationFolder?._id),
     },
     {
-      label: '添加文件夹…',
+      label: t('addFolder'),
       click: () => void addFolder(appWindow, destinationFolder?._id),
     },
     {
-      label: '粘贴',
+      label: t('paste'),
       enabled: canPasteInto(destinationFolder?._id),
       click: () => void pasteBookmarks(destinationFolder?._id),
     },
@@ -541,24 +555,29 @@ export function createMenu(
   if (!item?._id) return createBarMenu(appWindow, barFolderId);
 
   const { isFolder } = item;
+  const t = getTranslator();
   const urls = getBookmarkUrls(item);
   const pasteTargetId = isFolder ? item._id : item.parent;
   const currentUrl = appWindow.viewManager.selected?.url;
   const openItems: MenuItemConstructorOptions[] = [
     {
-      label: isFolder ? `全部打开（${urls.length} 项）` : '在新标签页中打开',
+      label: isFolder
+        ? t('openAllCount', { count: urls.length })
+        : t('openInNewTab'),
       enabled: urls.length > 0,
       click: () => {
         openInTabs(appWindow, urls, !isFolder);
       },
     },
     {
-      label: isFolder ? '全部在新窗口中打开' : '在新窗口中打开',
+      label: isFolder ? t('openAllInNewWindow') : t('openInNewWindow'),
       enabled: urls.length > 0,
       click: () => openInWindow(urls, false),
     },
     {
-      label: isFolder ? '全部在无痕窗口中打开' : '在无痕窗口中打开',
+      label: isFolder
+        ? t('openAllInIncognitoWindow')
+        : t('openInIncognitoWindow'),
       enabled: urls.length > 0,
       click: () => openInWindow(urls, true),
     },
@@ -570,36 +589,36 @@ export function createMenu(
   const template: MenuItemConstructorOptions[] = [
     ...openItems,
     {
-      label: isFolder ? '重命名' : '编辑',
+      label: isFolder ? t('rename') : t('edit'),
       click: () => openEditor(appWindow, item),
     },
     ...(!isFolder && source === 'bar'
       ? [
           {
-            label: '替换为当前网址',
+            label: t('replaceWithCurrentUrl'),
             enabled: !!currentUrl && currentUrl !== item.url,
             click: () => replaceWithCurrentUrl(appWindow, item),
           } as MenuItemConstructorOptions,
         ]
       : []),
     {
-      label: '剪切',
+      label: t('cut'),
       accelerator: 'CmdOrCtrl+X',
       click: () => setClipboard(item, 'cut'),
     },
     {
-      label: '复制',
+      label: t('copy'),
       accelerator: 'CmdOrCtrl+C',
       click: () => setClipboard(item, 'copy'),
     },
     {
-      label: '粘贴',
+      label: t('paste'),
       accelerator: 'CmdOrCtrl+V',
       enabled: canPasteInto(pasteTargetId),
       click: () => void pasteBookmarks(pasteTargetId),
     },
     {
-      label: '删除',
+      label: t('deleteItem'),
       click: () => {
         void Application.instance.storage.removeBookmark(item._id);
         // 删除后关闭书签溢出浮层(若开着)。reload-bookmarks 只广播到窗口

@@ -10,6 +10,7 @@ import {
 } from '@phosphor-icons/react';
 
 import { getWebUIURL } from '~/common/webui';
+import { useI18n } from '~/renderer/components/I18n';
 import { Rail, RailGroup, RailItem } from './style';
 
 const RailButton = observer(
@@ -36,26 +37,27 @@ const RailButton = observer(
 );
 
 export const GlobalNavigationDrawer = () => {
+  const t = useI18n();
   return (
     <Rail>
       <RailGroup>
-        <RailButton name="history" title="历史记录">
+        <RailButton name="history" title={t('menuHistory')}>
           <ClockCounterClockwiseIcon size={20} weight="bold" />
         </RailButton>
-        <RailButton name="bookmarks" title="书签">
+        <RailButton name="bookmarks" title={t('menuBookmarks')}>
           <BookmarksSimpleIcon size={20} weight="bold" />
         </RailButton>
-        <RailButton name="downloads" title="下载管理">
+        <RailButton name="downloads" title={t('dlvTitle')}>
           <DownloadSimpleIcon size={20} weight="bold" />
         </RailButton>
-        <RailButton name="extensions" title="扩展管理">
+        <RailButton name="extensions" title={t('mrPgExtensions')}>
           <PuzzlePieceIcon size={20} weight="bold" />
         </RailButton>
-        <RailButton name="memory" title="内存使用情况">
+        <RailButton name="memory" title={t('mrPgMemory')}>
           <ChartDonutIcon size={20} weight="bold" />
         </RailButton>
       </RailGroup>
-      <RailButton name="settings" title="设置">
+      <RailButton name="settings" title={t('settings')}>
         <GearIcon size={20} weight="bold" />
       </RailButton>
     </Rail>

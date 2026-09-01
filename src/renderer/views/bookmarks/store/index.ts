@@ -1,10 +1,14 @@
 import { observable, computed, action, toJS, makeObservable } from 'mobx';
+import { createLocaleTranslator } from '~/common/i18n';
 import { ISettings, IFavicon, ITheme, IBookmark } from '~/interfaces';
 import { getTheme } from '~/utils/themes';
 import { PreloadDatabase } from '~/preloads/models/database';
 import { ipcRenderer } from '~/common/renderer-ipc';
 import * as React from 'react';
 import { compareBookmark, SortCriteria } from '../utils';
+import { getWebUIContext } from '~/common/webui-context';
+
+const webUIContext = getWebUIContext();
 
 export class Store {
   public faviconsDb = new PreloadDatabase<IFavicon>('favicons');
@@ -14,7 +18,7 @@ export class Store {
   public urlInputRef = React.createRef<HTMLInputElement>();
 
   @observable
-  public settings: ISettings = { ...(window as any).settings };
+  public settings: ISettings = { ...(webUIContext.settings as Partial<ISettings>) } as ISettings;
 
   @observable
   public list: IBookmark[] = [];
@@ -245,7 +249,9 @@ export class Store {
       );
     } catch {
       this.availableBrowsers = { chrome: false, edge: false, firefox: false };
-      this.importError = '检测失败，请稍后重试';
+      this.importError = createLocaleTranslator(this.settings.language)(
+        'bmImportDetectFailed',
+      );
     }
   }
 
@@ -408,9 +414,9 @@ export class Store {
   public constructor() {
     makeObservable(this);
 
-    (window as any).updateSettings = (settings: ISettings) => {
+    ipcRenderer.on('update-settings', (_event, settings: ISettings) => {
       this.settings = { ...this.settings, ...settings };
-    };
+    });
 
     this.load();
     this.loadFavicons();

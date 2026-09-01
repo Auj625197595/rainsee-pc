@@ -1,4 +1,6 @@
 import {observable, action, computed, makeObservable, runInAction} from 'mobx';
+import {ipcRenderer} from '~/common/renderer-ipc';
+import {createLocaleTranslator} from '~/common/i18n';
 
 export interface ImageItem {
   url: string;
@@ -78,23 +80,21 @@ export class Store {
   }
 
   private boot() {
-    // ZIP 进度回调(view-preload 把 main 的 image-viewer-zip-progress 转发到这里)。
-    (window as any).imageViewerZipProgress = (data: {done: number; total: number}) => {
+    ipcRenderer.on('image-viewer-zip-progress', (_event, data) => {
       runInAction(() => {
         this.zipDone = data.done;
         this.zipTotal = data.total;
       });
-    };
+    });
 
     const params = new URLSearchParams(window.location.search);
     const id = params.get('id');
-    const inv = (window as any).ipcInvoke;
-    if (!id || typeof inv !== 'function') {
+    if (!id) {
       this.loading = false;
       this.error = true;
       return;
     }
-    inv('image-viewer-get', id)
+    ipcRenderer.invoke('image-viewer-get', id)
       .then((data: CollectedPayload | null) => this.setPayload(data))
       .catch(() => {
         runInAction(() => {
@@ -181,47 +181,38 @@ export class Store {
   public downloadSelected() {
     const targets = this.images.filter((i) => this.selected.has(i.url));
     if (!targets.length) return;
-    const inv = (window as any).ipcInvoke;
-    if (typeof inv !== 'function') {
-      this.showToast('下载不可用');
-      return;
-    }
     const ts = Date.now();
     targets.forEach((item, idx) => {
-      inv('media-download', {
+      ipcRenderer.invoke('media-download', {
         url: item.url,
         mediaType: 'other',
         headers: this.dlHeaders(),
         fileName: `${hostOf(item.url)}-${ts}-${idx + 1}.${extOf(item.url)}`,
       }).catch(() => undefined);
     });
-    this.showToast(`已添加 ${targets.length} 个到下载面板`);
+    this.showToast(
+      createLocaleTranslator(this.settings.language)('ivAddedNToPanel', {
+        count: targets.length,
+      }),
+    );
   }
 
   public downloadOne(item: ImageItem) {
-    const inv = (window as any).ipcInvoke;
-    if (typeof inv !== 'function') {
-      this.showToast('下载不可用');
-      return;
-    }
-    inv('media-download', {
+    ipcRenderer.invoke('media-download', {
       url: item.url,
       mediaType: 'other',
       headers: this.dlHeaders(),
       fileName: `${hostOf(item.url)}-${Date.now()}.${extOf(item.url)}`,
     }).catch(() => undefined);
-    this.showToast('已添加到下载面板');
+    this.showToast(
+      createLocaleTranslator(this.settings.language)('ivAddedToPanel'),
+    );
   }
 
   // 打包选中图片为 zip(主进程逐张拉取 + jszip)。
   public async downloadZip() {
     const targets = this.images.filter((i) => this.selected.has(i.url));
     if (!targets.length) return;
-    const inv = (window as any).ipcInvoke;
-    if (typeof inv !== 'function') {
-      this.showToast('下载不可用');
-      return;
-    }
     runInAction(() => {
       this.zipping = true;
       this.zipDone = 0;
@@ -236,7 +227,7 @@ export class Store {
         alt: t.alt,
         type: t.type,
       }));
-      const res = await inv('image-viewer-pack-zip', {
+      const res = await ipcRenderer.invoke('image-viewer-pack-zip', {
         images: payload,
         referer: this.referer,
         cookie: this.cookies,
@@ -246,15 +237,25 @@ export class Store {
         this.zipping = false;
       });
       if (res && res.ok) {
-        this.showToast(`已打包 ${res.count} 张到下载目录`);
+        this.showToast(
+      createLocaleTranslator(this.settings.language)('ivZippedN', {
+        count: res.count,
+      }),
+    );
       } else {
-        this.showToast('打包失败:' + (res && res.error ? res.error : ''));
+        this.showToast(
+      createLocaleTranslator(this.settings.language)('ivZipFailedWith', {
+        error: res && res.error ? res.error : '',
+      }),
+    );
       }
     } catch (e) {
       runInAction(() => {
         this.zipping = false;
       });
-      this.showToast('打包失败');
+      this.showToast(
+      createLocaleTranslator(this.settings.language)('ivZipFailed'),
+    );
     }
   }
 }

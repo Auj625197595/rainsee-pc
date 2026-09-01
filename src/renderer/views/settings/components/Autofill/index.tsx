@@ -19,7 +19,10 @@ import {
   SettingIcon,
 } from '../App/style';
 import { ICON_EDIT, ICON_TRASH } from '~/renderer/constants';
-import { onSwitchChange } from '~/renderer/views/settings/utils';
+import {
+  onSwitchChange,
+  getSettingsTranslator,
+} from '~/renderer/views/settings/utils';
 import { Switch } from '~/renderer/components/Switch';
 
 const onEditClick = () => {
@@ -63,6 +66,7 @@ const Menu = observer(() => {
 });
 
 const AutofillSwitch = observer(() => {
+  const t = getSettingsTranslator();
   const { autofill } = store.settings;
   return (
     <Row onClick={onSwitchChange('autofill')}>
@@ -70,7 +74,7 @@ const AutofillSwitch = observer(() => {
         <Key size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>密码自动记忆和填充</Title>
+        <Title>{t('searchRememberPassword')}</Title>
       </SettingCopy>
       <Control>
         <Switch value={autofill} />

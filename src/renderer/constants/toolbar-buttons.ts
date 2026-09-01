@@ -4,6 +4,7 @@ import {
   PuzzlePiece,
   ShieldCheckIcon,
   Translate,
+  ArrowSquareOut,
   ClockCounterClockwiseIcon,
   BookmarksSimpleIcon,
   Broom,
@@ -11,13 +12,14 @@ import {
 } from '@phosphor-icons/react';
 
 import { ICON_DOWNLOAD, ICON_STAR, ICON_VIDEO } from './icons';
+import type { MessageKey } from '~/common/i18n';
 
 // 工具栏图标统一类型:Phosphor 组件 或 字符串 URL(与 ToolbarButton 的 icon 双类型一致)。
 export type ToolbarIcon = string | React.ComponentType<any>;
 
 export interface ClusterButtonMeta {
   id: string;
-  label: string;
+  labelKey: MessageKey;
   area: 'left' | 'right';
   Icon: ToolbarIcon;
   // 默认隐藏:常驻入口(可在自定义工具栏里开启),但新装/升级用户默认不显示。
@@ -26,7 +28,7 @@ export interface ClusterButtonMeta {
 
 export interface SiteButtonMeta {
   id: string;
-  label: string;
+  labelKey: MessageKey;
   Icon: ToolbarIcon;
 }
 
@@ -34,40 +36,40 @@ export interface SiteButtonMeta {
 // 固定不在此列(始终渲染、不可隐藏/移动)。数组顺序即默认顺序。
 // defaultHidden 的常驻入口默认不显示,用户可在「自定义工具栏」开启。
 export const CLUSTER_BUTTONS: ClusterButtonMeta[] = [
-  { id: 'home', label: '主页', area: 'left', Icon: HouseSimpleIcon },
-  { id: 'extensions', label: '扩展', area: 'right', Icon: PuzzlePiece },
-  { id: 'downloads', label: '下载', area: 'right', Icon: ICON_DOWNLOAD },
+  { id: 'home', labelKey: 'toolbarButtonHome', area: 'left', Icon: HouseSimpleIcon },
+  { id: 'extensions', labelKey: 'toolbarButtonExtensions', area: 'right', Icon: PuzzlePiece },
+  { id: 'downloads', labelKey: 'toolbarButtonDownloads', area: 'right', Icon: ICON_DOWNLOAD },
   {
     id: 'history',
-    label: '历史',
+    labelKey: 'toolbarButtonHistory',
     area: 'right',
     Icon: ClockCounterClockwiseIcon,
     defaultHidden: true,
   },
   {
     id: 'bookmarks',
-    label: '书签',
+    labelKey: 'toolbarButtonBookmarks',
     area: 'right',
     Icon: BookmarksSimpleIcon,
     defaultHidden: true,
   },
   {
     id: 'clear-browsing-data',
-    label: '清理浏览数据',
+    labelKey: 'toolbarButtonClearBrowsingData',
     area: 'right',
     Icon: Broom,
     defaultHidden: true,
   },
   {
     id: 'screenshot',
-    label: '截图',
+    labelKey: 'toolbarButtonScreenshot',
     area: 'right',
     Icon: Camera,
     defaultHidden: true,
   },
   {
     id: 'translate-page',
-    label: '翻译',
+    labelKey: 'toolbarButtonTranslatePage',
     area: 'right',
     Icon: Translate,
     defaultHidden: true,
@@ -76,10 +78,11 @@ export const CLUSTER_BUTTONS: ClusterButtonMeta[] = [
 
 // 地址栏内图标:仅显隐,不可拖拽(位置固定,跟随页面状态)。
 export const SITE_BUTTONS: SiteButtonMeta[] = [
-  { id: 'star', label: '书签星标', Icon: ICON_STAR },
-  { id: 'shield', label: '广告拦截', Icon: ShieldCheckIcon },
-  { id: 'translate', label: '翻译', Icon: Translate },
-  { id: 'video', label: '视频', Icon: ICON_VIDEO },
+  { id: 'new-tab-search', labelKey: 'toolbarButtonNewTabSearch', Icon: ArrowSquareOut },
+  { id: 'star', labelKey: 'toolbarButtonStar', Icon: ICON_STAR },
+  { id: 'shield', labelKey: 'toolbarButtonShield', Icon: ShieldCheckIcon },
+  { id: 'translate', labelKey: 'toolbarButtonTranslate', Icon: Translate },
+  { id: 'video', labelKey: 'toolbarButtonVideo', Icon: ICON_VIDEO },
 ];
 
 export const LEFT_CLUSTER_IDS = CLUSTER_BUTTONS.filter(

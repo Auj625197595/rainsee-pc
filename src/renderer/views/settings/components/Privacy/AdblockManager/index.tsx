@@ -6,7 +6,9 @@ import styled, { css } from 'styled-components';
 import { ITheme } from '~/interfaces';
 import { getPalette } from '../../../utils/palette';
 import store from '../../../store';
+import { getSettingsTranslator } from '../../../utils';
 import { Switch } from '~/renderer/components/Switch';
+import type { MessageKey, Translator } from '~/common/i18n';
 
 interface ISubItem {
   url: string;
@@ -24,11 +26,11 @@ interface ISubStore {
   error?: string;
 }
 
-const AUTO_OPTIONS = [
-  { label: '关闭', hours: 0 },
-  { label: '每天', hours: 24 },
-  { label: '每三天', hours: 72 },
-  { label: '每周', hours: 168 },
+const AUTO_OPTIONS: { labelKey: MessageKey; hours: number }[] = [
+  { labelKey: 'pvAutoOff', hours: 0 },
+  { labelKey: 'pvAutoDaily', hours: 24 },
+  { labelKey: 'pvAuto3Days', hours: 72 },
+  { labelKey: 'pvAutoWeekly', hours: 168 },
 ];
 
 const Wrapper = styled.div`
@@ -285,8 +287,8 @@ const Empty = styled.div`
   `}
 `;
 
-const fmtTime = (ts: number) => {
-  if (!ts) return '从未更新';
+const fmtTime = (ts: number, t: Translator) => {
+  if (!ts) return t('pvNeverUpdated');
   const d = new Date(ts);
   const pad = (n: number) => (n < 10 ? '0' + n : '' + n);
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(
@@ -295,6 +297,7 @@ const fmtTime = (ts: number) => {
 };
 
 export default observer(() => {
+  const t = getSettingsTranslator();
   const [data, setData] = React.useState<ISubStore>({
     seeded: true,
     autoUpdateHours: 168,
@@ -392,12 +395,12 @@ export default observer(() => {
 
   return (
     <GroupBlock>
-      <GroupLabel theme={theme}>规则订阅</GroupLabel>
+      <GroupLabel theme={theme}>{t('pvSubscriptionsSection')}</GroupLabel>
       <Wrapper theme={theme}>
         <TopBar>
           <Spacer />
           <AutoWrap theme={theme}>
-            自动更新
+            {t('pvAutoUpdate')}
             <Select
               theme={theme}
               value={data.autoUpdateHours}
@@ -406,7 +409,7 @@ export default observer(() => {
             >
               {AUTO_OPTIONS.map((o) => (
                 <option key={o.hours} value={o.hours}>
-                  {o.label}
+                  {t(o.labelKey)}
                 </option>
               ))}
             </Select>
@@ -417,7 +420,7 @@ export default observer(() => {
             disabled={anyBusy || data.items.length === 0}
             onClick={onUpdateAll}
           >
-            {busy === 'all' ? '更新中…' : '一键更新'}
+            {busy === 'all' ? t('pvUpdating') : t('pvUpdateAll')}
           </SmallButton>
         </TopBar>
 
@@ -425,7 +428,7 @@ export default observer(() => {
           <Input
             theme={theme}
             value={input}
-            placeholder="添加订阅地址，如 https://easylist.to/easylist/easylist.txt"
+            placeholder={t('pvSubAddPlaceholder')}
             disabled={busy === 'add'}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
@@ -438,14 +441,14 @@ export default observer(() => {
             disabled={anyBusy || !input.trim()}
             onClick={onAdd}
           >
-            {busy === 'add' ? '添加中…' : '添加'}
+            {busy === 'add' ? t('pvAdding') : t('add')}
           </SmallButton>
         </AddRow>
 
         {error ? <ErrorText theme={theme}>{error}</ErrorText> : null}
 
         {data.items.length === 0 ? (
-          <Empty theme={theme}>暂无订阅，添加一个开始拦截广告</Empty>
+          <Empty theme={theme}>{t('pvNoSubs')}</Empty>
         ) : (
           <List>
             {data.items.map((it) => {
@@ -459,10 +462,15 @@ export default observer(() => {
                   <ItemInfo>
                     <ItemName theme={theme}>
                       {it.name || it.url}
-                      {it.builtin ? <Badge theme={theme}>内置</Badge> : null}
+                      {it.builtin ? (
+                        <Badge theme={theme}>{t('pvBuiltin')}</Badge>
+                      ) : null}
                     </ItemName>
                     <ItemMeta theme={theme}>
-                      {`${it.count} 条规则 · ${fmtTime(it.updatedAt)}`}
+                      {t('pvRuleCountTime', {
+                        count: it.count,
+                        time: fmtTime(it.updatedAt, t),
+                      })}
                     </ItemMeta>
                   </ItemInfo>
                   <Actions>
@@ -472,7 +480,7 @@ export default observer(() => {
                       disabled={anyBusy}
                       onClick={() => onUpdate(it.url)}
                     >
-                      {itemBusy ? '…' : '更新'}
+                      {itemBusy ? '…' : t('pvUpdate')}
                     </SmallButton>
                     <SmallButton
                       theme={theme}
@@ -480,7 +488,7 @@ export default observer(() => {
                       disabled={anyBusy}
                       onClick={() => onRemove(it.url)}
                     >
-                      删除
+                      {t('delete')}
                     </SmallButton>
                   </Actions>
                 </Item>

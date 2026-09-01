@@ -7,6 +7,7 @@ import {
 } from '~/constants/design';
 import { PersistentDialog } from './dialog';
 import { Application } from '../application';
+import { getMainTranslator } from '../i18n';
 import { getViewMenu } from '../menus/extension-popup';
 
 const WIDTH = 800;
@@ -183,16 +184,19 @@ export class SearchDialog extends PersistentDialog {
     // 复用 extension-popup 的 getViewMenu:输入框命中 isEditable,展示标准的
     // 撤销/剪切/复制/粘贴/全选编辑菜单,与网页、扩展弹窗等其余界面一致。
     this.webContents.on('context-menu', (_e, params) => {
+      const t = getMainTranslator(
+        Application.instance.settings?.object?.language,
+      );
       const menu = getViewMenu(params, this.webContents);
 
       if (params.isEditable) {
         const pasteIndex = menu.items.findIndex(
-          (item) => item.label === '粘贴',
+          (item) => item.label === t('menuPaste'),
         );
         menu.insert(
           pasteIndex >= 0 ? pasteIndex + 1 : menu.items.length,
           new MenuItem({
-            label: '粘贴并搜索',
+            label: t('ctxPasteSearch'),
             enabled: !!clipboard.readText().trim(),
             click: () => this.webContents.send('search-paste-and-search'),
           }),

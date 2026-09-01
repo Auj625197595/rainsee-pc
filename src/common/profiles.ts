@@ -4,47 +4,51 @@ export const PROFILE_ONBOARDING_SKIPPED_NOTICE =
 export const PROFILE_ONBOARDING_SKIPPED_NOTICE_SHOWN =
   'profile-onboarding-skipped-notice-shown';
 
+import type { MessageKey } from './i18n';
+
 export interface IProfileNameValidation {
   ok: boolean;
   name?: string;
-  error?: string;
+  // 消息 key(由调用方在展示边界翻译;本模块保持无 Electron 依赖)
+  error?: MessageKey;
 }
 
 export interface IParsedProfileArgument {
   present: boolean;
   name: string | null;
-  error?: string;
+  // 消息 key(由展示边界翻译;launcher 等非 UI 消费方当普通字符串处理)
+  error?: MessageKey;
 }
 
 const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 
 export const validateProfileName = (value: unknown): IProfileNameValidation => {
   if (typeof value !== 'string') {
-    return { ok: false, error: '请输入窗口名' };
+    return { ok: false, error: 'profileNameRequired' };
   }
 
   const name = value.trim().normalize('NFC');
-  if (!name) return { ok: false, error: '请输入窗口名' };
+  if (!name) return { ok: false, error: 'profileNameRequired' };
   if (Array.from(name).length > 40) {
-    return { ok: false, error: '窗口名不能超过 40 个字符' };
+    return { ok: false, error: 'profileNameTooLong' };
   }
   if (name === '.' || name === '..') {
-    return { ok: false, error: '窗口名不能使用 . 或 ..' };
+    return { ok: false, error: 'profileNameDotOnly' };
   }
   if (/^[.]/.test(name)) {
-    return { ok: false, error: '窗口名不能以点开头' };
+    return { ok: false, error: 'profileNameLeadingDot' };
   }
   if (/[\x00-\x1f\x7f]/.test(name)) {
-    return { ok: false, error: '窗口名不能包含控制字符' };
+    return { ok: false, error: 'profileNameControlChars' };
   }
   if (/[\\/:*?"<>|]/.test(name)) {
-    return { ok: false, error: '窗口名不能包含 \\ / : * ? " < > |' };
+    return { ok: false, error: 'profileNameForbiddenChars' };
   }
   if (/[. ]$/.test(name)) {
-    return { ok: false, error: '窗口名不能以点或空格结尾' };
+    return { ok: false, error: 'profileNameTrailingDotSpace' };
   }
   if (WINDOWS_RESERVED_NAME.test(name)) {
-    return { ok: false, error: '该窗口名是系统保留名称' };
+    return { ok: false, error: 'profileNameReserved' };
   }
 
   return { ok: true, name };
@@ -64,7 +68,7 @@ export const parseProfileArgument = (
   try {
     decoded = decodeURIComponent(encoded);
   } catch {
-    return { present: true, name: null, error: '小号启动参数已损坏' };
+    return { present: true, name: null, error: 'profileStartupArgCorrupted' };
   }
 
   const validation = validateProfileName(decoded);

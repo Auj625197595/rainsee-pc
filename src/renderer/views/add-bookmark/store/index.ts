@@ -2,6 +2,7 @@ import { ipcRenderer } from 'electron';
 import { action, makeObservable, observable } from 'mobx';
 import { IBookmark } from '~/interfaces';
 import * as React from 'react';
+import { createLocaleTranslator } from '~/common/i18n';
 import { DialogStore } from '~/models/dialog-store';
 
 const COLLAPSED_DIALOG_HEIGHT = 408;
@@ -12,11 +13,13 @@ const FOLDER_EXPANDED_DIALOG_HEIGHT = 562;
 // 记住上次选择的保存文件夹(localStorage 属弹窗自身 webContents,跨会话持久)。
 const LAST_FOLDER_KEY = 'add-bookmark.last-folder-id';
 
-const getFolderLabel = (item: IBookmark) => {
+const getFolderLabel = (item: IBookmark, tr?: (key: any) => string) => {
   if (!item?.static) return item?.title || '';
-  if (item.static === 'main') return '书签栏';
-  if (item.static === 'mobile') return '移动设备书签';
-  if (item.static === 'other') return '其它文件夹';
+  const t =
+    tr || createLocaleTranslator(undefined);
+  if (item.static === 'main') return t('bookmarkBar');
+  if (item.static === 'mobile') return t('mobileDeviceBookmarks');
+  if (item.static === 'other') return t('bookmarksOtherFolder');
   return item.title || '';
 };
 
@@ -82,7 +85,9 @@ export class Store extends DialogStore {
       if (!flag || !data) return;
       const { bookmark, title, url, favicon, folderId } = data;
 
-      this.dialogTitle = !bookmark ? '书签已添加' : '编辑书签';
+      this.dialogTitle = !bookmark
+        ? createLocaleTranslator(this.settings.language)('abmAdded')
+        : createLocaleTranslator(this.settings.language)('abmEditBookmark');
       this.folderSearch = '';
       this.folderPanelOpen = false;
       this.addingToHomepage = false;
@@ -144,7 +149,10 @@ export class Store extends DialogStore {
   }
 
   public getFolderLabel(item: IBookmark) {
-    return getFolderLabel(item);
+    return getFolderLabel(
+      item,
+      createLocaleTranslator(this.settings.language),
+    );
   }
 
   public getFolderById(id: string) {

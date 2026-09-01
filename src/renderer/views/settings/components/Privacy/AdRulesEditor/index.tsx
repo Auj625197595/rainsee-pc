@@ -6,6 +6,7 @@ import styled, { css } from 'styled-components';
 import { ITheme } from '~/interfaces';
 import { getPalette } from '../../../utils/palette';
 import store from '../../../store';
+import { getSettingsTranslator } from '../../../utils';
 
 const Wrapper = styled.div`
   width: 100%;
@@ -121,13 +122,8 @@ const Saved = styled.span`
   `}
 `;
 
-const PLACEHOLDER = `每行一条规则，支持以下格式：
-example.com##.ad-banner    隐藏指定网站的元素
-##.global-ad               隐藏所有网站的元素
-||ads.example.com^         拦截网络请求
-! 以叹号开头的行为注释`;
-
 export default observer(() => {
+  const t = getSettingsTranslator();
   const [text, setText] = React.useState('');
   const [original, setOriginal] = React.useState('');
   const [busy, setBusy] = React.useState(false);
@@ -158,20 +154,22 @@ export default observer(() => {
 
   return (
     <GroupBlock>
-      <GroupLabel theme={theme}>广告标识规则</GroupLabel>
+      <GroupLabel theme={theme}>{t('pvCosmeticRules')}</GroupLabel>
       <Wrapper theme={theme}>
         <TopBar>
           <Spacer />
-          {saved && !dirty ? <Saved theme={theme}>已保存</Saved> : null}
+          {saved && !dirty ? (
+            <Saved theme={theme}>{t('suSaved')}</Saved>
+          ) : null}
           <SmallButton theme={theme} disabled={busy || !dirty} onClick={onSave}>
-            {busy ? '保存中…' : '保存'}
+            {busy ? t('pvSaving') : t('save')}
           </SmallButton>
         </TopBar>
 
         <Area
           theme={theme}
           value={text}
-          placeholder={PLACEHOLDER}
+          placeholder={t('pvRulesPlaceholder')}
           disabled={busy}
           onChange={(e) => {
             setText(e.target.value);

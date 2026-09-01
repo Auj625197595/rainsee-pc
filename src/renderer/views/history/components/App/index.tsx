@@ -34,6 +34,7 @@ import {
   MigrationDialog,
   MigrationMode,
 } from '~/renderer/views/onboarding/components/MigrationDialog';
+import { useI18n } from '~/renderer/components/I18n';
 
 // ===== 内联图标（跟随 currentColor）=====
 
@@ -158,6 +159,7 @@ const onClearClick = () => {
 };
 
 export default observer(() => {
+  const t = useI18n();
   const [importVisible, setImportVisible] = React.useState(false);
   const [importStatus, setImportStatus] = React.useState('');
 
@@ -175,41 +177,44 @@ export default observer(() => {
         <GlobalNavigationDrawer></GlobalNavigationDrawer>
 
         <Sidebar>
-          <SideTitle>历史记录</SideTitle>
+          <SideTitle>{t('pvItemHistory')}</SideTitle>
 
           <SearchBox>
             <IconSearch />
-            <SearchInput placeholder="搜索历史记录" onInput={onInput} />
+            <SearchInput
+              placeholder={t('histSearchPlaceholder')}
+              onInput={onInput}
+            />
           </SearchBox>
 
-          <SectionLabel>时间范围</SectionLabel>
+          <SectionLabel>{t('histTimeRange')}</SectionLabel>
           <RangeNav>
             <RangeItem icon={<IconAll />} range="all">
-              全部
+              {t('mgFilterAll')}
             </RangeItem>
             <RangeItem icon={<IconToday />} range="today">
-              今天
+              {t('histToday')}
             </RangeItem>
             <RangeItem icon={<IconYesterday />} range="yesterday">
-              昨天
+              {t('histYesterday')}
             </RangeItem>
             <RangeItem icon={<IconWeek />} range="last-week">
-              上周
+              {t('histLastWeek')}
             </RangeItem>
             <RangeItem icon={<IconOlder />} range="older">
-              更久以前
+              {t('histOlder')}
             </RangeItem>
           </RangeNav>
 
           <BottomActions>
             <SidebarAction type="button" onClick={() => setImportVisible(true)}>
               <Browsers size={18} />
-              从其他浏览器导入
+              {t('histImportFromBrowser')}
             </SidebarAction>
             {importStatus && <ActionStatus>{importStatus}</ActionStatus>}
             <ClearButton onClick={onClearClick}>
               <IconTrash />
-              清除浏览记录
+              {t('histClearRecords')}
             </ClearButton>
           </BottomActions>
         </Sidebar>
@@ -220,7 +225,7 @@ export default observer(() => {
               <OpenInNewTabToggle
                 checked={store.openInNewTab}
                 onChange={(v) => store.setOpenInNewTab(v)}
-                title="勾选后,点标题在新标签页打开;未勾选则在当前页打开(行单击仍是选中)"
+                title={t('histOpenInNewTabTitle')}
               />
             </HeaderRow>
             <SelectionDialog

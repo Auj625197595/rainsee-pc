@@ -23,11 +23,13 @@ import { SiteButtons } from '../SiteButtons';
 import { WindowControls } from '../WindowControls';
 import { useWindowDragMove } from '../../utils/window-drag';
 import { ProfileBrandLogo, useProfileBrand } from '../ProfileBrandLogo';
+import { getShellTranslator } from '../../utils/i18n';
 
 // 窗口拖拽逻辑已提取到 ../../utils/window-drag 的 useWindowDragMove,
 // 供品牌区与侧栏顶部拖拽条复用。
 
 const BrandMark = observer(() => {
+  const t = getShellTranslator();
   const profileBrand = useProfileBrand();
   const workspace = store.workspaceContext;
 
@@ -44,13 +46,13 @@ const BrandMark = observer(() => {
           appIcon={APP_ICON}
           onSelect={profileBrand.selectLogo}
         />
-        <BrandText>
-          <BrandTitle title={profileBrand.profileName || undefined}>
-            {workspace?.name || profileBrand.profileName || '雨见浏览器'}
+        <BrandText data-rainsee-part="brand-text">
+          <BrandTitle data-rainsee-part="brand-title" title={profileBrand.profileName || undefined}>
+            {workspace?.name || profileBrand.profileName || t('aboutTitle')}
           </BrandTitle>
           <BrandSubRow>
-            <BrandSub>{workspace ? '工作区' : profileBrand.profileName ? '小号' : 'RainPC'}</BrandSub>
-            {workspace && <WorkspaceDot color={workspace.color} title="当前工作区" />}
+            <BrandSub data-rainsee-part="brand-sub">{workspace ? t('shellWorkspace') : profileBrand.profileName ? t('shellAltProfile') : 'RainPC'}</BrandSub>
+            {workspace && <WorkspaceDot color={workspace.color} title={t('shellCurrentWorkspace')} />}
           </BrandSubRow>
         </BrandText>
       </BrandHover>

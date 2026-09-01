@@ -1,5 +1,6 @@
 import * as React from 'react';
 
+import { useI18n } from '~/renderer/components/I18n';
 import {
   StyledNavigationDrawer,
   MenuItems,
@@ -26,6 +27,7 @@ export const NavigationDrawer = ({
   style?: any;
   dense?: boolean;
 }) => {
+  const t = useI18n();
   return (
     <StyledNavigationDrawer style={style} dense={dense}>
       {title !== '' && (
@@ -35,7 +37,7 @@ export const NavigationDrawer = ({
       )}
       {search && (
         <Search>
-          <Input placeholder="搜索" onInput={onSearchInput} />
+          <Input placeholder={t('stSearch')} onInput={onSearchInput} />
         </Search>
       )}
       <MenuItems>{children}</MenuItems>

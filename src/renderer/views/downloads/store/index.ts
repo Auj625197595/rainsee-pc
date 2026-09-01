@@ -1,17 +1,12 @@
 import { observable, computed, action, makeObservable } from 'mobx';
 
+import { createLocaleTranslator } from '~/common/i18n';
 import { ISettings, IDownloadItem, ITheme } from '~/interfaces';
 import { getTheme } from '~/utils/themes';
+import {ipcRenderer} from '~/common/renderer-ipc';
+import {getWebUIContext} from '~/common/webui-context';
 
-// 下载页作为内部标签页运行(sandbox: true, nodeIntegration: false)，无法直接
-// require('electron')。view-preload 暴露了纯函数桥 window.ipcInvoke / window.ipcSend
-// (沙箱下嵌套对象的方法无法跨界传递，纯函数可以)，优先使用；并保留
-// window.electron.ipcRenderer 作为兜底。
-const w = window as any;
-const ipcInvoke: (channel: string, ...args: any[]) => Promise<any> =
-  w.ipcInvoke || ((channel, ...args) => w.electron.ipcRenderer.invoke(channel, ...args));
-const ipcSend: (channel: string, ...args: any[]) => void =
-  w.ipcSend || ((channel, ...args) => w.electron.ipcRenderer.send(channel, ...args));
+const webUIContext = getWebUIContext();
 
 export type DownloadFilter = 'all' | 'active' | 'completed' | 'canceled';
 
@@ -23,15 +18,15 @@ export interface IDownloadGroup {
   items: IDownloadItem[];
 }
 
-const GROUP_TITLES: Record<DownloadStatus, string> = {
-  active: '正在下载',
-  completed: '已完成',
-  canceled: '已取消',
+const GROUP_TITLES: Record<DownloadStatus, 'dlvActive' | 'dlvCompleted' | 'dlvCanceled'> = {
+  active: 'dlvActive',
+  completed: 'dlvCompleted',
+  canceled: 'dlvCanceled',
 };
 
 export class Store {
   @observable
-  public settings: ISettings = { ...(window as any).settings };
+  public settings: ISettings = { ...(webUIContext.settings as Partial<ISettings>) } as ISettings;
 
   @observable
   public downloads: IDownloadItem[] = [];
@@ -82,7 +77,13 @@ export class Store {
           (this.selectedFilter === 'all' || this.selectedFilter === key) &&
           buckets[key].length > 0,
       )
-      .map((key) => ({ key, title: GROUP_TITLES[key], items: buckets[key] }));
+      .map((key) => ({
+        key,
+        title: createLocaleTranslator(this.settings.language)(
+          GROUP_TITLES[key],
+        ),
+        items: buckets[key],
+      }));
   }
 
   public countForFilter(filter: DownloadFilter): number {
@@ -93,9 +94,9 @@ export class Store {
   public constructor() {
     makeObservable(this);
 
-    (window as any).updateSettings = (settings: ISettings) => {
+    ipcRenderer.on('update-settings', (_event, settings: ISettings) => {
       this.settings = { ...this.settings, ...settings };
-    };
+    });
 
     this.load();
 
@@ -105,7 +106,7 @@ export class Store {
   }
 
   public async load() {
-    const list: IDownloadItem[] = await ipcInvoke('get-downloads');
+    const list: IDownloadItem[] = await ipcRenderer.invoke('get-downloads');
     if (!list) return;
 
     const json = JSON.stringify(list);
@@ -120,20 +121,20 @@ export class Store {
   }
 
   public pause(item: IDownloadItem) {
-    ipcSend('download-pause', item.id);
+    ipcRenderer.send('download-pause', item.id);
   }
 
   public resume(item: IDownloadItem) {
-    ipcSend('download-resume', item.id);
+    ipcRenderer.send('download-resume', item.id);
   }
 
   public cancel(item: IDownloadItem) {
-    ipcSend('download-cancel', item.id);
+    ipcRenderer.send('download-cancel', item.id);
   }
 
   @action
   public remove(item: IDownloadItem) {
-    ipcSend('download-remove', item.id);
+    ipcRenderer.send('download-remove', item.id);
     this.downloads = this.downloads.filter((x) => x.id !== item.id);
     this.lastJson = JSON.stringify(this.downloads);
   }
@@ -143,9 +144,21 @@ export class Store {
   public clearFinished() {
     this.downloads
       .filter((x) => x.completed || x.canceled)
-      .forEach((x) => ipcSend('download-remove', x.id));
+      .forEach((x) => ipcRenderer.send('download-remove', x.id));
     this.downloads = this.downloads.filter((x) => !x.completed && !x.canceled);
     this.lastJson = JSON.stringify(this.downloads);
+  }
+
+  public open(item: IDownloadItem) {
+    return ipcRenderer.invoke('download-open', item.id);
+  }
+
+  public showInFolder(item: IDownloadItem) {
+    return ipcRenderer.invoke('download-show-in-folder', item.id);
+  }
+
+  public createTask(pageUrl: string, fileName?: string) {
+    return ipcRenderer.invoke('media-download-create', {pageUrl, fileName});
   }
 }
 

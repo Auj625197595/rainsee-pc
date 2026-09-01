@@ -14,6 +14,10 @@ import {
 import { getTheme } from '~/utils/themes';
 import { RUFFLE_EXTENSION_ID } from '~/constants';
 import { ipcRenderer } from '~/common/renderer-ipc';
+import { createLocaleTranslator } from '~/common/i18n';
+import {getWebUIContext} from '~/common/webui-context';
+
+const webUIContext = getWebUIContext();
 
 // 开发者模式是纯 UI 偏好(显示扩展 ID / 调试按钮),用 localStorage 持久化即可,
 // 无需走主进程设置(区别于 autoUpdate,后者主进程需据此决定是否自动更新)。
@@ -50,7 +54,7 @@ export interface IStoreExt {
 
 export class Store {
   @observable
-  public settings: ISettings = { ...(window as any).settings };
+  public settings: ISettings = { ...(webUIContext.settings as Partial<ISettings>) } as ISettings;
 
   @observable
   public extensions: IExtItem[] = [];
@@ -197,9 +201,9 @@ export class Store {
   public constructor() {
     makeObservable(this);
 
-    (window as any).updateSettings = (settings: ISettings) => {
+    ipcRenderer.on('update-settings', (_event, settings: ISettings) => {
       this.settings = { ...this.settings, ...settings };
-    };
+    });
 
     this.load();
     this.loadStore();
@@ -266,7 +270,9 @@ export class Store {
       .filter((group) => group && typeof group.id === 'string' && typeof group.name === 'string')
       .map((group) => ({
         id: group.id,
-        name: group.name.trim().slice(0, 40) || '未命名分组',
+        name:
+          group.name.trim().slice(0, 40) ||
+          createLocaleTranslator(this.settings.language)('extUnnamedGroup'),
         extensionIds: (Array.isArray(group.extensionIds) ? group.extensionIds : []).filter(
           (id) => validIds.has(id) && !seen.has(id) && seen.add(id),
         ),
@@ -377,7 +383,9 @@ export class Store {
     }
     if (!selectedTarget) {
       this.inspectStatusError = true;
-      this.inspectStatus = '此扩展当前没有可检查的视图。';
+      this.inspectStatus = createLocaleTranslator(
+        this.settings.language,
+      )('extInspectNoViews');
       return;
     }
 
@@ -386,8 +394,12 @@ export class Store {
     this.inspectStatusError = false;
     this.inspectStatus =
       selectedTarget.type === 'service-worker'
-        ? '正在启动服务工作进程并打开开发者工具，请稍候…'
-        : `正在打开「${selectedTarget.label}」开发者工具…`;
+        ? createLocaleTranslator(this.settings.language)(
+            'extInspectStartingSw',
+          )
+        : createLocaleTranslator(this.settings.language)('extInspectOpening', {
+            target: selectedTarget.label,
+          });
     try {
       const result: { ok?: boolean; message?: string } | boolean =
         await ipcRenderer.invoke(
@@ -402,17 +414,23 @@ export class Store {
         this.inspectStatusError = true;
         this.inspectStatus =
           (typeof result === 'object' && result?.message) ||
-          `无法打开「${selectedTarget.label}」开发者工具。`;
+          createLocaleTranslator(this.settings.language)('extInspectOpenFailed', {
+          target: selectedTarget.label,
+        });
         return;
       }
-      this.inspectStatus = `已请求打开「${selectedTarget.label}」开发者工具。`;
+      this.inspectStatus = createLocaleTranslator(
+        this.settings.language,
+      )('extInspectOpened', { target: selectedTarget.label });
       setTimeout(() => {
         if (token === this.inspectStatusToken) this.inspectStatus = null;
       }, 3000);
     } catch {
       if (token !== this.inspectStatusToken) return;
       this.inspectStatusError = true;
-      this.inspectStatus = `无法打开「${selectedTarget.label}」开发者工具。`;
+      this.inspectStatus = createLocaleTranslator(this.settings.language)('extInspectOpenFailed', {
+          target: selectedTarget.label,
+        });
     } finally {
       if (token === this.inspectStatusToken) this.inspectingTargetId = null;
     }
@@ -431,7 +449,11 @@ export class Store {
   public async uninstall(item: IExtItem) {
     if (
       item.id !== RUFFLE_EXTENSION_ID &&
-      !confirm(`确定要卸载「${item.name}」吗?`)
+      !confirm(
+      createLocaleTranslator(this.settings.language)('extUninstallConfirm', {
+        name: item.name,
+      }),
+    )
     ) {
       return;
     }
@@ -453,7 +475,11 @@ export class Store {
     if (res && res.name) {
       await this.load();
       await this.loadStore();
-      this.setStatus(`已安装「${res.name}」`);
+      this.setStatus(
+        createLocaleTranslator(this.settings.language)('extInstalledStatus', {
+          name: res.name,
+        }),
+      );
     }
   }
 
@@ -462,7 +488,11 @@ export class Store {
     if (res && res.name) {
       await this.load();
       await this.loadStore();
-      this.setStatus(`已加载「${res.name}」`);
+      this.setStatus(
+        createLocaleTranslator(this.settings.language)('extLoadedStatus', {
+          name: res.name,
+        }),
+      );
     }
   }
 
@@ -491,7 +521,9 @@ export class Store {
       );
       if (result?.canceled) {
         if (this.migrationItems.length === 0) {
-          this.migrationError = '未选择浏览器数据目录。';
+          this.migrationError = createLocaleTranslator(
+        this.settings.language,
+      )('extMigrationNoDir');
         }
         return;
       }
@@ -506,11 +538,17 @@ export class Store {
       this.migrationDuplicateCount = result?.duplicateCount || 0;
       if (this.migrationItems.length === 0) {
         this.migrationError = this.migrationDuplicateCount
-          ? '找到的扩展均已安装，无需重复导入。'
-          : '所选目录中没有找到可导入的扩展。';
+          ? createLocaleTranslator(this.settings.language)(
+              'extMigrationAllInstalled',
+            )
+          : createLocaleTranslator(this.settings.language)(
+              'extMigrationNoneFound',
+            );
       }
     } catch {
-      this.migrationError = '读取浏览器扩展失败，请选择浏览器数据目录后重试。';
+      this.migrationError = createLocaleTranslator(
+        this.settings.language,
+      )('extMigrationReadFailed');
     } finally {
       this.migrationLoading = false;
     }
@@ -557,19 +595,33 @@ export class Store {
         this.migrationSelectedKeys = this.migrationItems.map(
           (item) => item.key,
         );
-        this.migrationError = `已导入 ${imported} 个，${failed.length} 个导入失败。`;
+        this.migrationError = createLocaleTranslator(
+        this.settings.language,
+      )('extMigrationPartial', { imported, failed: failed.length });
         return;
       }
       this.migrationOpen = false;
       if (imported > 0) {
-        this.setStatus(`已从本地浏览器导入 ${imported} 个扩展`);
+        this.setStatus(
+        createLocaleTranslator(this.settings.language)('extMigrationDone', {
+          count: imported,
+        }),
+      );
       } else if ((result?.skipped || 0) > 0) {
-        this.setStatus('所选扩展已存在，已过滤重复项');
+        this.setStatus(
+        createLocaleTranslator(this.settings.language)('extMigrationDuplicates'),
+      );
       } else {
-        this.setStatus(`未导入扩展（已选择 ${requested} 个）`);
+        this.setStatus(
+        createLocaleTranslator(this.settings.language)('extMigrationNoneImported', {
+          count: requested,
+        }),
+      );
       }
     } catch {
-      this.migrationError = '导入失败，请确认浏览器扩展目录可读取。';
+      this.migrationError = createLocaleTranslator(
+        this.settings.language,
+      )('extMigrationReadErr');
     } finally {
       this.migrationImporting = false;
     }
@@ -584,7 +636,9 @@ export class Store {
   public async installFromPaths(paths: string[]) {
     const uniquePaths = [...new Set((paths || []).filter(Boolean))];
     if (uniquePaths.length === 0) {
-      this.setStatus('仅支持安装 .crx 或 .zip 文件');
+      this.setStatus(
+        createLocaleTranslator(this.settings.language)('extInstallBadFile'),
+      );
       return;
     }
 
@@ -608,21 +662,36 @@ export class Store {
     }
 
     if (ok === 1 && failed === 0) {
-      this.setStatus(`已安装「${names[0]}」`);
+      this.setStatus(
+        createLocaleTranslator(this.settings.language)('extInstalledOne', {
+          name: names[0],
+        }),
+      );
       return;
     }
 
     if (ok > 0 && failed === 0) {
-      this.setStatus(`已安装 ${ok} 个扩展`);
+      this.setStatus(
+        createLocaleTranslator(this.settings.language)('extInstalledN', {
+          count: ok,
+        }),
+      );
       return;
     }
 
     if (ok > 0) {
-      this.setStatus(`已安装 ${ok} 个扩展，${failed} 个失败`);
+      this.setStatus(
+        createLocaleTranslator(this.settings.language)('extInstalledNFailed', {
+          ok,
+          failed,
+        }),
+      );
       return;
     }
 
-    this.setStatus('安装失败，请确认文件是有效的扩展包');
+    this.setStatus(
+        createLocaleTranslator(this.settings.language)('extInstallFailedGeneric'),
+      );
   }
 
   @action
@@ -678,7 +747,11 @@ export class Store {
           x.crxkey === item.crxkey ? { ...x, installed: true } : x,
         );
       } else {
-        alert(`安装「${item.name}」失败,请稍后重试`);
+        alert(
+      createLocaleTranslator(this.settings.language)('extInstallFailedOne', {
+        name: item.name,
+      }),
+    );
       }
     } finally {
       this.installing = this.installing.filter((k) => k !== item.crxkey);
@@ -712,7 +785,9 @@ export class Store {
   public async checkUpdates() {
     if (this.checking) return;
     this.checking = true;
-    this.updateStatus = '正在检查更新…';
+    this.updateStatus = createLocaleTranslator(
+        this.settings.language,
+      )('extUpdateChecking');
     try {
       const res = await ipcRenderer.invoke('extensions-check-updates');
       const updated = (res && res.updated) || [];
@@ -720,17 +795,25 @@ export class Store {
       if (updated.length > 0) {
         const names = updated
           .map((u: any) => `${u.name} → v${u.toVersion}`)
-          .join('、');
-        this.updateStatus = `已更新 ${updated.length} 个扩展:${names}`;
+          .join(createLocaleTranslator(this.settings.language)('wbListSep'));
+        this.updateStatus = createLocaleTranslator(
+        this.settings.language,
+      )('extUpdatedN', { count: updated.length, names });
         await this.load();
         await this.loadStore();
       } else if (failed.length > 0) {
-        this.updateStatus = `检查完成,${failed.length} 个扩展更新失败`;
+        this.updateStatus = createLocaleTranslator(
+        this.settings.language,
+      )('extUpdatePartFailed', { count: failed.length });
       } else {
-        this.updateStatus = '所有扩展均为最新版本';
+        this.updateStatus = createLocaleTranslator(
+        this.settings.language,
+      )('extUpdateAllLatest');
       }
     } catch {
-      this.updateStatus = '检查更新失败,请稍后重试';
+      this.updateStatus = createLocaleTranslator(
+        this.settings.language,
+      )('extUpdateFailedGeneric');
     } finally {
       this.checking = false;
       // 数秒后自动清除提示(用令牌避免旧定时器清掉后续新提示)。

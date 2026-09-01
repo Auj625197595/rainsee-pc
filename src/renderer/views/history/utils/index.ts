@@ -1,4 +1,25 @@
+import { createLocaleTranslator } from '~/common/i18n';
 import { daysList, monthsList } from '~/renderer/constants/dictionary';
+
+// locale-aware 星期名/月份名(替代 daysList/monthsList):历史页按当前语言输出日期。
+const localeTag = (language?: string) =>
+  language || (typeof navigator !== 'undefined' ? navigator.language : 'zh-CN');
+
+const weekdayName = (date: Date, language?: string) => {
+  try {
+    return date.toLocaleDateString(localeTag(language), { weekday: 'long' });
+  } catch {
+    return daysList[date.getDay()];
+  }
+};
+
+const monthName = (date: Date, language?: string) => {
+  try {
+    return date.toLocaleDateString(localeTag(language), { month: 'long' });
+  } catch {
+    return monthsList[date.getMonth()];
+  }
+};
 
 export const compareDates = (first: Date, second: Date) => {
   return (
@@ -10,21 +31,24 @@ export const compareDates = (first: Date, second: Date) => {
   );
 };
 
-export const getSectionLabel = (date: Date) => {
+const t = (language?: unknown) => createLocaleTranslator(language);
+
+export const getSectionLabel = (date: Date, language?: string) => {
   let prefix = '';
   const current = new Date();
   const yesterday = new Date(current);
   yesterday.setDate(current.getDate() - 1);
 
   if (compareDates(date, current)) {
-    prefix = '今天 - ';
+    prefix = t(language)('histPrefixToday');
   } else if (compareDates(date, yesterday)) {
-    prefix = '昨天 - ';
+    prefix = t(language)('histPrefixYesterday');
   }
 
-  return `${prefix}${daysList[date.getDay()]}, ${
-    monthsList[date.getMonth()]
-  } ${date.getDate()}, ${date.getFullYear()}`;
+  return `${prefix}${weekdayName(date, language)}, ${monthName(
+    date,
+    language,
+  )} ${date.getDate()}, ${date.getFullYear()}`;
 };
 
 export const formatTime = (date: Date) => {
@@ -36,21 +60,24 @@ export const formatTime = (date: Date) => {
 
 // 视觉稿日期分组头：标题（今天/昨天/星期几）+ 副标题（星期 · 年 月 日）。
 
-export const getSectionTitle = (date: Date) => {
+export const getSectionTitle = (date: Date, language?: string) => {
   const current = new Date();
   const yesterday = new Date(current);
   yesterday.setDate(current.getDate() - 1);
 
-  if (compareDates(date, current)) return '今天';
-  if (compareDates(date, yesterday)) return '昨天';
+  if (compareDates(date, current)) return t(language)('histToday');
+  if (compareDates(date, yesterday)) return t(language)('histYesterday');
 
-  return daysList[date.getDay()];
+  return weekdayName(date, language);
 };
 
-export const getSectionSubtitle = (date: Date) => {
-  return `${daysList[date.getDay()]} · ${date.getFullYear()} 年 ${
-    date.getMonth() + 1
-  } 月 ${date.getDate()} 日`;
+export const getSectionSubtitle = (date: Date, language?: string) => {
+  return t(language)('histSubtitle', {
+    week: weekdayName(date, language),
+    year: date.getFullYear(),
+    month: date.getMonth() + 1,
+    day: date.getDate(),
+  });
 };
 
 // 计算各时间范围的边界（与 store.range 同口径），供侧栏计数显示使用。

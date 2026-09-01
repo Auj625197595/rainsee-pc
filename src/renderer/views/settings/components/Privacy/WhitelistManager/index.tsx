@@ -6,6 +6,7 @@ import styled, { css } from 'styled-components';
 import { ITheme } from '~/interfaces';
 import { getPalette } from '../../../utils/palette';
 import store from '../../../store';
+import { getSettingsTranslator } from '../../../utils';
 
 const Wrapper = styled.div`
   width: 100%;
@@ -176,6 +177,7 @@ const Empty = styled.div`
 `;
 
 export default observer(() => {
+  const t = getSettingsTranslator();
   const [list, setList] = React.useState<string[]>([]);
   const [input, setInput] = React.useState('');
   const [error, setError] = React.useState('');
@@ -215,13 +217,13 @@ export default observer(() => {
 
   return (
     <GroupBlock>
-      <GroupLabel theme={theme}>白名单</GroupLabel>
+      <GroupLabel theme={theme}>{t('pvWhitelist')}</GroupLabel>
       <Wrapper theme={theme}>
         <AddRow>
           <Input
             theme={theme}
             value={input}
-            placeholder="添加白名单域名，如 example.com"
+            placeholder={t('pvWhitelistPlaceholder')}
             disabled={busy}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
@@ -234,14 +236,14 @@ export default observer(() => {
             disabled={busy || !input.trim()}
             onClick={onAdd}
           >
-            {busy ? '处理中…' : '添加'}
+            {busy ? t('pvProcessing') : t('add')}
           </SmallButton>
         </AddRow>
 
         {error ? <ErrorText theme={theme}>{error}</ErrorText> : null}
 
         {list.length === 0 ? (
-          <Empty theme={theme}>暂无白名单域名</Empty>
+          <Empty theme={theme}>{t('pvNoWhitelist')}</Empty>
         ) : (
           <List>
             {list.map((d) => (
@@ -253,7 +255,7 @@ export default observer(() => {
                   disabled={busy}
                   onClick={() => onRemove(d)}
                 >
-                  删除
+                  {t('delete')}
                 </SmallButton>
               </Item>
             ))}

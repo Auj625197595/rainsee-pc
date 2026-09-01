@@ -1,4 +1,6 @@
 import {app, BrowserWindow, ipcMain, Notification, powerMonitor} from 'electron';
+import {Application} from '../application';
+import {getMainTranslator} from '../i18n';
 
 type Phase = 'work' | 'break';
 type Status = 'running' | 'paused' | 'completed';
@@ -48,6 +50,7 @@ function integer(value: unknown, fallback: number, min: number, max: number): nu
 }
 
 function normalizeConfig(value: any): ReminderConfig {
+  const t = getMainTranslator(Application.instance.settings?.object?.language);
   const text = (input: unknown, fallback: string) => {
     const result = String(input || '').trim().slice(0, 80);
     return result || fallback;
@@ -58,8 +61,8 @@ function normalizeConfig(value: any): ReminderConfig {
     loopCount: integer(value?.loopCount, 0, 0, 99),
     notificationEnabled: value?.notificationEnabled !== false,
     soundEnabled: value?.soundEnabled !== false,
-    workMessage: text(value?.workMessage, '坐得有点久了，起来活动一下吧'),
-    breakMessage: text(value?.breakMessage, '休息结束，开始下一轮吧'),
+    workMessage: text(value?.workMessage, t('srWorkDefault')),
+    breakMessage: text(value?.breakMessage, t('srBreakDefault')),
   };
 }
 
@@ -130,11 +133,18 @@ interface Entry {
 /** Main-process fallback for GoTab's sedentary reminder. */
 export class SedentaryReminderService {
   private entries = new Map<string, Entry>();
+  private activeNotifications = new Set<Notification>();
+  private programmaticallyClosingNotifications = new WeakSet<Notification>();
   // Each new-tab iframe owns a full snapshot. Keep those snapshots separate:
   // an empty/partial sync from one tab must not delete reminders owned by
   // another tab (or by a tab that is being closed).
   private sourceEntries = new Map<number, Map<string, ReminderPayload>>();
   private awayStartedAt = 0;
+  // Renderer localStorage survives an Electron restart and contains the last
+  // web runtime. Native reminders intentionally do not: on the first sync of
+  // a new main-process session, start every existing component from a fresh
+  // work phase instead of restoring a stale break/deadline.
+  private initialSyncHandled = false;
 
   public constructor(private readonly getWindows: () => Array<{win?: BrowserWindow}>) {
     ipcMain.handle('sedentary-reminder-sync', (event, payload) => {
@@ -155,7 +165,8 @@ export class SedentaryReminderService {
         return {version: VERSION, requestId: String(payload?.requestId || '').slice(0, 120), ok: false, reason: 'invalid'};
       }
       const config = normalizeConfig(payload.config);
-      const ok = this.notify(config, config.workMessage, '久坐提醒（测试）', true);
+      const t = getMainTranslator(Application.instance.settings?.object?.language);
+      const ok = this.notify(config, config.workMessage, t('srTitleReminderTest'), true);
       return {version: VERSION, requestId: payload.requestId, ok, reason: ok ? undefined : 'unsupported'};
     });
     ipcMain.handle('sedentary-reminder-notify', (event, payload) => {
@@ -186,6 +197,7 @@ export class SedentaryReminderService {
 
   private sync(payload: any, sourceId: number) {
     if (!validPayload(payload)) return this.snapshot();
+    const resetOnStartup = !this.initialSyncHandled;
     // Do not replace the source snapshot with an empty list. A renderer can
     // send its last lifecycle update while its tab is being destroyed; that
     // is not a component deletion. Deletions are carried explicitly in
@@ -194,9 +206,31 @@ export class SedentaryReminderService {
     payload.reminders.forEach((item: any) => {
       if (!validId(item.id)) return;
       const config = normalizeConfig(item.config);
-      const runtime = normalizeRuntime(item.runtime, config);
+      let runtime = normalizeRuntime(item.runtime, config);
+      if (resetOnStartup) {
+        const now = Date.now();
+        runtime = {
+          ...runtime,
+          status: 'running',
+          phase: 'work',
+          phaseStartedAt: now,
+          deadlineAt: now + duration(config, 'work'),
+          pausedRemainingMs: 0,
+          completedCycles: 0,
+          // Ensure a stale renderer snapshot cannot overwrite this reset on
+          // its next sync before it receives the native state broadcast.
+          revision: Math.max(1, runtime.revision + 1),
+          updatedAt: now,
+        };
+        console.info('[sedentary-reminder] startup runtime reset', {
+          id: item.id,
+          phase: runtime.phase,
+          deadlineAt: runtime.deadlineAt,
+        });
+      }
       source.set(item.id, {id: item.id, config, runtime});
     });
+    if (payload.reminders.length > 0) this.initialSyncHandled = true;
     // Move this sender to the end so equal-version configuration updates from
     // the most recently opened homepage wins deterministically.
     this.sourceEntries.delete(sourceId);
@@ -261,23 +295,24 @@ export class SedentaryReminderService {
 
   private notifyForIncomingTransition(existing: Entry, incoming: ReminderPayload) {
     if (existing.runtime.status !== 'running' || !incoming.config.notificationEnabled) return;
+    const t = getMainTranslator(Application.instance.settings?.object?.language);
     const previous = existing.runtime;
     const next = incoming.runtime;
     const nextKey = this.runtimeKey(next);
     if (existing.notifiedKey === nextKey) return;
     if (previous.phase === 'work' && next.phase === 'break' && next.status === 'running') {
       existing.notifiedKey = nextKey;
-      this.notify(incoming.config, incoming.config.workMessage, '久坐提醒', true);
+      this.notify(incoming.config, incoming.config.workMessage, t('srTitleReminder'), true);
       return;
     }
     if (previous.phase === 'break' && next.phase === 'work' && next.status === 'running') {
       existing.notifiedKey = nextKey;
-      this.notify(incoming.config, incoming.config.breakMessage, '休息结束', true);
+      this.notify(incoming.config, incoming.config.breakMessage, t('srTitleBreakEnd'), true);
       return;
     }
     if (previous.phase === 'break' && next.phase === 'break' && next.status === 'completed') {
       existing.notifiedKey = nextKey;
-      this.notify(incoming.config, incoming.config.breakMessage, '久坐循环已完成', true);
+      this.notify(incoming.config, incoming.config.breakMessage, t('srTitleCompleted'), true);
     }
   }
 
@@ -293,12 +328,13 @@ export class SedentaryReminderService {
     if (entry && key) entry.notifiedKey = key;
     const config = entry?.config || normalizeConfig(payload.config);
     if (!config.notificationEnabled) return false;
+    const t = getMainTranslator(Application.instance.settings?.object?.language);
     const body = payload.event.kind === 'work-ended'
       ? config.workMessage
       : config.breakMessage;
     const title = payload.event.kind === 'work-ended'
-      ? '久坐提醒'
-      : payload.event.kind === 'completed' ? '久坐循环已完成' : '休息结束';
+      ? t('srTitleReminder')
+      : payload.event.kind === 'completed' ? t('srTitleCompleted') : t('srTitleBreakEnd');
     return this.notify(config, body, title, payload.event.kind === 'completed');
   }
 
@@ -327,7 +363,8 @@ export class SedentaryReminderService {
     const eventKey = this.runtimeKey(entry.runtime);
     if (entry.notifiedKey !== eventKey && entry.config.notificationEnabled) {
       entry.notifiedKey = eventKey;
-      this.notify(entry.config, entry.runtime.phase === 'work' ? entry.config.workMessage : entry.config.breakMessage, entry.runtime.phase === 'work' ? '久坐提醒' : '休息结束', true);
+      const t = getMainTranslator(Application.instance.settings?.object?.language);
+      this.notify(entry.config, entry.runtime.phase === 'work' ? entry.config.workMessage : entry.config.breakMessage, entry.runtime.phase === 'work' ? t('srTitleReminder') : t('srTitleBreakEnd'), true);
     }
     if (entry.runtime.phase === 'work') {
       entry.runtime = {
@@ -359,18 +396,33 @@ export class SedentaryReminderService {
   }
 
   private notify(config: ReminderConfig, body: string, title: string, persistent = false): boolean {
+    let notification: Notification | undefined;
     try {
       this.broadcastNotice({title, body});
       if (!Notification.isSupported()) {
         console.warn('[sedentary-reminder] Electron Notification is not supported');
         return false;
       }
-      const notification = new Notification({
+      // Keep at most one native sedentary reminder visible. Some Windows
+      // notification-center paths do not emit Electron's `close` event when
+      // the user dismisses a toast, so this also prevents stale reminders
+      // from accumulating before a later reminder is shown.
+      this.clearActiveNotifications();
+      notification = new Notification({
         title,
         body,
         silent: !config.soundEnabled,
         urgency: 'normal',
         timeoutType: persistent ? 'never' : 'default',
+      });
+      this.activeNotifications.add(notification);
+      notification.once('close', () => {
+        const programmatic = this.programmaticallyClosingNotifications.delete(notification);
+        this.activeNotifications.delete(notification);
+        if (!programmatic) this.clearActiveNotifications();
+      });
+      notification.once('failed', () => {
+        this.activeNotifications.delete(notification);
       });
       notification.on('click', () => {
         const target = this.getWindows().find((item) => item.win && !item.win.isDestroyed())?.win;
@@ -383,9 +435,25 @@ export class SedentaryReminderService {
       console.info('[sedentary-reminder] system notification shown', {title, silent: !config.soundEnabled});
       return true;
     } catch (error) {
+      // A constructor/show failure must not leave a dead notification in the registry.
+      if (notification) this.activeNotifications.delete(notification);
       console.warn('[sedentary-reminder] notification failed', error);
       return false;
     }
+  }
+
+  private clearActiveNotifications() {
+    if (this.activeNotifications.size === 0) return;
+    const notifications = [...this.activeNotifications];
+    this.activeNotifications.clear();
+    notifications.forEach((notification) => {
+      this.programmaticallyClosingNotifications.add(notification);
+      try {
+        notification.close();
+      } catch (error) {
+        console.warn('[sedentary-reminder] notification close failed', error);
+      }
+    });
   }
 
   private broadcastNotice(detail: {title: string; body: string}) {
@@ -478,6 +546,7 @@ export class SedentaryReminderService {
   }
 
   private dispose() {
+    this.clearActiveNotifications();
     this.entries.forEach((entry) => this.removeTimer(entry));
     this.entries.clear();
     this.sourceEntries.clear();

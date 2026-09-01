@@ -7,6 +7,7 @@ import { robotoRegular, robotoMedium } from '~/renderer/mixins';
 import { NormalButton } from '../App';
 import store from '../../store';
 import { getPalette } from '../../utils/palette';
+import { getSettingsTranslator } from '../../utils';
 import {
   DIALOG_BORDER_RADIUS,
   DIALOG_BOX_SHADOW,
@@ -17,9 +18,10 @@ const onHideClick = () => {
 };
 
 export const CloseButton = () => {
+  const t = getSettingsTranslator();
   return (
     <NormalButton variant="soft" onClick={onHideClick}>
-      取消
+      {t('cancel')}
     </NormalButton>
   );
 };

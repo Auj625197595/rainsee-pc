@@ -49,6 +49,7 @@ import {
   createTabWheelHandler,
   getTabScrollStep,
 } from '~/renderer/views/app/utils/tab-wheel-switch';
+import { useI18n } from '~/renderer/components/I18n';
 
 const panelListRef = React.createRef<HTMLDivElement>();
 
@@ -146,6 +147,7 @@ const PinGlyph = (
 );
 
 const SidebarBrandMark = () => {
+  const t = useI18n();
   const brandRef = React.useRef<HTMLDivElement>(null);
   const timerRef = React.useRef<number | null>(null);
   const profileBrand = useProfileBrand();
@@ -194,7 +196,7 @@ const SidebarBrandMark = () => {
         onSelect={profileBrand.selectLogo}
       />
       <SidebarBrandText>
-        {profileBrand.profileName || '雨见浏览器'}
+        {profileBrand.profileName || t('spBrandFallback')}
       </SidebarBrandText>
     </SidebarBrand>
   );
@@ -308,6 +310,7 @@ const updateGroupDropTarget = (
 };
 
 const PanelTabRow = observer(({ tab }: { tab: IPanelTab }) => {
+  const t = useI18n();
   const pointerRef = React.useRef<{
     pointerId: number;
     x: number;
@@ -515,6 +518,7 @@ const PanelGroupHeader = observer(
     collapsed: boolean;
     pinned: boolean;
   }) => {
+    const t = useI18n();
     const pointerRef = React.useRef<{
       pointerId: number;
       x: number;
@@ -638,7 +642,7 @@ const PanelGroupHeader = observer(
         <SidebarGroupDot
           data-sidebar-panel-group-control
           style={{ backgroundColor: color }}
-          title="点击选择组色"
+          title={t('shellPickGroupColor')}
           onClick={(e: React.MouseEvent) => {
             e.stopPropagation();
             setPaletteOpen((v) => !v);
@@ -679,7 +683,7 @@ const PanelGroupHeader = observer(
           />
         ) : (
           <SidebarGroupName
-            title="双击可重命名分组"
+            title={t('shellRenameHint')}
             onDoubleClick={(e: React.MouseEvent) => {
               e.stopPropagation();
               setEditing(true);
@@ -694,8 +698,8 @@ const PanelGroupHeader = observer(
         <SidebarGroupAddButton
           data-sidebar-panel-group-control
           type="button"
-          title="在分组中新建标签页"
-          aria-label="在分组中新建标签页"
+          title={t('shellNewTabInGroup')}
+          aria-label={t('shellNewTabInGroup')}
           onMouseDown={(e: React.MouseEvent) => {
             e.preventDefault();
             e.stopPropagation();
@@ -714,6 +718,7 @@ const PanelGroupHeader = observer(
 );
 
 export const App = observer(() => {
+  const t = useI18n();
   const selectedTabId = store.tabs.find((tab) => tab.selected)?.id ?? -1;
 
   React.useEffect(() => {
@@ -762,7 +767,7 @@ export const App = observer(() => {
           gid={gid}
           color={head?.groupColor}
           nameRaw={head?.groupNameRaw}
-          nameShown={head?.groupName || '分组'}
+          nameShown={head?.groupName || t('spGroupNameFallback')}
           count={slot.items.length}
           collapsed={isCollapsed}
           pinned={!!head?.groupPinned}
@@ -786,7 +791,7 @@ export const App = observer(() => {
             <SidebarHeaderActions>
               <SidebarPinButton
                 pinned
-                title="缩放模式（点击切换为固定模式）"
+                title={t('shellCompactMode')}
                 onMouseDown={(e: React.MouseEvent) => {
                   e.stopPropagation();
                   e.preventDefault();
@@ -800,10 +805,10 @@ export const App = observer(() => {
 
           <SidebarNewTab
             onMouseDown={() => store.action({ type: 'new' })}
-            title="新建标签页"
+            title={t('shellNewTab')}
           >
             {ICON_PLUS}
-            <SidebarNewTabLabel>新建标签页</SidebarNewTabLabel>
+            <SidebarNewTabLabel>{t('shellNewTab')}</SidebarNewTabLabel>
           </SidebarNewTab>
 
           <SidebarTabList

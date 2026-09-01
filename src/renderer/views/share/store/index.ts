@@ -1,5 +1,6 @@
 import { ipcRenderer } from 'electron';
 import { makeObservable, observable } from 'mobx';
+import { createLocaleTranslator } from '~/common/i18n';
 import { DialogStore } from '~/models/dialog-store';
 
 export class Store extends DialogStore {
@@ -60,7 +61,11 @@ export class Store extends DialogStore {
     ipcRenderer.on('share-download-result', (e, data) => {
       this.downloading = false;
       if (data && data.canceled) return;
-      this.setDownloadHint(data && data.ok ? '已保存二维码' : '保存失败');
+      this.setDownloadHint(
+      data && data.ok
+        ? createLocaleTranslator(this.settings.language)('shQrSaved')
+        : createLocaleTranslator(this.settings.language)('shSaveFailed'),
+    );
     });
   }
 

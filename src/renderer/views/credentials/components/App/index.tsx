@@ -25,12 +25,13 @@ import {
   ManageButton,
 } from './style';
 import { UIStyle } from '~/renderer/mixins/default-styles';
+import { useI18n } from '~/renderer/components/I18n';
 
-const getSiteAddress = (url: string) => {
+const getSiteAddress = (url: string, fallback: string) => {
   try {
     return new URL(url).host || url;
   } catch {
-    return url || '当前网站';
+    return url || fallback;
   }
 };
 
@@ -53,17 +54,18 @@ const onClose = () => {
 };
 
 const Fields = observer(() => {
+  const t = useI18n();
   return (
     <FieldsSection $visible={store.content !== 'list'}>
       <Textfield
         ref={store.usernameRef}
-        label="用户名"
+        label={t('credUsername')}
         dark={!!store.theme['dialog.lightForeground']}
         style={{ width: '100%' }}
       />
       <PasswordInput
         ref={store.passwordRef}
-        label="密码"
+        label={t('credPassword')}
         dark={!!store.theme['dialog.lightForeground']}
         style={{ width: '100%' }}
       />
@@ -72,6 +74,7 @@ const Fields = observer(() => {
 });
 
 export const App = observer(() => {
+  const t = useI18n();
   let title = '';
 
   if (store.content === 'list') {
@@ -79,10 +82,11 @@ export const App = observer(() => {
       ? 'Saved passwords for this site'
       : 'No passwords saved for this site';
   } else {
-    title = store.content === 'save' ? '保存密码？' : '更新已保存的密码？';
+    title =
+      store.content === 'save' ? t('credSaveTitle') : t('credUpdateTitle');
   }
 
-  const siteAddress = getSiteAddress(store.url);
+  const siteAddress = getSiteAddress(store.url, t('credCurrentSite'));
 
   return (
     <ThemeProvider
@@ -98,8 +102,8 @@ export const App = observer(() => {
             <Title>{title}</Title>
             <Subtitle>
               {store.content === 'list'
-                ? '管理此网站已保存的登录信息'
-                : '保存后可在下次登录时快速填充'}
+                ? t('credManageHint')
+                : t('credSaveHint')}
             </Subtitle>
           </HeaderText>
         </Header>
@@ -114,17 +118,17 @@ export const App = observer(() => {
         <Buttons>
           {store.content === 'list' ? (
             <ManageButton onClick={onClose} type="button">
-              管理密码
+              {t('credManage')}
             </ManageButton>
           ) : (
             <PrimaryButton onClick={onSave} type="button">
               <Check size={15} weight="bold" />
-              保存
+              {t('save')}
             </PrimaryButton>
           )}
           <SecondaryButton onClick={onClose} type="button">
             <X size={15} weight="bold" />
-            取消
+            {t('cancel')}
           </SecondaryButton>
         </Buttons>
       </StyledApp>

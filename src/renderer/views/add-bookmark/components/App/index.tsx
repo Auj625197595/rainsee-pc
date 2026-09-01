@@ -45,14 +45,16 @@ import store from '../../store';
 import { ipcRenderer } from 'electron';
 import { IBookmark } from '~/interfaces';
 import { UIStyle } from '~/renderer/mixins/default-styles';
+import { useI18n } from '~/renderer/components/I18n';
 
 // 内联 getBookmarkTitle,避免 import bookmarks/utils 把整个 bookmarks store
 // (依赖 window.electron,本弹窗上下文不存在)在模块加载时拖进来导致崩溃。
 const getBookmarkTitle = (item: IBookmark) => {
   if (!item.static) return item.title;
-  if (item.static === 'main') return '书签栏';
-  if (item.static === 'mobile') return '移动设备书签';
-  if (item.static === 'other') return '其它文件夹';
+  const t = useI18n();
+  if (item.static === 'main') return t('bookmarkBar');
+  if (item.static === 'mobile') return t('mobileDeviceBookmarks');
+  if (item.static === 'other') return t('bookmarksOtherFolder');
   return item.title;
 };
 
@@ -202,6 +204,7 @@ const countMatches = (folders: IBookmark[], query: string): number => {
 
 const FolderTreeItem = observer(
   ({ folder, depth, query }: { folder: IBookmark; depth: number; query: string }) => {
+    const t = useI18n();
     const children = getFolderChildren(folder);
     const visibleChildren = children.filter((child) => matchesFolder(child, query));
     const selected = store.currentFolder?._id === folder._id;
@@ -223,7 +226,11 @@ const FolderTreeItem = observer(
               type="button"
               expanded={expanded}
               onClick={onTreeToggle(folder)}
-              aria-label={expanded ? '收起文件夹' : '展开文件夹'}
+              aria-label={
+                expanded
+                  ? t('bmFolderCollapseAria')
+                  : t('bmFolderExpandAria')
+              }
             >
               <ChevronGlyph />
             </TreeToggle>
@@ -235,7 +242,9 @@ const FolderTreeItem = observer(
           </TreeIconBox>
           <TreeLabel selected={selected}>{getBookmarkTitle(folder)}</TreeLabel>
           <TreeMeta>
-            {children.length > 0 ? `${children.length} 个子级` : '空文件夹'}
+            {children.length > 0
+              ? t('bmChildCount', { count: children.length })
+              : t('bmEmptyFolder')}
           </TreeMeta>
           <TreeCheck selected={selected}>
             {selected && <CheckGlyph />}
@@ -256,6 +265,7 @@ const FolderTreeItem = observer(
 );
 
 export const App = observer(() => {
+  const t = useI18n();
   const query = store.folderSearch.trim().toLowerCase();
   const rootFolders = store
     .getRootFolders()
@@ -268,7 +278,7 @@ export const App = observer(() => {
         .getFolderPath(store.currentFolder._id)
         .map((folder) => store.getFolderLabel(folder))
         .join(' / ')
-    : '书签栏';
+    : t('bookmarkBar');
   const matchCount = countMatches(store.folders, query);
 
   return (
@@ -283,10 +293,10 @@ export const App = observer(() => {
             <HeaderActions>
               {store.bookmark && (
                 <HeaderDeleteButton type="button" onClick={onRemove}>
-                  删除
+                  {t('abmDelete')}
                 </HeaderDeleteButton>
               )}
-              <CloseButton type="button" onClick={onClose} aria-label="关闭编辑书签弹窗">
+              <CloseButton type="button" onClick={onClose} aria-label={t('abmCloseAria')}>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                   <path d="M18 6L6 18M6 6l12 12" />
                 </svg>
@@ -295,7 +305,7 @@ export const App = observer(() => {
           </Header>
           <Body>
             <Field>
-              <FieldLabel>名称</FieldLabel>
+              <FieldLabel>{t('abmName')}</FieldLabel>
               <Input
                 tabIndex={0}
                 ref={store.titleRef}
@@ -305,7 +315,7 @@ export const App = observer(() => {
 
             {!store.bookmark?.isFolder && (
               <Field>
-                <FieldLabel>链接</FieldLabel>
+                <FieldLabel>{t('abmUrl')}</FieldLabel>
                 <Input
                   tabIndex={0}
                   ref={store.urlRef}
@@ -316,11 +326,11 @@ export const App = observer(() => {
             )}
 
             <Field as="div">
-              <FieldLabel>文件夹</FieldLabel>
+              <FieldLabel>{t('abmFolder')}</FieldLabel>
               {!store.folderPanelOpen && (
                 <FolderTrigger onClick={onFolderTriggerClick}>
                   <div>
-                    <FolderTriggerHint>当前目录</FolderTriggerHint>
+                    <FolderTriggerHint>{t('abmCurrentFolder')}</FolderTriggerHint>
                     <FolderTriggerText>{selectedPath}</FolderTriggerText>
                   </div>
                   <FolderTriggerArrow expanded={store.folderPanelOpen}>
@@ -332,7 +342,7 @@ export const App = observer(() => {
               {store.folderPanelOpen && (
                 <FolderPanel>
                   <FolderPanelHead>
-                    <FolderPanelTitle>选择保存位置</FolderPanelTitle>
+                    <FolderPanelTitle>{t('abmChooseLocation')}</FolderPanelTitle>
                     <FolderPanelActions>
                       <ToolbarButton
                         type="button"
@@ -345,13 +355,13 @@ export const App = observer(() => {
                         }
                       >
                         {query !== ''
-                          ? '清空搜索'
+                          ? t('abmClearSearch')
                           : allExpanded
-                            ? '收起全部'
-                            : '展开全部'}
+                            ? t('abmCollapseAll')
+                            : t('abmExpandAll')}
                       </ToolbarButton>
                       <ToolbarButton type="button" onClick={onFolderTriggerClick}>
-                        收起
+                        {t('abmCollapse')}
                       </ToolbarButton>
                     </FolderPanelActions>
                   </FolderPanelHead>
@@ -364,9 +374,13 @@ export const App = observer(() => {
                       type="text"
                       value={store.folderSearch}
                       onChange={onFolderSearchChange}
-                      placeholder="搜索文件夹"
+                      placeholder={t('bmSearchFolder')}
                     />
-                    {query !== '' && <ToolbarMeta>{matchCount} 个匹配</ToolbarMeta>}
+                    {query !== '' && (
+                      <ToolbarMeta>
+                        {t('abmMatchCount', { count: matchCount })}
+                      </ToolbarMeta>
+                    )}
                   </FolderToolbar>
 
                   <TreeViewport>
@@ -382,8 +396,8 @@ export const App = observer(() => {
                     ) : (
                       <EmptyState>
                         {store.folders.length === 0 && query === ''
-                          ? '正在加载文件夹...'
-                          : '没有找到匹配的文件夹'}
+                          ? t('abmLoadingFolders')
+                          : t('abmNoMatchingFolders')}
                       </EmptyState>
                     )}
                   </TreeViewport>
@@ -393,15 +407,21 @@ export const App = observer(() => {
           </Body>
 
           <Buttons>
-            <SecondaryButton type="button" onClick={onRemove}>删除</SecondaryButton>
+            <SecondaryButton type="button" onClick={onRemove}>
+              {t('abmDelete')}
+            </SecondaryButton>
             <AccentSecondaryButton
               type="button"
               onClick={onAddToHomepage}
               disabled={store.addingToHomepage}
             >
-              {store.addingToHomepage ? '添加中...' : '添加到主页'}
+              {store.addingToHomepage
+                ? t('abmAddingToHomepage')
+                : t('abmAddToHomepage')}
             </AccentSecondaryButton>
-            <PrimaryButton type="button" onClick={onDone}>完成</PrimaryButton>
+            <PrimaryButton type="button" onClick={onDone}>
+              {t('abmDone')}
+            </PrimaryButton>
           </Buttons>
         </Surface>
       </StyledApp>

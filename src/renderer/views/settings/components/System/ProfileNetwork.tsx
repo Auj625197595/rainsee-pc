@@ -12,6 +12,7 @@ import { Switch } from '~/renderer/components/Switch';
 import { Control, Row, SecondaryText, Title } from '../App/style';
 import { NormalButton } from '../App';
 import { getPalette } from '../../utils/palette';
+import { getSettingsTranslator } from '../../utils';
 
 interface IProfileNetworkPayload {
   available: boolean;
@@ -189,6 +190,7 @@ const toForm = (proxy: IProfileProxySettings): IProxyForm => ({
 });
 
 export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
+  const t = getSettingsTranslator();
   const [fingerprint, setFingerprint] =
     React.useState<IProfileFingerprint | null>(null);
   const [fingerprintSupported, setFingerprintSupported] =
@@ -215,7 +217,7 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
         if (payload.proxy) setProxy(toForm(payload.proxy));
       })
       .catch(() =>
-        setStatus({ text: '无法读取网络设置', error: true }),
+        setStatus({ text: t('sysNetReadFailed'), error: true }),
       );
   }, []);
 
@@ -235,7 +237,7 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
           : Number(proxy.port),
     })) as { ok: boolean; message?: string; proxy?: IProfileProxySettings };
     if (!result.ok) {
-      setStatus({ text: result.message || '保存代理设置失败', error: true });
+      setStatus({ text: result.message || t('sysProxySaveFailed'), error: true });
       return false;
     }
     if (result.proxy) setProxy(toForm(result.proxy));
@@ -250,15 +252,15 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
         setStatus({
           text:
             proxy.mode === 'direct'
-              ? '代理已关闭，后续连接将直接访问网络'
+              ? t('sysProxyDirectOn')
               : proxy.mode === 'system'
-              ? '已使用本地系统代理设置'
-              : '代理已保存并应用到当前窗口',
+              ? t('sysProxySystemOn')
+              : t('sysProxySaved'),
           error: false,
         });
       }
     } catch {
-      setStatus({ text: '保存代理设置失败', error: true });
+      setStatus({ text: t('sysProxySaveFailed'), error: true });
     } finally {
       setBusy(false);
     }
@@ -267,7 +269,7 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
   const onTest = async () => {
     if (busy) return;
     setBusy(true);
-    setStatus({ text: '正在连接并检测出口 IP...', error: false });
+    setStatus({ text: t('sysProxyTesting'), error: false });
     try {
       if (!(await saveCurrentProxy())) return;
       const result = (await ipcRenderer.invoke('profile-proxy-test')) as {
@@ -277,11 +279,11 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
       };
       setStatus(
         result.ok
-          ? { text: `连接成功，当前出口 IP：${result.ip}`, error: false }
-          : { text: result.message || '代理连接失败', error: true },
+          ? { text: t('sysProxyTestOk', { ip: result.ip }), error: false }
+          : { text: result.message || t('sysProxyTestFailed'), error: true },
       );
     } catch {
-      setStatus({ text: '代理连接失败', error: true });
+      setStatus({ text: t('sysProxyTestFailed'), error: true });
     } finally {
       setBusy(false);
     }
@@ -297,9 +299,12 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
       )) as { ok: boolean; message?: string; fingerprint?: IProfileFingerprint };
       if (result.ok && result.fingerprint) {
         setFingerprint(result.fingerprint);
-        setStatus({ text: '指纹设置将在重新加载网页后生效', error: false });
+        setStatus({ text: t('sysFingerprintApplied'), error: false });
       } else {
-        setStatus({ text: result.message || '修改指纹设置失败', error: true });
+        setStatus({
+          text: result.message || t('sysFingerprintSetFailed'),
+          error: true,
+        });
       }
     } finally {
       setBusy(false);
@@ -308,7 +313,7 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
 
   const regenerateFingerprint = async () => {
     if (busy) return;
-    if (!window.confirm('重新生成后，网站会将此小号识别为一台新设备。确定继续吗？')) {
+    if (!window.confirm(t('sysRegenerateConfirm'))) {
       return;
     }
     setBusy(true);
@@ -318,9 +323,12 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
       )) as { ok: boolean; message?: string; fingerprint?: IProfileFingerprint };
       if (result.ok && result.fingerprint) {
         setFingerprint(result.fingerprint);
-        setStatus({ text: '新指纹已生成，将在重新加载网页后生效', error: false });
+        setStatus({ text: t('sysFingerprintRegenerated'), error: false });
       } else {
-        setStatus({ text: result.message || '重新生成指纹失败', error: true });
+        setStatus({
+          text: result.message || t('sysRegenerateFailed'),
+          error: true,
+        });
       }
     } finally {
       setBusy(false);
@@ -332,16 +340,22 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
   return (
     <>
       <SectionHeading>
-        {fingerprintSupported ? '小号身份与网络' : '网络代理'}
+        {fingerprintSupported
+          ? t('sysIdentityNetHeading')
+          : t('sysNetHeading')}
       </SectionHeading>
       {fingerprintSupported && (
         <PlainRow>
           <RowInfo>
-            <Title>独立浏览器指纹</Title>
+            <Title>{t('searchFingerprint')}</Title>
             <SecondaryText>
-              “{profileName}”使用稳定的 Canvas、WebGL 与设备参数组合。
+              {t('sysFingerprintDesc', { name: profileName })}
               {fingerprint && (
-                <> 指纹编号：<FingerprintId>{fingerprint.id}</FingerprintId></>
+                <>
+                  {' '}
+                  {t('sysFingerprintId')}
+                  <FingerprintId>{fingerprint.id}</FingerprintId>
+                </>
               )}
             </SecondaryText>
           </RowInfo>
@@ -351,7 +365,7 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
               disabled={busy || !fingerprint}
               onClick={regenerateFingerprint}
             >
-              重新生成
+              {t('sysRegenerate')}
             </NormalButton>
             <Switch
               clickable
@@ -364,42 +378,38 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
 
       <ProxyRow>
         <div>
-          <Title>独立 IP 代理</Title>
+          <Title>{t('searchProxyIp')}</Title>
           <SecondaryText>
             {fingerprintSupported
-              ? `代理仅应用于“${profileName}”的网络会话，其他小号和主账号不受影响。`
-              : '代理将应用于主账号的全部网页会话；各小号互不影响，可在小号设置中单独配置。'}
+              ? t('sysProxyAltDesc', { name: profileName })
+              : t('sysProxyMainDesc')}
           </SecondaryText>
         </div>
 
         <FieldGrid>
           <Field>
-            <FieldLabel>代理类型</FieldLabel>
+            <FieldLabel>{t('sysProxyType')}</FieldLabel>
             <Select
               value={proxy.mode}
               disabled={busy}
               onChange={(event) => updateProxy('mode', event.target.value)}
             >
-              <option value="direct">不使用代理</option>
-              <option value="system">使用本地代理（系统代理）</option>
-              <option value="http">HTTP 代理</option>
-              <option value="socks5">SOCKS5 代理</option>
-              <option value="pac">PAC 自动代理</option>
+              <option value="direct">{t('sysProxyDirectMode')}</option>
+              <option value="system">{t('sysProxySystemMode')}</option>
+              <option value="http">{t('sysProxyHttp')}</option>
+              <option value="socks5">{t('sysProxySocks5')}</option>
+              <option value="pac">{t('sysProxyPac')}</option>
             </Select>
           </Field>
           {proxy.mode === 'system' ? (
-            <ProxyHint>
-              使用本机操作系统中的代理设置。请先在系统设置或本地代理工具中启用代理。
-            </ProxyHint>
+            <ProxyHint>{t('sysProxySystemHint')}</ProxyHint>
           ) : proxy.mode === 'pac' ? (
             <Field $wide>
-              <FieldLabel>PAC 脚本或 URL</FieldLabel>
+              <FieldLabel>{t('sysPacLabel')}</FieldLabel>
               <Textarea
                 value={proxy.pacScript}
                 disabled={busy}
-                placeholder={
-                  '粘贴 PAC 脚本（需含 FindProxyForURL），或填入 http(s)://、file:// 的 PAC 地址'
-                }
+                placeholder={t('sysPacPlaceholder')}
                 onChange={(event) =>
                   updateProxy('pacScript', event.target.value)
                 }
@@ -408,16 +418,16 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
           ) : (
             <>
               <Field>
-                <FieldLabel>服务器</FieldLabel>
+                <FieldLabel>{t('sysServer')}</FieldLabel>
                 <Input
                   value={proxy.host}
                   disabled={busy || !proxyEnabled}
-                  placeholder="127.0.0.1 或 proxy.example.com"
+                  placeholder={t('siServerPlaceholder')}
                   onChange={(event) => updateProxy('host', event.target.value)}
                 />
               </Field>
               <Field>
-                <FieldLabel>端口</FieldLabel>
+                <FieldLabel>{t('sysPort')}</FieldLabel>
                 <Input
                   type="number"
                   min="1"
@@ -429,7 +439,7 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
                 />
               </Field>
               <Field>
-                <FieldLabel>用户名（可选）</FieldLabel>
+                <FieldLabel>{t('sysUsername')}</FieldLabel>
                 <Input
                   value={proxy.username}
                   disabled={busy || !proxyEnabled}
@@ -440,7 +450,7 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
                 />
               </Field>
               <Field>
-                <FieldLabel>密码（可选）</FieldLabel>
+                <FieldLabel>{t('sysPassword')}</FieldLabel>
                 <Input
                   type="password"
                   value={proxy.password}
@@ -455,7 +465,7 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
           )}
           {proxy.mode !== 'system' && (
             <Field $wide>
-              <FieldLabel>不使用代理的地址</FieldLabel>
+              <FieldLabel>{t('sysBypassLabel')}</FieldLabel>
               <Input
                 value={proxy.bypass}
                 disabled={busy || !proxyEnabled}
@@ -468,10 +478,10 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
 
         <ProxyActions>
           <NormalButton variant="soft" disabled={busy} onClick={onTest}>
-            测试出口 IP
+            {t('sysTestIp')}
           </NormalButton>
           <NormalButton disabled={busy} onClick={onSave}>
-            保存并应用
+            {t('sysSaveApply')}
           </NormalButton>
         </ProxyActions>
       </ProxyRow>

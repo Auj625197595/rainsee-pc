@@ -37,8 +37,10 @@ import {
   MigrationButton,
   MigrationResponsiveStyle,
 } from './style';
+import { useI18n } from '~/renderer/components/I18n';
 
 export const BrowserMigrationDialog = observer(() => {
+  const t = useI18n();
   const selected = new Set(store.migrationSelectedKeys);
   const allSelected =
     store.migrationItems.length > 0 &&
@@ -60,15 +62,15 @@ export const BrowserMigrationDialog = observer(() => {
       <MigrationDialog
         role="dialog"
         aria-modal="true"
-        aria-label="从本地浏览器迁移扩展"
+        aria-label={t('extMigrateAria')}
       >
         <MigrationHeader>
           <BrowsersIcon size={22} weight="duotone" />
-          <MigrationTitle>从本地浏览器迁移扩展</MigrationTitle>
+          <MigrationTitle>{t('extMigrateTitle')}</MigrationTitle>
           <MigrationClose
             type="button"
-            title="关闭"
-            aria-label="关闭"
+            title={t('close')}
+            aria-label={t('close')}
             disabled={store.migrationImporting}
             onClick={() => store.closeBrowserMigration()}
           >
@@ -99,7 +101,7 @@ export const BrowserMigrationDialog = observer(() => {
                 <span />
               ) : null}
             </MigrationCheckbox>
-            全选
+            {t('extSelectAll')}
           </MigrationSelectAll>
           <MigrationChooseDirectory
             type="button"
@@ -107,7 +109,7 @@ export const BrowserMigrationDialog = observer(() => {
             onClick={() => store.scanBrowserImports(true)}
           >
             <FolderOpenIcon size={17} />
-            选择其他目录
+            {t('extChooseOtherDir')}
           </MigrationChooseDirectory>
         </MigrationToolbar>
 
@@ -115,12 +117,12 @@ export const BrowserMigrationDialog = observer(() => {
           {store.migrationLoading ? (
             <MigrationState>
               <MigrationSpinner />
-              <span>正在读取浏览器扩展…</span>
+              <span>{t('extReadingBrowser')}</span>
             </MigrationState>
           ) : store.migrationItems.length === 0 ? (
             <MigrationState $error={!!store.migrationError}>
               <PuzzlePieceIcon size={42} weight="duotone" />
-              <span>{store.migrationError || '没有可导入的扩展'}</span>
+              <span>{store.migrationError || t('extNothingToImport')}</span>
             </MigrationState>
           ) : (
             <MigrationList>
@@ -176,8 +178,8 @@ export const BrowserMigrationDialog = observer(() => {
           <MigrationFooterStatus $error={!!store.migrationError}>
             {store.migrationError ||
               (store.migrationDuplicateCount > 0
-                ? `已过滤 ${store.migrationDuplicateCount} 个重复扩展`
-                : `已选择 ${store.migrationSelectedKeys.length} 个扩展`)}
+                ? t('extDuplicatesFiltered', { count: store.migrationDuplicateCount })
+                : t('extSelectedCount', { count: store.migrationSelectedKeys.length }))}
           </MigrationFooterStatus>
           <MigrationActions>
             <MigrationButton
@@ -185,7 +187,7 @@ export const BrowserMigrationDialog = observer(() => {
               disabled={store.migrationImporting}
               onClick={() => store.closeBrowserMigration()}
             >
-              取消
+              {t('cancel')}
             </MigrationButton>
             <MigrationButton
               type="button"
@@ -198,8 +200,8 @@ export const BrowserMigrationDialog = observer(() => {
               onClick={() => store.importSelectedBrowserExtensions()}
             >
               {store.migrationImporting
-                ? '正在导入…'
-                : `导入 (${store.migrationSelectedKeys.length})`}
+                ? t('extImporting')
+                : t('extImportN', { count: store.migrationSelectedKeys.length })}
             </MigrationButton>
           </MigrationActions>
         </MigrationFooter>

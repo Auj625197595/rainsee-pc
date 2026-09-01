@@ -5,6 +5,7 @@ import { IBrowserAction } from '../../models';
 import { ipcRenderer } from 'electron';
 import * as remote from '@electron/remote';
 import store from '../../store';
+import { getShellTranslator } from '../../utils/i18n';
 import { extensionMainChannel } from '~/common/rpc/extensions';
 import { getWebUIURL } from '~/common/webui';
 import {Application} from "~/main/application";
@@ -79,10 +80,11 @@ const onContextMenu = (data: IBrowserAction) => (
   // 阻止冒泡到工具栏容器的 onContextMenu(否则「自定义工具栏」菜单会覆盖本扩展菜单)。
   e.preventDefault();
   e.stopPropagation();
+  const t = getShellTranslator();
   const { target } = e;
   const menu = remote.Menu.buildFromTemplate([
     {
-      label: '快捷键设置',
+      label: t('shellShortcutSettings'),
       click: () => {
         // 打开设置页「快捷键」分区并滚动到该扩展的命令区块(?ext= 由 Shortcuts 组件读取定位)。
         ipcRenderer.send(`add-tab-${store.windowId}`, {
@@ -92,20 +94,20 @@ const onContextMenu = (data: IBrowserAction) => (
       },
     },
     {
-      label: '卸载扩展',
+      label: t('shellUninstallExtension'),
       click: () => {
         store.extensions.uninstallExtension(data.extensionId);
       },
     },
     {
-      label: '检查',
+      label: t('shellInspect'),
       click: () => {
         const { left, top } = (target as any).getBoundingClientRect();
         showPopup(data, left, top, true);
       },
     },
     {
-      label: '检查后台页面',
+      label: t('shellInspectBackground'),
       click: () => {
         extensionMainChannel
           .getInvoker()

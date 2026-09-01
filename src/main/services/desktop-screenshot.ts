@@ -11,6 +11,8 @@ import {
 import * as fs from 'fs';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
+import { Application } from '../application';
+import { getMainTranslator } from '../i18n';
 
 interface OverlayEntry {
   displayId: number;
@@ -251,7 +253,6 @@ export class DesktopScreenshotService {
       `screenshot-save-${id}`,
       `screenshot-copy-${id}`,
       `screenshot-search-${id}`,
-      `screenshot-ai-${id}`,
       `screenshot-render-ready-${id}`,
     ];
     let resolveLoading: () => void = () => undefined;
@@ -307,11 +308,14 @@ export class DesktopScreenshotService {
     // 开源版：screenshot-ai 通道已移除。
     ipcMain.on(`screenshot-save-${id}`, async (_event, dataURL: string) => {
       try {
+        const t = getMainTranslator(
+          Application.instance.settings?.object?.language,
+        );
         const image = nativeImage.createFromDataURL(dataURL);
         const result = await dialog.showSaveDialog({
-          title: '保存截图',
+          title: t('shotSaveDialogTitle'),
           defaultPath: `screenshot-${timestamp()}.png`,
-          filters: [{ name: 'PNG 图片', extensions: ['png'] }],
+          filters: [{ name: t('shotFilterPng'), extensions: ['png'] }],
         });
         if (!result.canceled && result.filePath) {
           await fs.promises.writeFile(result.filePath, image.toPNG());

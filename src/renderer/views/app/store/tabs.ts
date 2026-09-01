@@ -7,6 +7,7 @@ import {
   reaction,
 } from 'mobx';
 import * as React from 'react';
+import { createLocaleTranslator } from '~/common/i18n';
 
 import { ITab, ITabGroup } from '../models';
 
@@ -2475,7 +2476,11 @@ export class TabsStore {
           groupId: t.tabGroupId,
           groupColor: group ? group.color : undefined,
           groupName: group
-            ? group.name || `${group.tabs.length} 个标签页`
+            ? group.name ||
+              createLocaleTranslator(store.settings.object.language)(
+                'sghTabCountFallback',
+                { count: group.tabs.length },
+              )
             : undefined,
           // 原始组名(可能为空),供浮层内改名输入框初始化;上面的 groupName 带
           // 「N 个标签页」兜底用于显示。

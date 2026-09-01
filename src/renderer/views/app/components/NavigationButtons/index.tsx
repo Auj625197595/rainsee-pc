@@ -11,6 +11,7 @@ import { StyledContainer } from './style';
 import store from '../../store';
 import { ToolbarButton } from '../ToolbarButton';
 import { useActionBubble } from '../../utils/action-bubble';
+import { getShellTranslator } from '../../utils/i18n';
 import {
   renderClusterButton,
   showToolbarContextMenu,
@@ -33,6 +34,7 @@ const onRefreshClick = () => {
 };
 
 export const NavigationButtons = observer(() => {
+  const t = getShellTranslator();
   const { selectedTab } = store.tabs;
   const iconColor = store.theme['toolbar.lightForeground']
     ? '#fff'
@@ -60,11 +62,11 @@ export const NavigationButtons = observer(() => {
           tab.callViewMethod('stop');
         }
       });
-      showBubble('停止全部', e.currentTarget);
+      showBubble(t('shellStopAll'), e.currentTarget);
     } else {
       // 刷新全部。
       tabs.forEach((tab) => tab.callViewMethod('reload'));
-      showBubble('刷新全部', e.currentTarget);
+      showBubble(t('shellReloadAll'), e.currentTarget);
     }
   };
 

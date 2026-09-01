@@ -17,6 +17,7 @@
 import {ipcMain, app, BrowserWindow} from 'electron';
 
 import {Application} from '../application';
+import {getMainTranslator} from '../i18n';
 import {findSearchQuery} from '~/utils/search-engine';
 
 export interface ClearItems {
@@ -74,9 +75,10 @@ export async function performClearSiteData(opts: {
   incognito?: boolean;
   items: Partial<ClearItems>;
 }) {
+  const t = getMainTranslator(Application.instance.settings?.object?.language);
   const origin = getOrigin(opts.url);
   if (!origin) {
-    return {ok: false, unsupported: true, error: '当前页面不支持清理'};
+    return {ok: false, unsupported: true, error: t('coePageUnsupported')};
   }
 
   const items = normalizeItems(opts.items);

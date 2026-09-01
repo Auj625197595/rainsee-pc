@@ -3,6 +3,8 @@ import {writeFileSync, existsSync, mkdirSync, copyFileSync} from 'fs';
 import {join, resolve} from 'path';
 
 import {buildIcoFromPng} from './pwa';
+import {Application} from '../application';
+import {getMainTranslator} from '../i18n';
 
 // 无痕窗口的独立 AppUserModelID。Windows 任务栏按 AUMID 分组,
 // 给无痕窗口单独的 AUMID 才能让它与主程序分开成两个任务栏按钮。
@@ -116,6 +118,10 @@ export const ensureIncognitoIcon = (): {pngPath: string; icoPath: string} => {
 export const installIncognitoShortcut = () => {
   if (process.platform !== 'win32') return;
   try {
+    // 快捷方式文件名与描述对用户可见(开始菜单展示),按当前语言生成。
+    const incognitoTitle = getMainTranslator(
+      Application.instance?.settings?.object?.language,
+    )('incognitoTitle');
     const {icoPath} = ensureIncognitoIcon();
     const programs = join(
       app.getPath('appData'),
@@ -129,11 +135,11 @@ export const installIncognitoShortcut = () => {
     } catch {
       // ignore
     }
-    const lnkPath = join(programs, '无痕浏览.lnk');
+    const lnkPath = join(programs, `${incognitoTitle}.lnk`);
     const details: Electron.ShortcutDetails = {
       target: process.execPath,
       args: '--incognito',
-      description: '无痕浏览',
+      description: incognitoTitle,
       icon: icoPath,
       iconIndex: 0,
       appUserModelId: INCOGNITO_AUMID,

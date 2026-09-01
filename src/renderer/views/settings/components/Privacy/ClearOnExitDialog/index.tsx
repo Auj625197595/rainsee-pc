@@ -5,8 +5,9 @@ import styled, {css} from 'styled-components';
 import {Dialog, Title, Content, Buttons, CloseButton} from '../../Dialog';
 import {NormalButton} from '../../App';
 import store from '../../../store';
-import {saveWebBrowsingSettings} from '../../../utils';
+import {saveWebBrowsingSettings, getSettingsTranslator} from '../../../utils';
 import {ITheme} from '~/interfaces';
+import type {MessageKey} from '~/common/i18n';
 import {getPalette} from '~/renderer/views/bookmarks/utils/palette';
 
 // 「退出时自动清理」多选对话框:勾选项双向绑定 store.settings.clearOnExit.*,
@@ -55,14 +56,18 @@ const Check = () => (
   </svg>
 );
 
-const ITEMS: {key: 'cache' | 'cookies' | 'history' | 'searchHistory'; label: string}[] = [
-  {key: 'cache', label: '网页缓存'},
-  {key: 'cookies', label: 'Cookie'},
-  {key: 'history', label: '历史记录'},
-  {key: 'searchHistory', label: '搜索历史'},
+const ITEMS: {
+  key: 'cache' | 'cookies' | 'history' | 'searchHistory';
+  labelKey: MessageKey;
+}[] = [
+  {key: 'cache', labelKey: 'pvItemCache'},
+  {key: 'cookies', labelKey: 'wbCookie'},
+  {key: 'history', labelKey: 'pvItemHistory'},
+  {key: 'searchHistory', labelKey: 'wbSearchHistory'},
 ];
 
 export default observer(() => {
+  const t = getSettingsTranslator();
   const visible = store.dialogContent === 'clear-on-exit';
   // settings.clearOnExit 始终存在(主进程 load 校验补全),这里防御性兜底。
   const coe = store.settings.clearOnExit || {
@@ -86,18 +91,18 @@ export default observer(() => {
 
   return (
     <Dialog visible={visible} style={{width: 344}}>
-      <Title>退出时自动清理</Title>
+      <Title>{t('searchClearOnExit')}</Title>
       <Content>
         {ITEMS.map((it) => (
           <Item key={it.key} onClick={() => toggle(it.key)}>
             <Box checked={coe[it.key]}>{coe[it.key] && <Check />}</Box>
-            {it.label}
+            {t(it.labelKey)}
           </Item>
         ))}
       </Content>
       <Buttons>
         <CloseButton />
-        <NormalButton onClick={onConfirm}>确定</NormalButton>
+        <NormalButton onClick={onConfirm}>{t('confirm')}</NormalButton>
       </Buttons>
     </Dialog>
   );

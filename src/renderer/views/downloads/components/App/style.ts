@@ -50,16 +50,16 @@ export const SettingsButton = styled.button`
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: 4px;
   flex-shrink: 0;
   height: 32px;
-  padding: 0 9px;
+  padding: 0 5px;
   border: none;
   border-radius: 9px;
   cursor: pointer;
   background-color: transparent;
   font-family: inherit;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   transition: background-color 0.16s ease, color 0.16s ease;
 
@@ -76,6 +76,112 @@ export const SettingsButton = styled.button`
         color: ${p.primary};
         background-color: ${p.primarySoft};
       }
+    `;
+  }}
+`;
+
+export const CreateTaskButton = styled.button`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 9px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  transition: background-color 0.16s ease, color 0.16s ease;
+
+  ${({ theme }: {theme?: ITheme}) => {
+    const p = getPalette(theme);
+    return css`
+      color: ${p.primary};
+      background-color: ${p.primarySoft};
+      &:hover { background-color: ${p.primary}25; }
+    `;
+  }}
+`;
+
+export const TaskDialog = styled.div`
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.24);
+`;
+
+export const TaskDialogPanel = styled.form`
+  width: min(520px, calc(100vw - 40px));
+  padding: 24px;
+  border-radius: 12px;
+  box-shadow: 0 16px 50px rgba(15, 23, 42, 0.22);
+  ${({ theme }: {theme?: ITheme}) => {
+    const p = getPalette(theme);
+    return css`background: ${p.surface}; border: 1px solid ${p.line};`;
+  }}
+`;
+
+export const TaskDialogTitle = styled.h2`
+  margin: 0 0 18px;
+  font-size: 18px;
+  ${({ theme }: {theme?: ITheme}) => css`color: ${getPalette(theme).textMain};`}
+`;
+
+export const TaskInput = styled.input`
+  box-sizing: border-box;
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  border-radius: 8px;
+  outline: none;
+  font: inherit;
+  font-size: 13px;
+  ${({ theme }: {theme?: ITheme}) => {
+    const p = getPalette(theme);
+    return css`color: ${p.textMain}; background: ${p.bg}; border: 1px solid ${p.line}; &:focus { border-color: ${p.primary}; }`;
+  }}
+`;
+
+export const TaskDialogHint = styled.div`
+  margin-top: 8px;
+  font-size: 12px;
+  ${({ theme }: {theme?: ITheme}) => css`color: ${getPalette(theme).textMute};`}
+`;
+
+export const TaskDialogError = styled.div`
+  min-height: 18px;
+  margin-top: 10px;
+  font-size: 12px;
+  ${({ theme }: {theme?: ITheme}) => css`color: ${getPalette(theme).danger};`}
+`;
+
+export const TaskDialogActions = styled.div`
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+`;
+
+export const TaskDialogButton = styled.button<{primary?: boolean}>`
+  height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  ${({theme, primary}: {theme?: ITheme; primary?: boolean}) => {
+    const p = getPalette(theme);
+    return css`
+      color: ${primary ? '#fff' : p.textSub};
+      background: ${primary ? p.primary : p.bg};
+      border: 1px solid ${primary ? p.primary : p.line};
+      &:hover { filter: brightness(0.97); }
     `;
   }}
 `;

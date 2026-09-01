@@ -20,7 +20,8 @@ import { ITheme, TabWheelBehavior } from '~/interfaces';
 import { Switch } from '~/renderer/components/Switch';
 import store from '../../store';
 import { getPalette } from '../../utils/palette';
-import { onSwitchChange } from '../../utils/settings';
+import { onSwitchChange, getSettingsTranslator } from '../../utils/settings';
+import type { MessageKey } from '~/common/i18n';
 
 interface GestureActionDTO {
   id: string;
@@ -664,14 +665,15 @@ const Empty = styled.div`
   `}
 `;
 
-const directionLabels: Record<string, string> = {
-  U: '向上',
-  D: '向下',
-  L: '向左',
-  R: '向右',
+const directionLabels: Record<string, MessageKey> = {
+  U: 'mgUp',
+  D: 'mgDown',
+  L: 'mgLeft',
+  R: 'mgRight',
 };
 
 export const MouseGestures = observer(() => {
+  const t = getSettingsTranslator();
   const [actions, setActions] = React.useState<GestureActionDTO[]>([]);
   const [categories, setCategories] = React.useState<GestureCategoryDTO[]>([]);
   const [presets, setPresets] = React.useState<PresetShapeDTO[]>([]);
@@ -763,11 +765,18 @@ export const MouseGestures = observer(() => {
   const left = store.settings.mouseLeftGestures || {};
   const side = store.settings.mouseSideButtons || {};
   const tabWheelBehavior = store.settings.tabWheelBehavior || 'auto';
-  const leftSummary = `阈值 ${threshold}px · 上${
-    leftActions.find((item) => item.id === left.U)?.label || '置空'
-  } · 下${leftActions.find((item) => item.id === left.D)?.label || '置空'}`;
+  const leftSummary = t('mgLeftSummary', {
+    threshold,
+    up:
+      leftActions.find((item) => item.id === left.U)?.label ||
+      t('mgUnassigned'),
+    down:
+      leftActions.find((item) => item.id === left.D)?.label ||
+      t('mgUnassigned'),
+  });
   const sideActionName = (id: string | null | undefined) =>
-    actions.find((action) => action.id === id)?.label || '置空（不响应）';
+    actions.find((action) => action.id === id)?.label ||
+    t('mgUnassignedNoAction');
   const boundCount = actions.filter((action) => effective(action.id)).length;
 
   const filteredActions = (categoryId: string) =>
@@ -784,10 +793,10 @@ export const MouseGestures = observer(() => {
 
   const modalTitle =
     modal === 'left-drag'
-      ? '左键拖拽设置'
+      ? t('mgLeftDragModal')
       : modal === 'side-buttons'
-      ? '侧边键动作'
-      : '管理右键手势';
+      ? t('mgSideButtonsModal')
+      : t('mgMappingsModal');
 
   const renderModalContent = () => {
     if (modal === 'left-drag') {
@@ -797,10 +806,12 @@ export const MouseGestures = observer(() => {
             <IconBox $tone="purple">
               <CursorClick size={18} weight="fill" />
             </IconBox>
-            在链接或图片上按住左键并拖动，达到设定距离后显示可执行的方向动作。
+            {t('mgLeftDragIntro')}
           </ModalIntro>
           <SliderRow>
-            <label htmlFor="left-gesture-threshold">滑动距离</label>
+            <label htmlFor="left-gesture-threshold">
+              {t('searchDragThreshold')}
+            </label>
             <input
               id="left-gesture-threshold"
               type="range"
@@ -823,19 +834,20 @@ export const MouseGestures = observer(() => {
               <CursorClick size={17} weight="fill" />
             </IconBox>
             <RowCopy>
-              <RowTitle>拖到标签栏的打开方式</RowTitle>
-              <RowDescription>
-                后台打开会创建标签页，但保持当前标签不变。
-              </RowDescription>
+              <RowTitle>{t('mgOpenModeTitle')}</RowTitle>
+              <RowDescription>{t('mgOpenModeDesc')}</RowDescription>
             </RowCopy>
-            <SegmentedControl role="group" aria-label="拖到标签栏的打开方式">
+            <SegmentedControl
+              role="group"
+              aria-label={t('mgOpenModeTitle')}
+            >
               <SegmentButton
                 type="button"
                 $active={!leftOpenInBackground}
                 aria-pressed={!leftOpenInBackground}
                 onClick={() => setOption('leftOpenInBackground', false)}
               >
-                前台打开
+                {t('mgForeground')}
               </SegmentButton>
               <SegmentButton
                 type="button"
@@ -843,21 +855,21 @@ export const MouseGestures = observer(() => {
                 aria-pressed={leftOpenInBackground}
                 onClick={() => setOption('leftOpenInBackground', true)}
               >
-                后台打开
+                {t('mgBackground')}
               </SegmentButton>
             </SegmentedControl>
           </SettingRow>
           <DirectionList>
             {(['U', 'D', 'L', 'R'] as const).map((direction) => (
               <DirectionRow key={direction}>
-                <Direction>{directionLabels[direction]}</Direction>
+                <Direction>{t(directionLabels[direction])}</Direction>
                 <Select
                   value={left[direction] || ''}
                   onChange={(event) =>
                     setLeftGesture(direction, event.target.value)
                   }
                 >
-                  <option value="">置空（不响应）</option>
+                  <option value="">{t('mgUnassignedNoAction')}</option>
                   {leftActions.map((action) => (
                     <option key={action.id} value={action.id}>
                       {action.label}
@@ -877,15 +889,15 @@ export const MouseGestures = observer(() => {
             <IconBox $tone="orange">
               <Mouse size={18} weight="fill" />
             </IconBox>
-            为具有前进、后退侧键的鼠标指定动作。未设置时将不响应。
+            {t('mgSideIntro')}
           </ModalIntro>
           <DirectionList>
             {[
-              { button: '3', label: '后退侧键', fallback: 'back' },
-              { button: '4', label: '前进侧键', fallback: 'forward' },
+              { button: '3', labelKey: 'mgBackButton' as MessageKey, fallback: 'back' },
+              { button: '4', labelKey: 'mgForwardButton' as MessageKey, fallback: 'forward' },
             ].map((item) => (
               <DirectionRow key={item.button}>
-                <Direction>{item.label}</Direction>
+                <Direction>{t(item.labelKey)}</Direction>
                 <Select
                   value={
                     Object.prototype.hasOwnProperty.call(side, item.button)
@@ -896,7 +908,7 @@ export const MouseGestures = observer(() => {
                     setSideButton(item.button, event.target.value)
                   }
                 >
-                  <option value="">置空（不响应）</option>
+                  <option value="">{t('mgUnassignedNoAction')}</option>
                   {categories.map((category) => (
                     <optgroup key={category.id} label={category.label}>
                       {actions
@@ -921,23 +933,23 @@ export const MouseGestures = observer(() => {
           <IconBox $tone="blue">
             <HandPalm size={18} weight="fill" />
           </IconBox>
-          每个形状只能分配给一个动作，已被占用的形状会自动从其他选项中隐藏。
+          {t('mgMappingIntro')}
         </ModalIntro>
         <Workspace>
           <div>
-            <WorkspaceTitle>右键手势映射</WorkspaceTitle>
+            <WorkspaceTitle>{t('mgMappingTitle')}</WorkspaceTitle>
             <WorkspaceDescription>
-              按住右键拖动，沿指定方向移动后松开即可触发动作。
+              {t('mgMappingDesc')}
             </WorkspaceDescription>
           </div>
           <Stats>
             <Stat>
               <b>{boundCount}</b>
-              <span>已绑定</span>
+              <span>{t('mgBound')}</span>
             </Stat>
             <Stat>
               <b>{Math.max(0, presets.length - boundCount)}</b>
-              <span>可用形状</span>
+              <span>{t('mgAvailableShapes')}</span>
             </Stat>
           </Stats>
         </Workspace>
@@ -947,24 +959,24 @@ export const MouseGestures = observer(() => {
               type="search"
               value={filter}
               onChange={(event) => setFilter(event.target.value)}
-              placeholder="筛选动作"
-              aria-label="筛选动作"
+              placeholder={t('mgFilterActions')}
+              aria-label={t('mgFilterActions')}
             />
             <Tabs role="tablist">
               {(
                 [
-                  ['all', '全部'],
-                  ['bound', '已绑定'],
-                  ['empty', '未绑定'],
+                  ['all', 'mgFilterAll'],
+                  ['bound', 'mgBound'],
+                  ['empty', 'mgUnbound'],
                 ] as const
-              ).map(([id, label]) => (
+              ).map(([id, labelKey]) => (
                 <Tab
                   key={id}
                   type="button"
                   $active={filterTab === id}
                   onClick={() => setFilterTab(id)}
                 >
-                  {label}
+                  {t(labelKey)}
                 </Tab>
               ))}
             </Tabs>
@@ -998,9 +1010,9 @@ export const MouseGestures = observer(() => {
                             event.target.value || null,
                           )
                         }
-                        aria-label={`${action.label}的手势`}
+                        aria-label={t('mgGestureAria', { label: action.label })}
                       >
-                        <option value="">未绑定</option>
+                        <option value="">{t('mgUnbound')}</option>
                         {presets
                           .filter(
                             (preset) =>
@@ -1021,21 +1033,21 @@ export const MouseGestures = observer(() => {
           })}
           {!categories.some(
             (category) => filteredActions(category.id).length,
-          ) && <Empty>没有匹配的动作</Empty>}
+          ) && <Empty>{t('mgNoMatches')}</Empty>}
         </Editor>
         <ModalFooter>
           <ActionButton
             type="button"
             onClick={() => ipcRenderer.invoke('reset-gesture')}
           >
-            恢复推荐
+            {t('mgResetRecommended')}
           </ActionButton>
         </ModalFooter>
       </>
     );
   };
 
-  if (!loaded) return <Empty>加载中...</Empty>;
+  if (!loaded) return <Empty>{t('mgLoading')}</Empty>;
 
   const setTabWheelBehavior = (value: TabWheelBehavior) => {
     store.settings.tabWheelBehavior = value;
@@ -1044,30 +1056,29 @@ export const MouseGestures = observer(() => {
 
   return (
     <>
-      <Note>
-        按住鼠标右键拖动绘制手势，松开后执行动作。普通右键不拖动时仍会打开菜单。
-      </Note>
+      <Note>{t('mgTopNote')}</Note>
       <Group>
-        <GroupLabel>标签栏滚轮</GroupLabel>
+        <GroupLabel>{t('mgTabWheelSection')}</GroupLabel>
         <Card>
           <SettingRow>
             <IconBox $tone="blue">
               <Mouse size={17} weight="fill" />
             </IconBox>
             <RowCopy>
-              <RowTitle>标签栏滚轮事件</RowTitle>
-              <RowDescription>
-                默认优先滚动溢出内容，到达边界后切换标签；也可始终切换标签。
-              </RowDescription>
+              <RowTitle>{t('searchTabWheel')}</RowTitle>
+              <RowDescription>{t('mgTabWheelDesc')}</RowDescription>
             </RowCopy>
-            <SegmentedControl role="group" aria-label="标签栏滚轮事件">
+            <SegmentedControl
+              role="group"
+              aria-label={t('searchTabWheel')}
+            >
               <SegmentButton
                 type="button"
                 $active={tabWheelBehavior === 'auto'}
                 aria-pressed={tabWheelBehavior === 'auto'}
                 onClick={() => setTabWheelBehavior('auto')}
               >
-                默认
+                {t('permOptDefault')}
               </SegmentButton>
               <SegmentButton
                 type="button"
@@ -1075,24 +1086,22 @@ export const MouseGestures = observer(() => {
                 aria-pressed={tabWheelBehavior === 'always-switch'}
                 onClick={() => setTabWheelBehavior('always-switch')}
               >
-                始终切换标签页
+                {t('mgAlwaysSwitch')}
               </SegmentButton>
             </SegmentedControl>
           </SettingRow>
         </Card>
       </Group>
       <Group>
-        <GroupLabel>左键拖拽</GroupLabel>
+        <GroupLabel>{t('mgLeftDragSection')}</GroupLabel>
         <Card>
           <SettingRow>
             <IconBox $tone="purple">
               <CursorClick size={17} weight="fill" />
             </IconBox>
             <RowCopy>
-              <RowTitle>启用左键拖拽手势</RowTitle>
-              <RowDescription>
-                在链接或图片上拖动，松开时执行方向对应的动作。
-              </RowDescription>
+              <RowTitle>{t('searchLeftDragGestures')}</RowTitle>
+              <RowDescription>{t('mgLeftDragRowDesc')}</RowDescription>
             </RowCopy>
             <Switch
               clickable
@@ -1105,38 +1114,38 @@ export const MouseGestures = observer(() => {
               <ArrowsOutCardinal size={17} weight="fill" />
             </IconBox>
             <RowCopy>
-              <RowTitle>方向动作</RowTitle>
+              <RowTitle>{t('mgDirectionActions')}</RowTitle>
               <RowDescription>{leftSummary}</RowDescription>
             </RowCopy>
             <ActionButton type="button" onClick={() => setModal('left-drag')}>
               <SlidersHorizontal size={15} />
-              配置
+              {t('mgConfigure')}
             </ActionButton>
           </SettingRow>
         </Card>
       </Group>
       <Group>
-        <GroupLabel>侧边键</GroupLabel>
+        <GroupLabel>{t('mgSideSection')}</GroupLabel>
         <Card>
           <SettingRow>
             <IconBox $tone="orange">
               <Mouse size={17} weight="fill" />
             </IconBox>
             <RowCopy>
-              <RowTitle>鼠标侧边键</RowTitle>
+              <RowTitle>{t('mgMouseSideButtons')}</RowTitle>
               <RowDescription>
-                后退侧键：
-                {sideActionName(
-                  Object.prototype.hasOwnProperty.call(side, '3')
-                    ? side['3']
-                    : 'back',
-                )}{' '}
-                · 前进侧键：
-                {sideActionName(
-                  Object.prototype.hasOwnProperty.call(side, '4')
-                    ? side['4']
-                    : 'forward',
-                )}
+                {t('mgSideSummary', {
+                  back: sideActionName(
+                    Object.prototype.hasOwnProperty.call(side, '3')
+                      ? side['3']
+                      : 'back',
+                  ),
+                  forward: sideActionName(
+                    Object.prototype.hasOwnProperty.call(side, '4')
+                      ? side['4']
+                      : 'forward',
+                  ),
+                })}
               </RowDescription>
             </RowCopy>
             <ActionButton
@@ -1144,23 +1153,21 @@ export const MouseGestures = observer(() => {
               onClick={() => setModal('side-buttons')}
             >
               <GearSix size={15} />
-              配置
+              {t('mgConfigure')}
             </ActionButton>
           </SettingRow>
         </Card>
       </Group>
       <Group>
-        <GroupLabel>右键手势</GroupLabel>
+        <GroupLabel>{t('mgRightSection')}</GroupLabel>
         <Card>
           <SettingRow>
             <IconBox $tone="blue">
               <HandPalm size={17} weight="fill" />
             </IconBox>
             <RowCopy>
-              <RowTitle>启用右键手势</RowTitle>
-              <RowDescription>
-                拖动轨迹只在本次手势中显示，不影响普通右键菜单。
-              </RowDescription>
+              <RowTitle>{t('searchRightButtonGestures')}</RowTitle>
+              <RowDescription>{t('mgRightRowDesc')}</RowDescription>
             </RowCopy>
             <Switch
               clickable
@@ -1173,15 +1180,15 @@ export const MouseGestures = observer(() => {
               <PaintBrush size={17} weight="fill" />
             </IconBox>
             <RowCopy>
-              <RowTitle>轨迹颜色</RowTitle>
-              <RowDescription>用于绘制手势轨迹与识别反馈。</RowDescription>
+              <RowTitle>{t('mgTrailColor')}</RowTitle>
+              <RowDescription>{t('mgTrailColorDesc')}</RowDescription>
             </RowCopy>
             <ColorControl>
               <ColorInput
                 type="color"
                 value={color}
                 onChange={(event) => setOption('color', event.target.value)}
-                aria-label="轨迹颜色"
+                aria-label={t('mgTrailColor')}
               />
               <span>{color.toUpperCase()}</span>
             </ColorControl>
@@ -1191,9 +1198,12 @@ export const MouseGestures = observer(() => {
               <Path size={17} weight="fill" />
             </IconBox>
             <RowCopy>
-              <RowTitle>动作映射</RowTitle>
+              <RowTitle>{t('mgActionMappings')}</RowTitle>
               <RowDescription>
-                {boundCount} 个动作已绑定 · 轨迹 {color.toUpperCase()}
+                {t('mgMappingsSummary', {
+                  count: boundCount,
+                  color: color.toUpperCase(),
+                })}
               </RowDescription>
             </RowCopy>
             <ActionButton
@@ -1202,7 +1212,7 @@ export const MouseGestures = observer(() => {
               onClick={() => setModal('mappings')}
             >
               <SquaresFour size={15} />
-              管理映射
+              {t('mgManageMappings')}
             </ActionButton>
           </SettingRow>
         </Card>
@@ -1225,8 +1235,8 @@ export const MouseGestures = observer(() => {
                 <CloseButton
                   type="button"
                   onClick={() => setModal(null)}
-                  title="关闭"
-                  aria-label="关闭"
+                  title={t('close')}
+                  aria-label={t('close')}
                 >
                   <X size={18} />
                 </CloseButton>

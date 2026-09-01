@@ -1,4 +1,5 @@
 import {action, observable, computed, makeObservable, makeAutoObservable, reaction} from 'mobx';
+import { createLocaleTranslator } from '~/common/i18n';
 
 import {TabsStore} from './tabs';
 import {TabGroupsStore} from './tab-groups';

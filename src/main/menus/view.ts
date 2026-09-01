@@ -12,7 +12,7 @@ import { isURL, prefixHttp } from '~/utils';
 import { saveAs, viewSource, printPage, copyPageAsMarkdown } from './common-actions';
 import { enterImageViewer } from '../services/image-viewer';
 import { Application } from '../application';
-// 开源版：AI 右键菜单与账号体系已移除。
+import { getMainTranslator } from '../i18n';
 import { ShareDialog } from '../dialogs/share';
 import {
   DOWNLOADER_PRESETS,
@@ -49,6 +49,9 @@ export const getViewMenu = (
   webContents: Electron.WebContents,
   incognito = false,
 ) => {
+  const t = getMainTranslator(
+    Application.instance.settings?.object?.language,
+  );
   let menuItems: Electron.MenuItemConstructorOptions[] = [];
   // 覆盖页没有独立的 renderer tab 模型，按物理 WebContents 找回根标签。
   const view = appWindow.viewManager.findViewByWebContentsId(webContents.id);
@@ -58,7 +61,7 @@ export const getViewMenu = (
   if (params.linkURL !== '') {
     menuItems = menuItems.concat([
       {
-        label: '在新标签页打开链接',
+        label: t('ctxOpenLinkNewTab'),
         click: () => {
           appWindow.viewManager.create(
             {
@@ -71,7 +74,7 @@ export const getViewMenu = (
         },
       },
       {
-        label: '在新标签页打开链接（不切换）',
+        label: t('ctxOpenLinkNewTabBg'),
         click: () => {
           appWindow.viewManager.create(
             {
@@ -84,18 +87,18 @@ export const getViewMenu = (
         },
       },
       {
-        label: '在新窗口打开链接',
+        label: t('ctxOpenLinkNewWindow'),
         click: () => openUrlInNewWindow(params.linkURL, false),
       },
       {
-        label: '在无痕窗口打开链接',
+        label: t('ctxOpenLinkIncognito'),
         click: () => openUrlInNewWindow(params.linkURL, true),
       },
       {
         type: 'separator',
       },
       {
-        label: '复制链接地址',
+        label: t('copyLinkAddress'),
         click: () => {
           clipboard.clear();
           clipboard.writeText(params.linkURL);
@@ -108,11 +111,12 @@ export const getViewMenu = (
     if (dlSettings.downloaderEnabled) {
       const isBlobLink = params.linkURL.toLowerCase().startsWith('blob:');
       const presetName =
-        DOWNLOADER_PRESETS[dlSettings.downloaderType]?.name ?? '外部下载器';
+        DOWNLOADER_PRESETS[dlSettings.downloaderType]?.name ??
+        t('ctxUseExternalDownloader');
       menuItems.push(
         {type: 'separator'},
         {
-          label: isBlobLink ? '下载文件' : `使用${presetName}下载`,
+          label: isBlobLink ? t('ctxDownloadFile') : t('ctxDownloadWith', {name: presetName}),
           click: () => {
             if (isBlobLink) {
               webContents.downloadURL(params.linkURL);
@@ -136,7 +140,7 @@ export const getViewMenu = (
   if (params.hasImageContents) {
     menuItems = menuItems.concat([
       {
-        label: '在新标签页打开图片',
+        label: t('menuOpenImageNewTab'),
         click: () => {
           appWindow.viewManager.create(
             {
@@ -149,7 +153,7 @@ export const getViewMenu = (
         },
       },
       {
-        label: '在新标签页打开图片（不切换）',
+        label: t('ctxOpenImageNewTabBg'),
         click: () => {
           appWindow.viewManager.create(
             {
@@ -162,18 +166,18 @@ export const getViewMenu = (
         },
       },
       {
-        label: '复制图片',
+        label: t('copyImage'),
         click: () => webContents.copyImageAt(params.x, params.y),
       },
       {
-        label: '复制图片地址',
+        label: t('copyImageAddress'),
         click: () => {
           clipboard.clear();
           clipboard.writeText(params.srcURL);
         },
       },
       {
-        label: '保存图片为...',
+        label: t('saveImageAs'),
         click: () => {
           // Blob images belong to the page renderer; using the browser chrome
           // WebContents loses their in-memory payload.
@@ -191,12 +195,12 @@ export const getViewMenu = (
       {
         role: 'undo',
         accelerator: 'CmdOrCtrl+Z',
-        label: '撤销',
+        label: t('menuUndo'),
       },
       {
         role: 'redo',
         accelerator: 'CmdOrCtrl+Shift+Z',
-        label: '重做',
+        label: t('menuRedo'),
       },
       {
         type: 'separator',
@@ -204,27 +208,27 @@ export const getViewMenu = (
       {
         role: 'cut',
         accelerator: 'CmdOrCtrl+X',
-        label: '剪切',
+        label: t('menuCut'),
       },
       {
         role: 'copy',
         accelerator: 'CmdOrCtrl+C',
-        label: '复制',
+        label: t('menuCopy'),
       },
       {
         role: 'pasteAndMatchStyle',
         accelerator: 'CmdOrCtrl+V',
-        label: '粘贴',
+        label: t('menuPaste'),
       },
       {
         role: 'paste',
         accelerator: 'CmdOrCtrl+Shift+V',
-        label: '粘贴为文本',
+        label: t('pasteAsText'),
       },
       {
         role: 'selectAll',
         accelerator: 'CmdOrCtrl+A',
-        label: '选择全部',
+        label: t('menuSelectAll'),
       },
       {
         type: 'separator',
@@ -237,10 +241,10 @@ export const getViewMenu = (
       {
         role: 'copy',
         accelerator: 'CmdOrCtrl+C',
-        label: '复制'
+        label: t('menuCopy')
       },
       {
-        label: '复制为 Markdown',
+        label: t('ctxCopyAsMarkdown'),
         click: async () => {
           copyPageAsMarkdown();
         },
@@ -260,7 +264,7 @@ export const getViewMenu = (
 
     menuItems = menuItems.concat([
       {
-        label:  '搜索',
+        label:  t('stSearch'),
         click: () => {
           const keyword = encodeURIComponent(trimmedSelectionText);
           const url = searchEngine?.url
@@ -282,7 +286,7 @@ export const getViewMenu = (
     if (isURL(trimmedText)) {
       menuItems = menuItems.concat([
         {
-          label: '转到 ' + trimmedText,
+          label: t('goToSelection', {text: trimmedText}),
           click: () => {
             appWindow.viewManager.create(
               {
@@ -309,7 +313,7 @@ export const getViewMenu = (
   ) {
     menuItems = menuItems.concat([
       {
-        label: '返回',
+        label: t('backAction'),
         accelerator: 'Alt+Left',
         enabled: webContents.canGoBack(),
         click: () => {
@@ -317,7 +321,7 @@ export const getViewMenu = (
         },
       },
       {
-        label: '前进',
+        label: t('shortcutForward'),
         accelerator: 'Alt+Right',
         enabled: webContents.canGoForward(),
         click: () => {
@@ -325,7 +329,7 @@ export const getViewMenu = (
         },
       },
       {
-        label: '重新加载',
+        label: t('extReload'),
         accelerator: 'CmdOrCtrl+R',
         click: () => {
           webContents.reload();
@@ -335,31 +339,31 @@ export const getViewMenu = (
         type: 'separator',
       },
       {
-        label: '在新窗口打开',
+        label: t('ctxOpenInNewWindow'),
         click: () => openUrlInNewWindow(webContents.getURL(), false),
       },
       {
-        label: '在无痕窗口打开',
+        label: t('ctxOpenInIncognito'),
         click: () => openUrlInNewWindow(webContents.getURL(), true),
       },
       {
         type: 'separator',
       },
       {
-        label: '保存页面为...',
+        label: t('ctxSavePageAs'),
         accelerator: 'CmdOrCtrl+S',
         click: async () => {
           saveAs();
         },
       },
       {
-        label: '复制网页为 Markdown',
+        label: t('ctxCopyPageAs'),
         click: async () => {
           copyPageAsMarkdown();
         },
       },
       {
-        label: '打印',
+        label: t('shortcutPrint'),
         accelerator: 'CmdOrCtrl+P',
         click: async () => {
           printPage();
@@ -369,7 +373,7 @@ export const getViewMenu = (
         type: 'separator',
       },
       {
-        label: '查看网页源代码',
+        label: t('shortcutViewSource'),
         accelerator: 'CmdOrCtrl+U',
         click: () => {
           viewSource();
@@ -384,7 +388,7 @@ export const getViewMenu = (
 
   // 翻译此页:开启翻译并把本站加入"始终显示翻译图标"列表(与菜单「翻译」同通道)。
   menuItems.push({
-    label: '翻译此页',
+    label: t('ctxTranslatePage'),
     click: () => {
       Application.instance.windows.current.viewManager.selected?.startTranslation(true);
     },
@@ -392,7 +396,7 @@ export const getViewMenu = (
 
   // 看图模式:收集当前网页所有图片,在新标签页打开图片浏览器(黑色背景,grid/list,多选下载)。
   menuItems.push({
-    label: '看图模式',
+    label: t('ctxImageViewer'),
     click: () => {
       enterImageViewer(webContents);
     },
@@ -400,7 +404,7 @@ export const getViewMenu = (
 
   // 分享当前网页:弹出二维码 + 短链窗口(与标签右键/QuickMenu 同一弹窗)。
   menuItems.push({
-    label: '分享',
+    label: t('tcmShare'),
     click: () => {
       const dialog = Application.instance.dialogs.getPersistent(
         'share',
@@ -416,7 +420,7 @@ export const getViewMenu = (
     menuItems.push(
       {
         type: 'checkbox',
-        label: '此网站所有链接在新页面打开',
+        label: t('ctxOpenLinksNewTab'),
         checked: !!view.openLinksInNewPageEnabled,
         click: (item) => {
           view.setOpenLinksInNewPageRule(!!item.checked).catch(() => undefined);
@@ -449,7 +453,7 @@ export const getViewMenu = (
 
   menu.append(
     new MenuItem({
-      label: '检查',
+      label: t('inspect'),
       accelerator: 'CmdOrCtrl+Shift+I',
       click: () => {
         webContents.inspectElement(params.x, params.y);

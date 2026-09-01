@@ -26,6 +26,7 @@ import * as remote from '@electron/remote';
 
 import { ITab, ITabGroup } from '../models';
 import store from '../store';
+import { getShellTranslator } from './i18n';
 
 // 将 phosphor 图标渲染为 nativeImage,用于原生右键菜单。
 // Electron 的 nativeImage 不支持 SVG,需经 canvas 栅格化为 PNG。
@@ -64,15 +65,16 @@ const addTabToNewGroup = (tab: ITab): void => {
 };
 
 const tabGroupLabel = (tabGroup: ITabGroup): string => {
+  const t = getShellTranslator();
   const tabs = store.tabs.list.filter(
     (x) => !x.isClosing && x.tabGroupId === tabGroup.id,
   );
   const tabsLength = tabs.length;
-  const tabTitle = tabs[0]?.title || '新标签页';
+  const tabTitle = tabs[0]?.title || t('newTab');
 
   // 分组成员可能在原生菜单异步构建期间全部关闭,此时仍保留可用的
   // 文案兜底,避免访问 tabs[0].title 触发运行时异常。
-  if (tabsLength === 0) return tabGroup.name || '空标签组';
+  if (tabsLength === 0) return tabGroup.name || t('tcmEmptyGroup');
 
   let label =
     tabGroup.name ||
@@ -105,9 +107,10 @@ const tabGroupIcon = (color: string): nativeImage => {
 };
 
 const tabGroupSubmenu = (tab: ITab, tabGroups: ITabGroup[]): Menu => {
+  const t = getShellTranslator();
   return remote.Menu.buildFromTemplate([
     {
-      label: '创建分组',
+      label: t('tcmCreateGroup'),
       click: () => {
         addTabToNewGroup(tab);
       },
@@ -162,6 +165,7 @@ export const handleTabGroupContextMenu = (
 // 标签页原生右键菜单,顶部标签栏与左右侧栏共用同一份。
 // 原生菜单图标需提前栅格化(异步),并行解析后再构建模板。
 export const showTabContextMenu = async (tab: ITab, onClose?: () => void) => {
+  const t = getShellTranslator();
   const tabGroups: ITabGroup[] = store.tabGroups
     .getGroups()
     .filter(
@@ -212,7 +216,7 @@ export const showTabContextMenu = async (tab: ITab, onClose?: () => void) => {
 
   const menu = remote.Menu.buildFromTemplate([
     {
-      label: '在右侧新增标签页',
+      label: t('tcmNewTabRight'),
       icon: icNewTab,
       click: () => {
         // 右键固定标签时,新标签落在固定区之后(首个非固定区位置),避免把未固定
@@ -233,7 +237,7 @@ export const showTabContextMenu = async (tab: ITab, onClose?: () => void) => {
       },
     },
     {
-      label: '添加到新分组',
+      label: t('tcmAddToNewGroup'),
       icon: icNewGroup,
       visible: !tab.isPinned && tabGroups.length === 0,
       click: () => {
@@ -241,13 +245,13 @@ export const showTabContextMenu = async (tab: ITab, onClose?: () => void) => {
       },
     },
     {
-      label: '添加到分组',
+      label: t('tcmAddToGroup'),
       icon: icAddGroup,
       visible: !tab.isPinned && tabGroups.length > 0,
       submenu: tabGroupSubmenu(tab, tabGroups),
     },
     {
-      label: '从分组中移除',
+      label: t('tcmRemoveFromGroup'),
       icon: icRemoveGroup,
       visible: !tab.isPinned && !!tab.tabGroup,
       click: () => {
@@ -258,7 +262,7 @@ export const showTabContextMenu = async (tab: ITab, onClose?: () => void) => {
       type: 'separator',
     },
     {
-      label: '刷新',
+      label: t('tcmReload'),
       icon: icReload,
       accelerator: 'CmdOrCtrl+R',
       click: () => {
@@ -266,7 +270,7 @@ export const showTabContextMenu = async (tab: ITab, onClose?: () => void) => {
       },
     },
     {
-      label: '复制',
+      label: t('tcmDuplicate'),
       icon: icCopy,
       click: async () => {
         // Chrome:复制固定标签得到紧邻其右侧的固定副本(pinTab 把副本插到固定块末尾)。
@@ -277,7 +281,7 @@ export const showTabContextMenu = async (tab: ITab, onClose?: () => void) => {
       },
     },
     {
-      label: '分享',
+      label: t('tcmShare'),
       icon: icShare,
       click: () => {
         // 带上右键标签页的 url/title,弹窗分享该页而非当前选中页(不切标签)。
@@ -288,14 +292,14 @@ export const showTabContextMenu = async (tab: ITab, onClose?: () => void) => {
       },
     },
     {
-      label: tab.isPinned ? '取消固定' : '固定',
+      label: tab.isPinned ? t('tcmUnpin') : t('tcmPin'),
       icon: icPin,
       click: () => {
         tab.isPinned ? store.tabs.unpinTab(tab) : store.tabs.pinTab(tab);
       },
     },
     {
-      label: tab.isMuted ? '取消静音' : '静音',
+      label: tab.isMuted ? t('tcmUnmute') : t('tcmMute'),
       icon: icMute,
       click: () => {
         tab.isMuted ? store.tabs.unmuteTab(tab) : store.tabs.muteTab(tab);
@@ -308,7 +312,7 @@ export const showTabContextMenu = async (tab: ITab, onClose?: () => void) => {
       type: 'separator',
     },
     {
-      label: '在新窗口中打开',
+      label: t('tcmOpenNewWindow'),
       icon: icNewWindow,
       // 只剩一个标签时移到新窗只是平移窗口,无意义,隐藏。
       visible: store.tabs.list.filter((x) => !x.isClosing).length > 1,
@@ -330,7 +334,7 @@ export const showTabContextMenu = async (tab: ITab, onClose?: () => void) => {
       },
     },
     {
-      label: '关闭',
+      label: t('close'),
       icon: icClose,
       accelerator: 'CmdOrCtrl+W',
       click: () => {
@@ -338,7 +342,7 @@ export const showTabContextMenu = async (tab: ITab, onClose?: () => void) => {
       },
     },
     {
-      label: '关闭其它标签',
+      label: t('tcmCloseOthers'),
       icon: icCloseOthers,
       click: async () => {
         // 先显式激活右键目标标签。对内存节省模式下的占位标签,只有 select()
@@ -359,7 +363,7 @@ export const showTabContextMenu = async (tab: ITab, onClose?: () => void) => {
       },
     },
     {
-      label: vertical ? '关闭上方标签' : '关闭左侧标签',
+      label: vertical ? t('tcmCloseAbove') : t('tcmCloseLeft'),
       icon: icCloseLeft,
       click: () => {
         const siblingTabs = getSiblingTabs(tab);
@@ -372,7 +376,7 @@ export const showTabContextMenu = async (tab: ITab, onClose?: () => void) => {
       },
     },
     {
-      label: vertical ? '关闭下方标签' : '关闭右侧标签',
+      label: vertical ? t('tcmCloseBelow') : t('tcmCloseRight'),
       icon: icCloseRight,
       click: () => {
         const siblingTabs = getSiblingTabs(tab);
@@ -390,7 +394,7 @@ export const showTabContextMenu = async (tab: ITab, onClose?: () => void) => {
       type: 'separator',
     },
     {
-      label: '撤销关闭的标签',
+      label: t('tcmReopenClosed'),
       icon: icRevert,
       enabled: store.tabs.recentlyClosed.length > 0,
       click: () => {
@@ -408,6 +412,7 @@ export const showTabGroupContextMenu = async (
   tabGroup: ITabGroup,
   onClose?: () => void,
 ) => {
+  const t = getShellTranslator();
   const [icNewTab, icPin, icUngroup, icClose] = await Promise.all([
     menuIcon(Plus),
     menuIcon(tabGroup.isPinned ? PushPinSlash : PushPin),
@@ -417,7 +422,7 @@ export const showTabGroupContextMenu = async (
 
   const menu = remote.Menu.buildFromTemplate([
     {
-      label: '在分组中新建标签页',
+      label: t('shellNewTabInGroup'),
       icon: icNewTab,
       click: () => {
         store.tabs.addTab({ active: true }, tabGroup.id);
@@ -427,21 +432,21 @@ export const showTabGroupContextMenu = async (
       type: 'separator',
     },
     {
-      label: tabGroup.isPinned ? '取消固定分组' : '固定分组',
+      label: tabGroup.isPinned ? t('tcmUnpinGroup') : t('tcmPinGroup'),
       icon: icPin,
       click: () => {
         store.tabs.setGroupPinned(tabGroup, !tabGroup.isPinned);
       },
     },
     {
-      label: '取消分组',
+      label: t('tcmUngroup'),
       icon: icUngroup,
       click: () => {
         store.tabs.dissolveGroup(tabGroup);
       },
     },
     {
-      label: '关闭分组',
+      label: t('tcmCloseGroup'),
       icon: icClose,
       click: () => {
         closeTabGroup(tabGroup);

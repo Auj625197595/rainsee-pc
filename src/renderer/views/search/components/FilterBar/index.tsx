@@ -13,6 +13,7 @@ import { SuggestionFilter } from '../../store/suggestions';
 import { ICON_SETTINGS } from '~/renderer/constants';
 import { callViewMethod } from '~/utils/view';
 import { getWebUIURL } from '~/common/webui';
+import { useI18n } from '~/renderer/components/I18n';
 
 const onMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
   e.stopPropagation();
@@ -43,10 +44,10 @@ const onSettingsClick = (e: React.MouseEvent<HTMLDivElement>) => {
   store.hide();
 };
 
-const CHIPS: { label: string; filter: SuggestionFilter }[] = [
-  { label: '历史记录', filter: 'history' },
-  { label: '收藏夹', filter: 'bookmarks' },
-  { label: '标签页', filter: 'tabs' },
+const CHIPS: { labelKey: 'pvItemHistory' | 'shellFavorites' | 'svTabs'; filter: SuggestionFilter }[] = [
+  { labelKey: 'pvItemHistory', filter: 'history' },
+  { labelKey: 'shellFavorites', filter: 'bookmarks' },
+  { labelKey: 'svTabs', filter: 'tabs' },
 ];
 
 interface Props {
@@ -56,23 +57,24 @@ interface Props {
 export const FilterBar = observer(({ visible }: Props) => {
   if (!visible) return null;
 
+  const t = useI18n();
   const active = store.suggestions.filter;
 
   return (
     <StyledFilterBar onMouseDown={onMouseDown}>
-      <Label>筛选搜索</Label>
+      <Label>{t('svFilterLabel')}</Label>
       {CHIPS.map((c) => (
         <Chip
           key={c.filter}
           active={active === c.filter}
           onClick={onFilterClick(c.filter)}
         >
-          {c.label}
+          {t(c.labelKey)}
         </Chip>
       ))}
       <Spacer />
       <SettingsButton
-        title="搜索设置"
+        title={t('searchSettings')}
         style={{ backgroundImage: `url(${ICON_SETTINGS})` }}
         onClick={onSettingsClick}
       />

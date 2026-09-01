@@ -24,6 +24,7 @@ import {ToolbarButton} from '../ToolbarButton';
 import {UpdatePill, NewTabSearchPill} from './style';
 import {getAddressBarSearchAnchor} from '../../utils/dialogs';
 import {useDelayedHover} from '../../utils/delayed-hover';
+import { getShellTranslator } from '../../utils/i18n';
 
 // 完整按钮至少为网址输入区保留这些空间；不足时按钮收起为图标。
 const MIN_ADDRESSBAR_INPUT_WIDTH = 240;
@@ -139,9 +140,10 @@ const onBlockClick = async (e: React.MouseEvent<HTMLDivElement>) => {
   });
 };
 const onVideoContextClick = (e: React.MouseEvent<HTMLDivElement>) => {
+  const t = getShellTranslator();
   const menu = remote.Menu.buildFromTemplate([
     {
-      label: '全屏播放',
+      label: t('shellFullscreenPlay'),
       click: () => {
         const {selectedTab} = store.tabs;
         if (selectedTab) {
@@ -150,7 +152,7 @@ const onVideoContextClick = (e: React.MouseEvent<HTMLDivElement>) => {
       },
     },
     {
-      label: '悬浮播放',
+      label: t('shellFloatPlay'),
       click: () => {
         const {selectedTab} = store.tabs;
         if (selectedTab) {
@@ -241,10 +243,11 @@ ipcRenderer.on('zoom-factor-updated', (e, zoomFactor, showDialog) => {
 });
 
 const onShieldContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
+  const t = getShellTranslator();
   const menu = remote.Menu.buildFromTemplate([
     {
       checked: store.settings.object.shield,
-      label: '启用广告拦截',
+      label: t('shellEnableAdblock'),
       type: 'checkbox',
       click: () => {
         store.settings.object.shield = !store.settings.object.shield;
@@ -338,6 +341,7 @@ const onSearchNewTabClick = (e: React.MouseEvent<HTMLDivElement>) => {
 };
 
 export const SiteButtons = observer(() => {
+  const t = getShellTranslator();
   const [searchIconOnly, setSearchIconOnly] = React.useState(false);
   const searchPillRef = React.useRef<HTMLDivElement>(null);
   const expandedSearchPillWidth = React.useRef(0);
@@ -349,6 +353,8 @@ export const SiteButtons = observer(() => {
   const mutedIconColor = lightToolbar
     ? 'rgba(255, 255, 255, 0.68)'
     : 'rgb(149, 152, 154)';
+  const hidden = store.settings.toolbarLayout.hidden;
+  const searchPillHidden = hidden.includes('new-tab-search');
 
   let hasCredentials = false;
   let blockedAds = [];
@@ -412,10 +418,9 @@ export const SiteButtons = observer(() => {
     updateSearchPill();
 
     return () => resizeObserver.disconnect();
-  }, [searchIconOnly]);
+  }, [searchIconOnly, searchPillHidden]);
 
-  // 自定义工具栏隐藏的地址栏内图标(star/shield/translate/video)。
-  const hidden = store.settings.toolbarLayout.hidden;
+  // 自定义工具栏隐藏的地址栏内按钮。
 
   // 盾牌图标三态：
   // - 白名单(本站已暂停拦截): 灰色 ShieldSlash
@@ -434,18 +439,20 @@ export const SiteButtons = observer(() => {
 
   return (
     <>
-      <NewTabSearchPill
-        data-rainsee-part="brand-action"
-        data-rainsee-action="new-tab-search"
-        className="addressbar-action addressbar-action--new-tab-search"
-        ref={searchPillRef}
-        $iconOnly={searchIconOnly}
-        title="在新标签页中搜索"
-        onMouseDown={onSearchNewTabClick}
-      >
-        <ArrowSquareOut size={12} weight="bold" />
-        <span>新标签搜索</span>
-      </NewTabSearchPill>
+      {!searchPillHidden && (
+        <NewTabSearchPill
+          data-rainsee-part="brand-action"
+          data-rainsee-action="new-tab-search"
+          className="addressbar-action addressbar-action--new-tab-search"
+          ref={searchPillRef}
+          $iconOnly={searchIconOnly}
+          title={t('shellSearchNewTabTitle')}
+          onMouseDown={onSearchNewTabClick}
+        >
+          <ArrowSquareOut size={12} weight="bold" />
+          <span>{t('shellNewTabSearch')}</span>
+        </NewTabSearchPill>
+      )}
       {store.updateAvailable && (
         <UpdatePill
           data-rainsee-part="brand-action"
@@ -454,7 +461,7 @@ export const SiteButtons = observer(() => {
           className="addressbar-action addressbar-action--update"
           onClick={onUpdatePillClick}
         >
-          {`有新版本 ${store.updateVersion || ''}`.trim()}
+          {t('shellUpdateAvailable', { version: store.updateVersion || '' }).trim()}
         </UpdatePill>
       )}
       {process.env.ENABLE_AUTOFILL && hasCredentials && (
@@ -474,7 +481,7 @@ export const SiteButtons = observer(() => {
             autofillHover.cancel();
             onAutofillLeave();
           }}
-          title="可填充的密码"
+          title={t('shellFillablePasswords')}
         />
       )}
       {(store.dialogsVisibility['zoom'] || store.zoomFactor !== 1) && (
@@ -515,10 +522,14 @@ export const SiteButtons = observer(() => {
           }}
           title={
             selectedTab?.translated
-              ? `已翻译为 ${selectedTab.translateTarget?.toUpperCase()}（点击显示原文，悬停选择语言）`
+              ? t('shellTranslatedTo', {
+                  lang: selectedTab.translateTarget?.toUpperCase(),
+                })
               : selectedTab?.detectedLanguage
-                ? `翻译此页（检测：${selectedTab.detectedLanguage.toUpperCase()}；悬停选择语言）`
-                : '翻译此页（悬停选择语言）'
+                ? t('shellTranslateDetect', {
+                    lang: selectedTab.detectedLanguage.toUpperCase(),
+                  })
+                : t('shellTranslateHover')
           }
         />
       )}
@@ -534,14 +545,16 @@ export const SiteButtons = observer(() => {
           onMouseDown={onPwaClick}
           title={
             selectedTab?.pwaInstalled
-              ? `已安装应用${
-                  selectedTab?.pwaManifest?.name
+              ? t('shellPwaInstalled', {
+                  name: selectedTab?.pwaManifest?.name
                     ? ` · ${selectedTab.pwaManifest.name}`
-                    : ''
-                }（点击重新打开）`
+                    : '',
+                })
               : selectedTab?.pwaManifest?.name
-                ? `安装应用 · ${selectedTab.pwaManifest.name}`
-                : '安装此应用'
+                ? t('shellPwaInstallNamed', {
+                    name: selectedTab.pwaManifest.name,
+                  })
+                : t('shellPwaInstall')
           }
         />
       )}

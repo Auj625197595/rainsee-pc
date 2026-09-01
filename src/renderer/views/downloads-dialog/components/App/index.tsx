@@ -21,6 +21,7 @@ import store from '../../store';
 import { DownloadItem } from '../DownloadItem';
 import { UIStyle } from '~/renderer/mixins/default-styles';
 import { getWebUIURL } from '~/common/webui';
+import { useI18n } from '~/renderer/components/I18n';
 
 const dialogClicked = (e: React.MouseEvent<HTMLDivElement>) => {
   store.closeAllDownloadMenu();
@@ -66,10 +67,14 @@ export const App = observer(() => {
     return () => observer.disconnect();
   });
 
+  const t = useI18n();
   const subtitle =
     items.length === 0
-      ? '暂无下载任务'
-      : `共 ${items.length} 项${active > 0 ? `,${active} 项进行中` : ''}`;
+      ? t('dldNoTasks')
+      : t('dldCountSummary', {
+          count: items.length,
+          active: active > 0 ? t('dldActiveSuffix', { count: active }) : '',
+        });
 
   return (
     <ThemeProvider
@@ -88,12 +93,12 @@ export const App = observer(() => {
           <Header>
             <div>
               <Badge>Downloads</Badge>
-              <Heading>下载列表</Heading>
+              <Heading>{t('dldTitle')}</Heading>
               <Subtitle>{subtitle}</Subtitle>
             </div>
             <HeaderActions>
-              <MoreButton onClick={openAll}>更多</MoreButton>
-              <CloseButton aria-label="关闭下载列表" onClick={onClose}>
+              <MoreButton onClick={openAll}>{t('dldMore')}</MoreButton>
+              <CloseButton aria-label={t('dldCloseAria')} onClick={onClose}>
                 <svg
                   viewBox="0 0 24 24"
                   fill="none"
@@ -109,7 +114,7 @@ export const App = observer(() => {
 
           <ListCard menuOpen={menuOpen}>
             {items.length === 0 ? (
-              <Empty>下载的文件会显示在这里</Empty>
+              <Empty>{t('dldEmpty')}</Empty>
             ) : (
               items.map((item) => (
                 <DownloadItem item={item} key={item.id}></DownloadItem>

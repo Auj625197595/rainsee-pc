@@ -2,6 +2,9 @@ import { action, computed, makeObservable, observable } from 'mobx';
 import { ISettings, ITheme } from '~/interfaces';
 import { getTheme } from '~/utils/themes';
 import { ipcRenderer } from '~/common/renderer-ipc';
+import {getWebUIContext} from '~/common/webui-context';
+
+const webUIContext = getWebUIContext();
 
 export type FlagSelection = 'default' | 'enabled' | 'disabled';
 export type FlagsTab = 'available' | 'unavailable';
@@ -31,7 +34,7 @@ interface IFlagsPayload {
 
 export class Store {
   @observable
-  public settings: ISettings = { ...(window as any).settings };
+  public settings: ISettings = { ...(webUIContext.settings as Partial<ISettings>) } as ISettings;
 
   @observable
   public search = '';
@@ -63,9 +66,9 @@ export class Store {
   public constructor() {
     makeObservable(this);
 
-    (window as any).updateSettings = (settings: ISettings) => {
+    ipcRenderer.on('update-settings', (_event, settings: ISettings) => {
       this.settings = { ...this.settings, ...settings };
-    };
+    });
 
     this.load();
     this.syncHash();

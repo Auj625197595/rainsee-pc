@@ -32,6 +32,7 @@ import {
   Title,
   VisibilityButton,
 } from './style';
+import { useI18n } from '~/renderer/components/I18n';
 
 const sendResponse = (
   credentials: {
@@ -52,6 +53,7 @@ const getSiteAddress = (url: string) => {
 };
 
 export const App = observer(() => {
+  const t = useI18n();
   const usernameRef = React.useRef<HTMLInputElement>(null);
   const credentialRequestRef = React.useRef(0);
   const autoFilledUrlRef = React.useRef('');
@@ -119,8 +121,8 @@ export const App = observer(() => {
             <ShieldCheck size={23} weight="duotone" />
           </HeaderIcon>
           <HeaderText>
-            <Title>登录以继续</Title>
-            <Subtitle>此网站需要验证用户名和密码</Subtitle>
+            <Title>{t('authTitle')}</Title>
+            <Subtitle>{t('authSubtitle')}</Subtitle>
           </HeaderText>
         </Header>
 
@@ -132,7 +134,7 @@ export const App = observer(() => {
         {store.credentials.length > 0 && (
           <SavedCredential>
             <SavedCredentialLabel htmlFor="auth-saved-credential">
-              已保存账号
+              {t('authSavedAccounts')}
             </SavedCredentialLabel>
             <CredentialSelect
               id="auth-saved-credential"
@@ -150,10 +152,10 @@ export const App = observer(() => {
                 requestAnimationFrame(() => usernameRef.current?.focus());
               }}
             >
-              <option value="">手动输入新账号</option>
+              <option value="">{t('authManualEntry')}</option>
               {store.credentials.map((credential) => (
                 <option key={credential.id} value={credential.id}>
-                  {credential.username || '未设置用户名'}
+                  {credential.username || t('authNoUsername')}
                 </option>
               ))}
             </CredentialSelect>
@@ -161,7 +163,7 @@ export const App = observer(() => {
         )}
 
         <Field>
-          <FieldLabel htmlFor="auth-username">用户名</FieldLabel>
+          <FieldLabel htmlFor="auth-username">{t('authUsername')}</FieldLabel>
           <FieldControl $invalid={submitted && !username.trim()}>
             <User size={18} aria-hidden="true" />
             <Input
@@ -170,7 +172,7 @@ export const App = observer(() => {
               name="username"
               autoComplete="username"
               value={username}
-              placeholder="请输入用户名"
+              placeholder={t('authUsernamePlaceholder')}
               aria-invalid={submitted && !username.trim()}
               onChange={(event) => {
                 setUsername(event.target.value);
@@ -181,7 +183,7 @@ export const App = observer(() => {
         </Field>
 
         <Field>
-          <FieldLabel htmlFor="auth-password">密码</FieldLabel>
+          <FieldLabel htmlFor="auth-password">{t('authPassword')}</FieldLabel>
           <FieldControl $invalid={submitted && !password.trim()}>
             <LockKey size={18} aria-hidden="true" />
             <Input
@@ -190,14 +192,14 @@ export const App = observer(() => {
               type={passwordVisible ? 'text' : 'password'}
               autoComplete="current-password"
               value={password}
-              placeholder="请输入密码"
+              placeholder={t('authPasswordPlaceholder')}
               aria-invalid={submitted && !password.trim()}
               onChange={(event) => setPassword(event.target.value)}
             />
             <VisibilityButton
               type="button"
-              title={passwordVisible ? '隐藏密码' : '显示密码'}
-              aria-label={passwordVisible ? '隐藏密码' : '显示密码'}
+              title={passwordVisible ? t('authHidePassword') : t('authShowPassword')}
+              aria-label={passwordVisible ? t('authHidePassword') : t('authShowPassword')}
               onClick={() => setPasswordVisible((visible) => !visible)}
             >
               {passwordVisible ? <EyeSlash size={18} /> : <Eye size={18} />}
@@ -207,9 +209,9 @@ export const App = observer(() => {
 
         <Actions>
           <CancelButton type="button" onClick={() => sendResponse(null)}>
-            取消
+            {t('cancel')}
           </CancelButton>
-          <PrimaryButton type="submit">登录</PrimaryButton>
+          <PrimaryButton type="submit">{t('authLogin')}</PrimaryButton>
         </Actions>
       </StyledApp>
     </ThemeProvider>

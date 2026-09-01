@@ -17,6 +17,7 @@ import { ICON_DOWNLOAD, ICON_MORE } from '~/renderer/constants/icons';
 import { getWebUIURL } from '~/common/webui';
 import store from '../../store';
 import { useDelayedHover } from '../../utils/delayed-hover';
+import { getShellTranslator } from '../../utils/i18n';
 
 // ---------------------------------------------------------------------------
 // 模块级 ref:菜单 / 下载 / 扩展列表 三个按钮各自唯一,用于定位其弹窗坐标。
@@ -149,14 +150,15 @@ const openDownloadSettings = () => {
 const showDownloadsContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
   e.preventDefault();
   e.stopPropagation();
+  const t = getShellTranslator();
 
   const menu = remote.Menu.buildFromTemplate([
     {
-      label: '打开下载页面',
+      label: t('shellOpenDownloadsPage'),
       click: () => openDownloadsPage(),
     },
     {
-      label: '清除所有下载历史记录',
+      label: t('shellClearDownloadHistory'),
       click: () => {
         ipcRenderer.invoke('download-clear-history').catch(() => {});
       },
@@ -165,11 +167,11 @@ const showDownloadsContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
       type: 'separator',
     },
     {
-      label: '下载设置',
+      label: t('shellDownloadSettings'),
       click: () => openDownloadSettings(),
     },
     {
-      label: '自定义工具栏',
+      label: t('customizeToolbar'),
       click: () => openCustomizeToolbarSettings(),
     },
   ]);
@@ -180,7 +182,7 @@ export const showToolbarContextMenu = (e: React.MouseEvent) => {
   e.preventDefault();
   const menu = remote.Menu.buildFromTemplate([
     {
-      label: '自定义工具栏',
+      label: getShellTranslator()('customizeToolbar'),
       click: () => openCustomizeToolbarSettings(),
     },
   ]);
@@ -265,6 +267,7 @@ export const MenuButton = observer(() => (
 ));
 
 export const HistoryButton = observer(() => {
+  const t = getShellTranslator();
   const buttonRef = React.useRef<HTMLDivElement>(null);
   const popupHover = useDelayedHover(() =>
     openHistoryBookmarksPopup('history', buttonRef.current),
@@ -278,7 +281,7 @@ export const HistoryButton = observer(() => {
       iconWeight="bold"
       autoInvert={false}
       size={18}
-      title="历史记录"
+      title={t('pvItemHistory')}
       onMouseEnter={popupHover.schedule}
       onMouseLeave={() => {
         popupHover.cancel();
@@ -296,6 +299,7 @@ export const HistoryButton = observer(() => {
 });
 
 export const BookmarksButton = observer(() => {
+  const t = getShellTranslator();
   const buttonRef = React.useRef<HTMLDivElement>(null);
   const popupHover = useDelayedHover(() =>
     openHistoryBookmarksPopup('bookmarks', buttonRef.current),
@@ -309,7 +313,7 @@ export const BookmarksButton = observer(() => {
       iconWeight="bold"
       autoInvert={false}
       size={18}
-      title="收藏夹"
+      title={t('shellFavorites')}
       onMouseEnter={popupHover.schedule}
       onMouseLeave={() => {
         popupHover.cancel();
@@ -329,7 +333,7 @@ export const BookmarksButton = observer(() => {
 export const ClearBrowsingDataButton = observer(() => (
   <ToolbarButton
     rainseeAction="clear-browsing-data"
-    title="清理浏览数据"
+    title={getShellTranslator()('shellClearDataBtn')}
     divRef={(r) => (clearBrowsingDataRef = r)}
     icon={Broom}
     iconWeight="bold"
@@ -342,7 +346,7 @@ export const ClearBrowsingDataButton = observer(() => (
 export const ScreenshotButton = observer(() => (
   <ToolbarButton
     rainseeAction="screenshot"
-    title="截图"
+    title={getShellTranslator()('shellScreenshot')}
     icon={Camera}
     iconWeight="bold"
     autoInvert={false}
@@ -354,7 +358,7 @@ export const ScreenshotButton = observer(() => (
 export const TranslatePageButton = observer(() => (
   <ToolbarButton
     rainseeAction="translate-page"
-    title="翻译当前页"
+    title={getShellTranslator()('shellTranslatePage')}
     icon={Translate}
     iconWeight="bold"
     autoInvert={false}

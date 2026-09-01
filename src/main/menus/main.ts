@@ -5,8 +5,16 @@ import { AppWindow } from '../windows';
 import { Application } from '../application';
 import { getWebUIURL } from '~/common/webui-main';
 import { normalizeBookmarkBarDisplay } from '~/common/bookmark-bar';
+import { getShortcutActionLabel } from './shortcut-actions';
+import { getMainTranslator } from '../i18n';
 
 const isMac = process.platform === 'darwin';
+
+const getTranslator = () => {
+  return getMainTranslator(
+    Application.instance.settings?.object?.language,
+  );
+};
 
 const createMenuItem = (
   shortcuts: string[],
@@ -46,34 +54,36 @@ const createMenuItem = (
 };
 
 export const getMainMenu = () => {
+  const t = getTranslator();
+  const actionLabel = (id: string) => getShortcutActionLabel(id, t);
   const template: any = [
     ...(isMac
       ? [
           {
             label: app.name,
             submenu: [
-              { role: 'about' },
+              { role: 'about', label: t('menuAbout', { appName: app.name }) },
               { type: 'separator' },
-              { role: 'services' },
+              { role: 'services', label: t('menuServices') },
               { type: 'separator' },
-              { role: 'hide' },
-              { role: 'hideothers' },
-              { role: 'unhide' },
+              { role: 'hide', label: t('menuHideApp', { appName: app.name }) },
+              { role: 'hideothers', label: t('menuHideOthers') },
+              { role: 'unhide', label: t('menuShowAll') },
               { type: 'separator' },
-              { role: 'quit' },
+              { role: 'quit', label: t('menuQuitApp', { appName: app.name }) },
             ],
           },
         ]
       : []),
     {
-      label: '文件',
+      label: t('menuFile'),
       submenu: [
         ...createMenuItem(
           ['CmdOrCtrl+N'],
           () => {
             Application.instance.windows.open();
           },
-          '打开新的窗口',
+          actionLabel('new-window'),
           'new-window',
         ),
         ...createMenuItem(
@@ -81,7 +91,7 @@ export const getMainMenu = () => {
           () => {
             Application.instance.windows.open(true);
           },
-          '打开新的无痕窗口',
+          actionLabel('new-private-window'),
           'new-private-window',
         ),
         ...createMenuItem(
@@ -100,7 +110,7 @@ export const getMainMenu = () => {
               active: true,
             });
           },
-          '打开新的标签页',
+          actionLabel('new-tab'),
           'new-tab',
         ),
         ...createMenuItem(
@@ -108,7 +118,7 @@ export const getMainMenu = () => {
           (window) => {
             window.send('revert-closed-tab');
           },
-          '撤销关闭的标签',
+          actionLabel('reopen-closed-tab'),
           'reopen-closed-tab',
         ),
         {
@@ -119,7 +129,7 @@ export const getMainMenu = () => {
           (window) => {
             window.win.close();
           },
-          '关闭窗口',
+          actionLabel('close-window'),
           'close-window',
         ),
         ...createMenuItem(
@@ -127,7 +137,7 @@ export const getMainMenu = () => {
           (window) => {
             window.send('remove-tab', window.viewManager.selectedId);
           },
-          '关闭标签页',
+          actionLabel('close-tab'),
           'close-tab',
         ),
         {
@@ -138,7 +148,7 @@ export const getMainMenu = () => {
           () => {
             saveAs();
           },
-          '保存页面为...',
+          actionLabel('save-page'),
           'save-page',
         ),
         {
@@ -149,7 +159,7 @@ export const getMainMenu = () => {
           () => {
             printPage();
           },
-          '打印',
+          actionLabel('print'),
           'print',
         ),
 
@@ -169,26 +179,33 @@ export const getMainMenu = () => {
       ],
     },
     {
-      label: '编辑',
+      label: t('menuEdit'),
       submenu: [
-        { role: 'undo' },
-        { role: 'redo' },
+        { role: 'undo', label: t('menuUndo') },
+        { role: 'redo', label: t('menuRedo') },
         { type: 'separator' },
-        { role: 'cut' },
-        { role: 'copy' },
-        { role: 'paste' },
+        { role: 'cut', label: t('menuCut') },
+        { role: 'copy', label: t('menuCopy') },
+        { role: 'paste', label: t('menuPaste') },
         ...(isMac
           ? [
-              { role: 'pasteAndMatchStyle' },
-              { role: 'delete' },
-              { role: 'selectAll' },
+              { role: 'pasteAndMatchStyle', label: t('menuPasteAndMatchStyle') },
+              { role: 'delete', label: t('menuDelete') },
+              { role: 'selectAll', label: t('menuSelectAll') },
               { type: 'separator' },
               {
-                label: 'Speech',
-                submenu: [{ role: 'startspeaking' }, { role: 'stopspeaking' }],
+                label: t('menuSpeech'),
+                submenu: [
+                  { role: 'startspeaking', label: t('menuStartSpeaking') },
+                  { role: 'stopspeaking', label: t('menuStopSpeaking') },
+                ],
               },
             ]
-          : [{ role: 'delete' }, { type: 'separator' }, { role: 'selectAll' }]),
+          : [
+              { role: 'delete', label: t('menuDelete') },
+              { type: 'separator' },
+              { role: 'selectAll', label: t('menuSelectAll') },
+            ]),
         { type: 'separator' },
         ...createMenuItem(
           ['CmdOrCtrl+Shift+L'],
@@ -197,7 +214,7 @@ export const getMainMenu = () => {
               'addressbar-paste-and-go',
             );
           },
-          '粘贴并转到',
+          actionLabel('paste-and-go'),
           'paste-and-go',
         ),
         ...createMenuItem(
@@ -205,20 +222,20 @@ export const getMainMenu = () => {
           () => {
             Application.instance.windows.current.send('find');
           },
-          '页内查找',
+          actionLabel('find-in-page'),
           'find-in-page',
         ),
       ],
     },
     {
-      label: '视图',
+      label: t('menuView'),
       submenu: [
         ...createMenuItem(
           ['CmdOrCtrl+R', 'F5'],
           () => {
             Application.instance.windows.current.viewManager.selected.webContents.reload();
           },
-          'Reload',
+          actionLabel('reload'),
           'reload',
         ),
         ...createMenuItem(
@@ -226,13 +243,13 @@ export const getMainMenu = () => {
           () => {
             Application.instance.windows.current.viewManager.selected.webContents.reloadIgnoringCache();
           },
-          'Reload ignoring cache',
+          actionLabel('force-reload'),
           'force-reload',
         ),
       ],
     },
     {
-      label: '历史记录',
+      label: t('menuHistory'),
       submenu: [
         // TODO: Homepage - Ctrl+Shift+H
         ...createMenuItem(
@@ -244,7 +261,7 @@ export const getMainMenu = () => {
               selected.webContents.goBack();
             }
           },
-          '返回',
+          actionLabel('back'),
           'back',
         ),
         ...createMenuItem(
@@ -256,7 +273,7 @@ export const getMainMenu = () => {
               selected.webContents.goForward();
             }
           },
-          '前进',
+          actionLabel('forward'),
           'forward',
         ),
         // { type: 'separator' }
@@ -272,13 +289,13 @@ export const getMainMenu = () => {
               active: true,
             });
           },
-          '管理历史记录',
+          actionLabel('show-history'),
           'show-history',
         ),
       ],
     },
     {
-      label: '书签',
+      label: t('menuBookmarks'),
       submenu: [
         ...createMenuItem(
           isMac ? ['Cmd+Option+B'] : ['CmdOrCtrl+Shift+O'],
@@ -288,7 +305,7 @@ export const getMainMenu = () => {
               active: true,
             });
           },
-          '管理书签',
+          actionLabel('manage-bookmarks'),
           'manage-bookmarks',
         ),
         ...createMenuItem(
@@ -309,7 +326,7 @@ export const getMainMenu = () => {
               bookmarksBarDisplay,
             });
           },
-          'Toggle bookmarks bar',
+          actionLabel('toggle-bookmarks-bar'),
           'toggle-bookmarks-bar',
         ),
         ...createMenuItem(
@@ -319,7 +336,7 @@ export const getMainMenu = () => {
               'show-add-bookmark-dialog',
             );
           },
-          'Add this website to bookmarks',
+          actionLabel('add-bookmark'),
           'add-bookmark',
         ),
         // { type: 'separator' }
@@ -327,14 +344,14 @@ export const getMainMenu = () => {
       ],
     },
     {
-      label: '工具',
+      label: t('menuTools'),
       submenu: [
         ...createMenuItem(
           ['CmdOrCtrl+Shift+X'],
           () => {
             void Application.instance.openDesktopScreenshot();
           },
-          '截图',
+          actionLabel('screenshot'),
           'screenshot',
         ),
         ...createMenuItem(
@@ -342,19 +359,19 @@ export const getMainMenu = () => {
           () => {
             Application.instance.toggleBossKey();
           },
-          '老板键',
+          actionLabel('boss-key'),
           'boss-key',
         ),
         { type: 'separator' },
         {
-          label: 'Developer',
+          label: t('menuDeveloper'),
           submenu: [
             ...createMenuItem(
               ['CmdOrCtrl+U'],
               () => {
                 viewSource();
               },
-              'View source',
+              actionLabel('view-source'),
               'view-source',
             ),
             ...createMenuItem(
@@ -364,7 +381,7 @@ export const getMainMenu = () => {
                   Application.instance.windows.current.viewManager.selected.webContents.toggleDevTools();
                 });
               },
-              'Developer tools...',
+              actionLabel('devtools'),
               'devtools',
             ),
 
@@ -381,7 +398,7 @@ export const getMainMenu = () => {
       ],
     },
     {
-      label: '标签页',
+      label: t('menuTabs'),
       submenu: [
         ...createMenuItem(
           isMac ? ['Cmd+Option+Right'] : ['Ctrl+Tab', 'Ctrl+PageDown'],
@@ -390,7 +407,7 @@ export const getMainMenu = () => {
               'select-next-tab',
             );
           },
-          'Select next tab',
+          actionLabel('next-tab'),
           'next-tab',
         ),
         ...createMenuItem(
@@ -400,7 +417,7 @@ export const getMainMenu = () => {
               'select-previous-tab',
             );
           },
-          'Select previous tab',
+          actionLabel('previous-tab'),
           'previous-tab',
         ),
         // 标签栏整理(隐藏项,快捷键驱动):动作在 renderer 的 LayoutSwitcher,
@@ -424,11 +441,11 @@ export const getMainMenu = () => {
       ],
     },
     {
-      label: '窗口',
+      label: t('menuWindow'),
       submenu: [
-        { role: 'minimize' },
+        { role: 'minimize', label: t('menuMinimize') },
         {
-          label: '切换全屏',
+          label: t('menuToggleFullscreen'),
           accelerator: 'F11',
           click: (_menuItem: MenuItem, browserWindow: BrowserWindow) => {
             const target = browserWindow || BrowserWindow.getFocusedWindow();
@@ -438,18 +455,18 @@ export const getMainMenu = () => {
             window?.toggleFullscreenFromF11();
           },
         },
-        { role: 'zoom' },
+        { role: 'zoom', label: t('menuZoom') },
         ...(isMac
           ? [
               { type: 'separator' },
-              { role: 'front' },
+              { role: 'front', label: t('menuBringAllToFront') },
               { type: 'separator' },
-              { role: 'window' },
+              { role: 'window', label: t('menuWindow') },
             ]
-          : [{ role: 'close', accelerator: '' }]),
+          : [{ role: 'close', accelerator: '', label: t('menuClose') }]),
         { type: 'separator' },
         {
-          label: '置顶窗口',
+          label: t('menuAlwaysOnTop'),
           type: 'checkbox',
           checked: false,
           click(menuItem: MenuItem, browserWindow: BrowserWindow) {

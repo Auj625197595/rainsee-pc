@@ -47,26 +47,31 @@ import {
   DetailValue,
   EmptyState,
 } from './style';
+import { useI18n } from '~/renderer/components/I18n';
 
 type Page = 'main' | 'connection' | 'certificate' | 'cookies';
 
-const connectionText = (protocol: string, secure: boolean) => {
-  if (secure) return '连接是安全的';
-  if (protocol === 'http') return '与此网站的连接不安全';
-  if (protocol === 'file') return '本地文件';
-  return '浏览器内部页面';
+const connectionText = (
+  protocol: string,
+  secure: boolean,
+  t: (k: string) => string,
+) => {
+  if (secure) return t('siSecure');
+  if (protocol === 'http') return t('siNotSecure');
+  if (protocol === 'file') return t('siLocalFile');
+  return t('siInternalPage');
 };
 
-const formatDate = (seconds: number) => {
-  if (!seconds) return '未知';
+const formatDate = (seconds: number, t: (k: string) => string) => {
+  if (!seconds) return t('siUnknown');
   const date = new Date(seconds * 1000);
-  if (Number.isNaN(date.getTime())) return '未知';
-  return date.toLocaleString('zh-CN', { hour12: false });
+  if (Number.isNaN(date.getTime())) return t('siUnknown');
+  return date.toLocaleString(undefined, { hour12: false });
 };
 
-const cookieFlags = (cookie: SiteCookieData) =>
+const cookieFlags = (cookie: SiteCookieData, t: (k: string) => string) =>
   [
-    cookie.session ? '会话' : '',
+    cookie.session ? t('siSession') : '',
     cookie.secure ? 'Secure' : '',
     cookie.httpOnly ? 'HttpOnly' : '',
   ]
@@ -74,6 +79,7 @@ const cookieFlags = (cookie: SiteCookieData) =>
     .join(' · ');
 
 export const App = observer(() => {
+  const t = useI18n();
   const rootRef = React.useRef<HTMLDivElement>(null);
   const [page, setPage] = React.useState<Page>('main');
   const [busyCookie, setBusyCookie] = React.useState('');
@@ -145,11 +151,11 @@ export const App = observer(() => {
 
   const pageTitle =
     page === 'connection'
-      ? '连接安全'
+      ? t('siTabSecurity')
       : page === 'certificate'
-      ? '证书详情'
+      ? t('siTabCertificate')
       : page === 'cookies'
-      ? 'Cookie 和网站数据'
+      ? t('siTabCookies')
       : data.host;
 
   return (
@@ -158,12 +164,12 @@ export const App = observer(() => {
         <UIStyle />
         <Header>
           {page !== 'main' && (
-            <IconButton type="button" title="返回" onClick={goBack}>
+            <IconButton type="button" title={t('siBack')} onClick={goBack}>
               <ArrowLeft size={18} weight="bold" />
             </IconButton>
           )}
           <SiteName title={pageTitle}>{pageTitle}</SiteName>
-          <IconButton type="button" title="关闭" onClick={() => store.hide()}>
+          <IconButton type="button" title={t('close')} onClick={() => store.hide()}>
             <X size={18} weight="bold" />
           </IconButton>
         </Header>
@@ -176,7 +182,7 @@ export const App = observer(() => {
               </RowIcon>
               <RowMain>
                 <RowTitle>
-                  {connectionText(data.protocol, data.secure)}
+                  {connectionText(data.protocol, data.secure, t)}
                 </RowTitle>
               </RowMain>
               <CaretRight size={18} />
@@ -210,7 +216,7 @@ export const App = observer(() => {
                         }
                         aria-label={`${getPermissionText(
                           permission.permission,
-                        )}设置`}
+                        )}${t('siPermissionsSuffix')}`}
                         onChange={(event) =>
                           store.setPermission(
                             permission,
@@ -222,12 +228,12 @@ export const App = observer(() => {
                           )
                         }
                       >
-                        <option value="default">默认</option>
-                        <option value="allow">允许</option>
+                        <option value="default">{t('siOptDefault')}</option>
+                        <option value="allow">{t('siOptAllow')}</option>
                         {permission.permission === 'external-navigation' && (
-                          <option value="ask">询问</option>
+                          <option value="ask">{t('siOptAsk')}</option>
                         )}
-                        <option value="deny">拒绝</option>
+                        <option value="deny">{t('siOptDeny')}</option>
                       </PermissionSelect>
                     </PermissionRow>
                   ))}
@@ -241,8 +247,8 @@ export const App = observer(() => {
                 <Cookie size={21} />
               </RowIcon>
               <RowMain>
-                <RowTitle>Cookie 和网站数据</RowTitle>
-                <RowDetail>{data.cookies.length} 个 Cookie</RowDetail>
+                <RowTitle>{t('siCookiesTitle')}</RowTitle>
+                <RowDetail>{t('siCookieCount', { count: data.cookies.length })}</RowDetail>
               </RowMain>
               <CaretRight size={18} />
             </RowButton>
@@ -255,7 +261,7 @@ export const App = observer(() => {
                 <Gear size={21} />
               </RowIcon>
               <RowMain>
-                <RowTitle>网站设置</RowTitle>
+                <RowTitle>{t('siSiteSettings')}</RowTitle>
               </RowMain>
               <CaretRight size={18} />
             </RowButton>
@@ -270,14 +276,14 @@ export const App = observer(() => {
               </RowIcon>
               <RowMain>
                 <SummaryTitle>
-                  {connectionText(data.protocol, data.secure)}
+                  {connectionText(data.protocol, data.secure, t)}
                 </SummaryTitle>
                 <SummaryText>
                   {data.secure
-                    ? '发送到此网站的信息会经过加密传输。'
+                    ? t('siSecureInfo')
                     : data.protocol === 'http'
-                    ? '请勿在此页面输入密码或付款信息等敏感内容。'
-                    : '此页面不通过普通的网站连接加载。'}
+                    ? t('siInsecureInfo')
+                    : t('siNonStandardInfo')}
                 </SummaryText>
               </RowMain>
             </Summary>
@@ -291,14 +297,14 @@ export const App = observer(() => {
                   <RowMain>
                     <RowTitle>
                       {data.certificatePending
-                        ? '正在读取证书...'
+                        ? t('siReadingCert')
                         : data.certificate
-                        ? '证书有效'
-                        : '无法读取证书'}
+                        ? t('siCertValid')
+                        : t('siCertUnavailable')}
                     </RowTitle>
                     {data.certificate?.issuerName && (
                       <RowDetail>
-                        颁发者：{data.certificate.issuerName}
+                        {t('siIssuer', { name: data.certificate.issuerName })}
                       </RowDetail>
                     )}
                   </RowMain>
@@ -314,53 +320,53 @@ export const App = observer(() => {
             {data.certificate ? (
               <DetailList>
                 <DetailRow>
-                  <DetailLabel>颁发给</DetailLabel>
+                  <DetailLabel>{t('siIssuedTo')}</DetailLabel>
                   <DetailValue>{data.certificate.subjectName}</DetailValue>
                 </DetailRow>
                 <DetailRow>
-                  <DetailLabel>颁发者</DetailLabel>
+                  <DetailLabel>{t('siIssuerLabel')}</DetailLabel>
                   <DetailValue>
-                    {data.certificate.issuerName || '未知'}
+                    {data.certificate.issuerName || t('siUnknown')}
                   </DetailValue>
                 </DetailRow>
                 <DetailRow>
-                  <DetailLabel>有效期起始</DetailLabel>
+                  <DetailLabel>{t('siValidFrom')}</DetailLabel>
                   <DetailValue>
-                    {formatDate(data.certificate.validStart)}
+                    {formatDate(data.certificate.validStart, t)}
                   </DetailValue>
                 </DetailRow>
                 <DetailRow>
-                  <DetailLabel>有效期截止</DetailLabel>
+                  <DetailLabel>{t('siValidTo')}</DetailLabel>
                   <DetailValue>
-                    {formatDate(data.certificate.validExpiry)}
+                    {formatDate(data.certificate.validExpiry, t)}
                   </DetailValue>
                 </DetailRow>
                 <DetailRow>
-                  <DetailLabel>连接协议</DetailLabel>
+                  <DetailLabel>{t('siProtocol')}</DetailLabel>
                   <DetailValue>
                     {[data.certificate.protocol, data.certificate.cipher]
                       .filter(Boolean)
-                      .join(' · ') || '未知'}
+                      .join(' · ') || t('siUnknown')}
                   </DetailValue>
                 </DetailRow>
                 <DetailRow>
-                  <DetailLabel>序列号</DetailLabel>
+                  <DetailLabel>{t('siSerial')}</DetailLabel>
                   <DetailValue $wrap>
-                    {data.certificate.serialNumber || '未知'}
+                    {data.certificate.serialNumber || t('siUnknown')}
                   </DetailValue>
                 </DetailRow>
                 <DetailRow>
-                  <DetailLabel>SHA-256 指纹</DetailLabel>
+                  <DetailLabel>{t('siSha256')}</DetailLabel>
                   <DetailValue $wrap>
-                    {data.certificate.fingerprint || '未知'}
+                    {data.certificate.fingerprint || t('siUnknown')}
                   </DetailValue>
                 </DetailRow>
               </DetailList>
             ) : (
               <EmptyState>
                 {data.certificatePending
-                  ? '正在读取证书...'
-                  : '未读取到证书信息'}
+                  ? t('siReadingCert')
+                  : t('siCertNotRead')}
               </EmptyState>
             )}
           </PageContent>
@@ -373,7 +379,7 @@ export const App = observer(() => {
                 <Cookie size={24} />
               </RowIcon>
               <RowMain>
-                <SummaryTitle>{data.cookies.length} 个 Cookie</SummaryTitle>
+                <SummaryTitle>{t('siCookieCount', { count: data.cookies.length })}</SummaryTitle>
                 <SummaryText>{data.host}</SummaryText>
               </RowMain>
               <ActionButton
@@ -382,7 +388,7 @@ export const App = observer(() => {
                 onClick={clearCookies}
               >
                 <Trash size={16} />
-                全部删除
+                {t('siDeleteAll')}
               </ActionButton>
             </Summary>
             {hasSessionCookies && (
@@ -397,8 +403,8 @@ export const App = observer(() => {
                     <SignIn size={21} />
                   </RowIcon>
                   <RowMain>
-                    <RowTitle>重启后保持登录</RowTitle>
-                    <RowDetail>保留当前主域名的会话 Cookie</RowDetail>
+                    <RowTitle>{t('siPersistTitle')}</RowTitle>
+                    <RowDetail>{t('siPersistDetail')}</RowDetail>
                   </RowMain>
                   <CaretRight size={18} />
                 </RowButton>
@@ -414,19 +420,19 @@ export const App = observer(() => {
                       <RowMain>
                         <RowTitle title={cookie.name}>{cookie.name}</RowTitle>
                         <CookieValue title={cookie.value}>
-                          {cookie.value || '空值'}
+                          {cookie.value || t('siEmptyValue')}
                         </CookieValue>
                         <CookieMeta>
                           {cookie.domain || data.host}
                           {cookie.path}
-                          {cookieFlags(cookie)
-                            ? ` · ${cookieFlags(cookie)}`
+                          {cookieFlags(cookie, t)
+                            ? ` · ${cookieFlags(cookie, t)}`
                             : ''}
                         </CookieMeta>
                       </RowMain>
                       <IconButton
                         type="button"
-                        title={`删除 ${cookie.name}`}
+                        title={t('siDeleteCookieAria', { name: cookie.name })}
                         disabled={busyCookie !== ''}
                         onClick={() => removeCookie(cookie)}
                       >
@@ -437,7 +443,7 @@ export const App = observer(() => {
                 })}
               </CookieList>
             ) : (
-              <EmptyState>此网站目前没有 Cookie</EmptyState>
+              <EmptyState>{t('siNoCookies')}</EmptyState>
             )}
           </PageContent>
         )}

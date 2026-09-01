@@ -7,6 +7,7 @@ import store from '../../store';
 import { Title } from '../App/style';
 import { NormalButton } from '../App';
 import { getPalette } from '../../utils/palette';
+import { getSettingsTranslator } from '../../utils';
 import { ITheme } from '~/interfaces';
 
 // 主进程 get-shortcut-actions 下发的数据结构(无需 import 主进程注册表,
@@ -315,6 +316,7 @@ const DisabledHint = styled.div`
 // ===========================================================================
 
 export const Shortcuts = observer(() => {
+  const t = getSettingsTranslator();
   const [actions, setActions] = React.useState<ShortcutActionDTO[]>([]);
   const [categories, setCategories] = React.useState<ShortcutCategoryDTO[]>([]);
   const [loaded, setLoaded] = React.useState(false);
@@ -509,7 +511,7 @@ export const Shortcuts = observer(() => {
   };
 
   if (!loaded) {
-    return <DisabledHint>加载中…</DisabledHint>;
+    return <DisabledHint>{t('scLoading')}</DisabledHint>;
   }
 
   const hasCustom = actions.some(
@@ -523,7 +525,7 @@ export const Shortcuts = observer(() => {
           style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 22 }}
         >
           <NormalButton variant="soft" onClick={resetAll}>
-            恢复全部默认
+            {t('scResetAll')}
           </NormalButton>
         </div>
       )}
@@ -547,26 +549,29 @@ export const Shortcuts = observer(() => {
                         {isCapturing ? (
                           <>
                             <ShortcutBadge capturing>
-                              {captured ? formatAccel(captured) : '按下快捷键…'}
+                              {captured
+                                ? formatAccel(captured)
+                                : t('scPressKeys')}
                             </ShortcutBadge>
                             <ActionButton
                               disabled={!!conflict || !captured}
                               onClick={saveCapture}
                             >
-                              保存
+                              {t('save')}
                             </ActionButton>
                             <ActionButton onClick={cancelCapture}>
-                              取消
+                              {t('cancel')}
                             </ActionButton>
                           </>
                         ) : (
                           <>
                             <ShortcutBadge onClick={() => startCapture(a.id)}>
-                              {formatAccels(currentAccels(a)) || '未设置'}
+                              {formatAccels(currentAccels(a)) ||
+                                t('dlNotSet')}
                             </ShortcutBadge>
                             {isCustom && (
                               <ActionButton onClick={() => resetOne(a.id)}>
-                                恢复默认
+                                {t('resetToDefault')}
                               </ActionButton>
                             )}
                           </>
@@ -574,7 +579,7 @@ export const Shortcuts = observer(() => {
                       </BtnRow>
                       {conflict && (
                         <ConflictHint>
-                          与「{conflict}」冲突,请选择其他按键
+                          {t('scConflict', { conflict })}
                         </ConflictHint>
                       )}
                     </ControlColumn>
@@ -588,7 +593,7 @@ export const Shortcuts = observer(() => {
 
       {extGroups.length > 0 && (
         <>
-          <CategoryTitle>扩展命令</CategoryTitle>
+          <CategoryTitle>{t('scExtCommands')}</CategoryTitle>
           {extGroups.map((g) => {
             const meta = extMeta[g.id] || { name: g.name };
             return (
@@ -616,16 +621,16 @@ export const Shortcuts = observer(() => {
                               <ShortcutBadge capturing>
                                 {captured
                                   ? formatAccel(captured)
-                                  : '按下快捷键…'}
+                                  : t('scPressKeys')}
                               </ShortcutBadge>
                               <ActionButton
                                 disabled={!!conflict || !captured}
                                 onClick={saveCapture}
                               >
-                                保存
+                                {t('save')}
                               </ActionButton>
                               <ActionButton onClick={cancelCapture}>
-                                取消
+                                {t('cancel')}
                               </ActionButton>
                             </>
                           ) : (
@@ -633,13 +638,13 @@ export const Shortcuts = observer(() => {
                               <ShortcutBadge onClick={() => startCapture(cid)}>
                                 {c.shortcut
                                   ? formatAccel(c.shortcut)
-                                  : '未设置'}
+                                  : t('dlNotSet')}
                               </ShortcutBadge>
                               {isCustom && (
                                 <ActionButton
                                   onClick={() => resetExt(g.id, c.name)}
                                 >
-                                  恢复默认
+                                  {t('resetToDefault')}
                                 </ActionButton>
                               )}
                             </>
@@ -647,7 +652,7 @@ export const Shortcuts = observer(() => {
                         </BtnRow>
                         {conflict && (
                           <ConflictHint>
-                            与「{conflict}」冲突,请选择其他按键
+                            {t('scConflict', { conflict })}
                           </ConflictHint>
                         )}
                       </ControlColumn>

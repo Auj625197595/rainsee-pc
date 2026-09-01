@@ -3,18 +3,22 @@ import * as React from 'react';
 import {Header, Title} from '../App/style';
 import { ipcRenderer } from '~/common/renderer-ipc';
 import {NormalButton} from "~/renderer/views/settings/components/App";
+import { getSettingsTranslator } from '../utils';
 
+// alert 文案在事件回调里实时取翻译(语言切换后仍正确)。
 const loadExtensionFromCrx = async () => {
+  const t = getSettingsTranslator();
   const res = await ipcRenderer.invoke('load-extension-from-crx');
   //console.log("loadExtensionFromCrx", res);
   if (res && res.name) {
-    alert("已加载扩展程序" + res.name);
+    alert(t('setextLoaded', {name: res.name}));
   }
 };
 const loadExtensionFromDir = async () => {
+  const t = getSettingsTranslator();
   const res = await ipcRenderer.invoke('load-extension-from-dir');
   if (res && res.name) {
-    alert("已加载扩展程序" + res.name);
+    alert(t('setextLoaded', {name: res.name}));
   }
 };
 const loadExtensionFromWeb = (url: string) => () => {
@@ -22,35 +26,36 @@ const loadExtensionFromWeb = (url: string) => () => {
 };
 
 export const Extensions = () => {
+  const t = getSettingsTranslator();
   return (
     <>
-      <Header>扩展程序</Header>
+      <Header>{t('sysExtensions')}</Header>
       <div style={{marginTop: 10}}>
         <NormalButton
           onClick={loadExtensionFromWeb("https://microsoftedge.microsoft.com/addons/Microsoft-Edge-Extensions-Home?hl=zh-CN")}
         >
-          从Edge扩展程序商店安装
+          {t('setextEdge')}
         </NormalButton>
       </div>
       <div style={{marginTop: 10}}>
         <NormalButton
           onClick={loadExtensionFromWeb("https://www.crxsoso.com/")}
         >
-          从Crx搜搜扩展商店安装
+          {t('setextCrxSoso')}
         </NormalButton>
       </div>
       <div style={{marginTop: 10}}>
         <NormalButton
           onClick={loadExtensionFromCrx}
         >
-          从本地加载 crx/zip 扩展程序
+          {t('setextLocal')}
         </NormalButton>
       </div>
       <div style={{marginTop: 10}}>
         <NormalButton
           onClick={loadExtensionFromDir}
         >
-          加载已解压的扩展程序文件夹
+          {t('setextUnpacked')}
         </NormalButton>
       </div>
     </>

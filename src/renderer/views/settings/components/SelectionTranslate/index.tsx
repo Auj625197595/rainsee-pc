@@ -4,8 +4,10 @@ import styled, { css } from 'styled-components';
 import { TextT, Translate } from '@phosphor-icons/react';
 
 import { ipcRenderer } from '~/common/renderer-ipc';
+import {getWebUIContext} from '~/common/webui-context';
 import store from '../../store';
 import { Title, SecondaryText, SettingIcon } from '../App/style';
+import { getSettingsTranslator } from '../../utils';
 import { Switch } from '~/renderer/components/Switch';
 import { LANGUAGES } from '~/renderer/views/translate/languages';
 import { getPalette } from '../../utils/palette';
@@ -269,6 +271,7 @@ const DEFAULT_CFG: ISettings['customLlmConfig'] = {
 };
 
 export const SelectionTranslate = observer(() => {
+  const t = getSettingsTranslator();
   const panelEnabled = store.settings.selectionPanelEnabled !== false;
   const wordCountEnabled = store.settings.selectionWordCountEnabled !== false;
   const enabled = store.settings.selectionTranslateEnabled !== false;
@@ -331,17 +334,15 @@ export const SelectionTranslate = observer(() => {
   return (
     <>
       <OptionGroupBlock>
-        <OptionGroupLabel>选中文本</OptionGroupLabel>
+        <OptionGroupLabel>{t('stSection')}</OptionGroupLabel>
         <OptionGroup>
           <OptionsRow>
             <SettingIcon tone="blue">
               <TextT size={19} weight="fill" />
             </SettingIcon>
             <OptionCopy>
-              <Title>文字菜单</Title>
-              <SecondaryText>
-                选中文本后显示复制、搜索和更多操作。
-              </SecondaryText>
+              <Title>{t('searchTextMenu')}</Title>
+              <SecondaryText>{t('stMenuDesc')}</SecondaryText>
             </OptionCopy>
             <Switch
               clickable
@@ -355,10 +356,8 @@ export const SelectionTranslate = observer(() => {
               <Translate size={19} weight="fill" />
             </SettingIcon>
             <OptionCopy>
-              <Title>划词翻译</Title>
-              <SecondaryText>
-                非中文文本在选区附近显示翻译结果。
-              </SecondaryText>
+              <Title>{t('searchSelectionTranslate')}</Title>
+              <SecondaryText>{t('stTranslateDesc')}</SecondaryText>
             </OptionCopy>
             <Switch
               clickable
@@ -372,10 +371,8 @@ export const SelectionTranslate = observer(() => {
               <TextT size={19} weight="fill" />
             </SettingIcon>
             <OptionCopy>
-              <Title>显示字数</Title>
-              <SecondaryText>
-                在文字菜单右侧显示选中文本的字数。
-              </SecondaryText>
+              <Title>{t('searchWordCount')}</Title>
+              <SecondaryText>{t('stWordCountDesc')}</SecondaryText>
             </OptionCopy>
             <Switch
               clickable
@@ -389,11 +386,11 @@ export const SelectionTranslate = observer(() => {
       </OptionGroupBlock>
 
       <OptionGroupBlock>
-        <OptionGroupLabel>翻译</OptionGroupLabel>
+        <OptionGroupLabel>{t('stTranslateSection')}</OptionGroupLabel>
         <OptionGroup>
           <OptionsRow>
             <OptionCopy>
-              <Title>目标语言</Title>
+              <Title>{t('stTargetLanguage')}</Title>
             </OptionCopy>
             <ShapeSelect
               value={target}
@@ -414,14 +411,14 @@ export const SelectionTranslate = observer(() => {
           >
             <OptionsRow>
               <OptionCopy>
-                <Title>翻译引擎</Title>
+                <Title>{t('searchTranslateEngine')}</Title>
               </OptionCopy>
               <ShapeSelect
                 value={engine}
                 onChange={(e) => setOption('engine', e.target.value)}
               >
-                <option value="microsoft">微软翻译(免费)</option>
-                <option value="custom-llm">自定义 LLM</option>
+                <option value="microsoft">{t('stEngineMicrosoft')}</option>
+                <option value="custom-llm">{t('stEngineCustom')}</option>
               </ShapeSelect>
             </OptionsRow>
 
@@ -429,23 +426,20 @@ export const SelectionTranslate = observer(() => {
               <OptionsRow
                 style={{ flexDirection: 'column', alignItems: 'stretch' }}
               >
-                <SecondaryText>
-                  支持 OpenAI 兼容接口。Chat Completions(/v1/chat/completions)与
-                  Responses(/v1/responses)两种类型。
-                </SecondaryText>
+                <SecondaryText>{t('stLlmIntro')}</SecondaryText>
                 <ConfigCard>
                   <FieldsGrid>
                     <FieldColumn style={{ flex: 2 }}>
-                      <FieldLabel>接口地址(Base URL)</FieldLabel>
+                      <FieldLabel>{t('stBaseUrl')}</FieldLabel>
                       <TextInput
                         value={cfg.baseUrl}
                         placeholder="https://api.openai.com/"
                         onChange={(e) => updateCfg({ baseUrl: e.target.value })}
                       />
-                      <FieldHint>末尾 /v1 可省略,自动补全。</FieldHint>
+                      <FieldHint>{t('stBaseUrlHint')}</FieldHint>
                     </FieldColumn>
                     <FieldColumn>
-                      <FieldLabel>接口类型</FieldLabel>
+                      <FieldLabel>{t('stApiType')}</FieldLabel>
                       <ShapeSelect
                         value={cfg.apiType}
                         onChange={(e) =>
@@ -461,7 +455,7 @@ export const SelectionTranslate = observer(() => {
                   </FieldsGrid>
 
                   <FieldColumn>
-                    <FieldLabel>模型</FieldLabel>
+                    <FieldLabel>{t('stModel')}</FieldLabel>
                     <TextInput
                       value={cfg.model}
                       placeholder="gpt-4o-mini"
@@ -480,19 +474,17 @@ export const SelectionTranslate = observer(() => {
                         onChange={(e) => updateCfg({ apiKey: e.target.value })}
                       />
                       <EyeBtn onClick={() => setShowKey((v) => !v)}>
-                        {showKey ? '隐藏' : '显示'}
+                        {showKey ? t('hide') : t('show')}
                       </EyeBtn>
                     </KeyRow>
-                    <FieldHint>
-                      明文保存在本地 settings.json,请勿在共享设备上填写。
-                    </FieldHint>
+                    <FieldHint>{t('stKeyHint')}</FieldHint>
                   </FieldColumn>
 
                   <FieldColumn>
-                    <FieldLabel>系统指令(可选)</FieldLabel>
+                    <FieldLabel>{t('stSystemPrompt')}</FieldLabel>
                     <TextArea
                       value={cfg.systemPrompt || ''}
-                      placeholder="留空使用默认翻译指令;可填写额外的角色/口吻要求"
+                      placeholder={t('stSystemPromptPlaceholder')}
                       maxLength={500}
                       onChange={(e) =>
                         updateCfg({ systemPrompt: e.target.value })

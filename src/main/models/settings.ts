@@ -24,6 +24,7 @@ import {
   stripThirdPartySetCookies,
 } from '../services/adblock';
 import { Application } from '../application';
+import { getMainTranslator } from '../i18n';
 import { WEBUI_BASE_URL } from '~/constants/files';
 import {
   EfficiencySearchMode,
@@ -58,6 +59,7 @@ import { getViewBackgroundColor } from '../utils/theme';
 import { normalizeChromeTheme } from '~/common/chrome-theme';
 import { normalizeBookmarkBarDisplay } from '~/common/bookmark-bar';
 import { sanitizeChromePanelValues } from '~/common/chrome-style-panel';
+import { normalizeAppLanguage } from '~/common/i18n';
 import {
   activeProfileName,
   readDataLocationPointer,
@@ -449,8 +451,9 @@ export class Settings extends EventEmitter {
 
     // 外部下载器:选择可执行文件路径(用户手动指定)。
     ipcMain.on('downloader-path-change', async () => {
+      const t = getMainTranslator(this.object.language);
       const { canceled, filePaths } = await dialog.showOpenDialog({
-        title: '选择下载器可执行文件',
+        title: t('dlpChooseDownloaderExe'),
         defaultPath: this.object.downloaderPath || undefined,
         properties: ['openFile'],
       });
@@ -468,12 +471,14 @@ export class Settings extends EventEmitter {
       if (path) {
         this.updateSettings({ downloaderPath: path });
       } else {
-        const name = DOWNLOADER_PRESETS[type]?.name ?? '外部下载器';
+        const t = getMainTranslator(this.object.language);
+        const name =
+          DOWNLOADER_PRESETS[type]?.name ?? t('dlpExternalDownloader');
         dialog.showMessageBox({
           type: 'warning',
-          title: '温馨提示',
-          message: `未检测到${name}的安装路径,请手动选择可执行文件。`,
-          buttons: ['确定'],
+          title: t('dialogHintTitle'),
+          message: t('dlpDownloaderNotDetected', {name}),
+          buttons: [t('confirm')],
         });
       }
     });
@@ -883,6 +888,9 @@ export class Settings extends EventEmitter {
     try {
       const file = await promises.readFile(getPath('settings.json'), 'utf8');
       const json = JSON.parse(file);
+      // Keep the persisted preference bounded to shipped locales. Unknown
+      // values (including hand-edited settings files) use automatic detection.
+      json.language = normalizeAppLanguage(json.language);
       json.tabOverflowBehavior = normalizeTabOverflowBehavior(
         json.tabOverflowBehavior,
       );
@@ -1255,6 +1263,9 @@ export class Settings extends EventEmitter {
 
   public updateSettings(settings: Partial<ISettings>) {
     const nextSettings = { ...settings };
+    if (Object.prototype.hasOwnProperty.call(nextSettings, 'language')) {
+      nextSettings.language = normalizeAppLanguage(nextSettings.language);
+    }
     delete (nextSettings as any).dualEngineSearch;
     if (
       Object.prototype.hasOwnProperty.call(nextSettings, 'bookmarksBarDisplay')

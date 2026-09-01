@@ -4,6 +4,8 @@
 
 import {TranslateEngine, TranslateContext} from './engine';
 import {ApiType, LlmCallOpts, translateLlmBatch} from './llm-shared';
+import {Application} from '../../application';
+import {getMainTranslator} from '../../i18n';
 
 export interface CustomLlmConfig {
   baseUrl: string;
@@ -78,7 +80,11 @@ export class CustomLlmEngine implements TranslateEngine {
     context?: TranslateContext,
   ): Promise<string[]> {
     if (!this.config.baseUrl || !this.config.apiKey) {
-      throw new Error('请先在设置中填写自定义翻译的接口地址与密钥');
+      throw new Error(
+        getMainTranslator(Application.instance?.settings?.object?.language)(
+          'trCustomLlmMissingConfig',
+        ),
+      );
     }
     return translateLlmBatch(this.callOpts(), batch, toLang, signal, context);
   }

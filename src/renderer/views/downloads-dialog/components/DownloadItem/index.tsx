@@ -32,6 +32,7 @@ import {
   pauseDownload,
   resumeDownload,
 } from '../download-menu';
+import { useI18n } from '~/renderer/components/I18n';
 
 const onClick = (item: IDownloadItem) => () => {
   if (item.completed) {
@@ -87,22 +88,25 @@ const getStatusLabel = (
   item: IDownloadItem,
   status: DownloadStatus,
   percent: number,
+  t: (key: string, params?: any) => string,
 ): string => {
+  if (item.preparing && status === 'downloading') return t('dldStatusSniffing');
   switch (status) {
     case 'completed':
-      return '已完成';
+      return t('dldStatusCompleted');
     case 'paused':
-      if (item.retrying) return '正在恢复';
-      if (item.interrupted) return '下载中断';
-      return '已暂停';
+      if (item.retrying) return t('dldStatusRecovering');
+      if (item.interrupted) return t('dldStatusInterrupted');
+      return t('dldStatusPaused');
     case 'failed':
-      return '已取消';
+      return t('dldStatusCanceled');
     default:
-      return `下载中 ${percent}%`;
+      return t('dldStatusDownloading', { percent });
   }
 };
 
 export const DownloadItem = observer(({ item }: { item: IDownloadItem }) => {
+  const t = useI18n();
   const status = getStatus(item);
 
   const percent =
@@ -123,7 +127,7 @@ export const DownloadItem = observer(({ item }: { item: IDownloadItem }) => {
   if (status === 'completed') {
     detail = [host, total].filter(Boolean).join(' · ');
   } else if (status === 'failed') {
-    detail = [host, '下载已取消'].filter(Boolean).join(' · ');
+    detail = [host, t('dldCanceledNote')].filter(Boolean).join(' · ');
   }
 
   const showProgress = status === 'downloading' || status === 'paused';
@@ -138,8 +142,16 @@ export const DownloadItem = observer(({ item }: { item: IDownloadItem }) => {
             <TitleActions>
               {showProgress && (
                 <PauseButton
-                  aria-label={item.paused && !item.retrying ? '恢复下载' : '暂停下载'}
-                  title={item.paused && !item.retrying ? '恢复下载' : '暂停下载'}
+                  aria-label={
+                    item.paused && !item.retrying
+                      ? t('dldResume')
+                      : t('dldPause')
+                  }
+                  title={
+                    item.paused && !item.retrying
+                      ? t('dldResume')
+                      : t('dldPause')
+                  }
                   onClick={onPauseResume(item)}
                 >
                   {item.paused && !item.retrying ? (
@@ -155,7 +167,7 @@ export const DownloadItem = observer(({ item }: { item: IDownloadItem }) => {
                 </PauseButton>
               )}
               <MoreButton
-                aria-label="更多操作"
+                aria-label={t('dldMoreActionsAria')}
                 toggled={item.menuIsOpen}
                 onClick={onMoreClick(item)}
               >
@@ -176,10 +188,14 @@ export const DownloadItem = observer(({ item }: { item: IDownloadItem }) => {
           <StatusRow>
             <StatusPrimary>
               <StatusBadge status={status}>
-                {getStatusLabel(item, status, percent)}
+                {getStatusLabel(item, status, percent, t)}
               </StatusBadge>
               {showProgress ? (
-                <TransferInfo>{received} / {total}</TransferInfo>
+                <TransferInfo>
+                  {item.preparing
+                    ? t('dldLookingForVideo')
+                    : `${received} / ${total}`}
+                </TransferInfo>
               ) : (
                 <Detail>{detail}</Detail>
               )}

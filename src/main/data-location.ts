@@ -11,6 +11,12 @@ import {
   writeDataLocationPointer,
 } from './bootstrap-paths';
 import { getRunningProfileNames } from './profiles';
+import { getMainTranslator } from './i18n';
+import { Application } from './application';
+
+// 原生弹窗/IPC 回执文案按当前设置的语言即时创建翻译器,不缓存。
+const dataLocationTranslator = () =>
+  getMainTranslator(Application.instance.settings?.object?.language);
 
 // =====================================================================
 // 迁移 gate:Settings.load() 与 onReady() 都 await 它,确保迁移(若有)在
@@ -154,12 +160,13 @@ export const validateDataDir = (
   newDir: string,
   currentDir: string,
 ): { ok: boolean; reason?: string } => {
-  if (!newDir) return { ok: false, reason: '未选择目录' };
+  const t = dataLocationTranslator();
+  if (!newDir) return { ok: false, reason: t('dlocErrNoDirSelected') };
   const target = norm(newDir);
   const cur = norm(currentDir);
-  if (!target) return { ok: false, reason: '目录路径无效' };
+  if (!target) return { ok: false, reason: t('dlocErrInvalidPath') };
   if (target === cur)
-    return { ok: false, reason: '新目录与当前数据目录相同,无需迁移' };
+    return { ok: false, reason: t('dlocErrSameDir') };
 
   const targetPrefix = target + sep;
   const curPrefix = cur + sep;
@@ -167,22 +174,21 @@ export const validateDataDir = (
   if (cur === target || curPrefix.startsWith(targetPrefix)) {
     return {
       ok: false,
-      reason: '新目录不能是当前数据目录,也不能是它的上级目录(会递归复制)',
+      reason: t('dlocErrParentDir'),
     };
   }
   // 新目录位于当前目录内 → 源包含目标,递归复制。
   if (targetPrefix.startsWith(curPrefix)) {
-    return { ok: false, reason: '新目录不能位于当前数据目录内(会递归复制)' };
+    return { ok: false, reason: t('dlocErrInsideCurrent') };
   }
   if (isSystemDir(target)) {
     return {
       ok: false,
-      reason:
-        '不能使用系统关键目录(系统盘根 / Windows / Program Files / 用户主目录等)',
+      reason: t('dlocErrSystemDir'),
     };
   }
   if (!isDirWritable(target)) {
-    return { ok: false, reason: '目录不可写(权限不足或不可达)' };
+    return { ok: false, reason: t('dlocErrNotWritable') };
   }
   return { ok: true };
 };
@@ -191,13 +197,14 @@ const checkDiskSpace = async (
   target: string,
   requiredBytes: number,
 ): Promise<string | null> => {
+  const t = dataLocationTranslator();
   try {
     const stat: any = await (promises as any).statfs(target);
     const avail = (stat.bavail || 0) * (stat.bsize || 0);
     if (avail > 0 && avail < requiredBytes) {
       const needMB = Math.ceil(requiredBytes / 1024 / 1024);
       const haveMB = Math.floor(avail / 1024 / 1024);
-      return `目标磁盘剩余空间不足(数据约 ${needMB} MB,目标可用约 ${haveMB} MB),迁移可能失败`;
+      return t('dlocSpaceWarnN', { need: needMB, have: haveMB });
     }
   } catch {
     // statfs 取不到(平台/权限),不阻断。
@@ -209,6 +216,7 @@ const scheduleDataLocationMigration = async (
   current: string,
   target: string,
 ) => {
+  const t = dataLocationTranslator();
   const validation = validateDataDir(target, current);
   if (!validation.ok)
     return { status: 'error' as const, message: validation.reason };
@@ -222,7 +230,7 @@ const scheduleDataLocationMigration = async (
         name !== 'data-location.json' && !name.startsWith('.write-probe'),
     );
     if (real.length > 0) {
-      existingNote = `目标目录非空(已有 ${real.length} 项),迁移可能与既有文件混存。`;
+      existingNote = t('dlocExistingNoteN', { count: real.length });
     }
   } catch {
     // 目标不存在属正常(迁移时创建)。
@@ -239,7 +247,7 @@ const scheduleDataLocationMigration = async (
   } catch {
     return {
       status: 'error' as const,
-      message: '无法保存数据目录设置,请检查系统 AppData 目录权限后重试',
+      message: t('dlocErrSavePointer'),
     };
   }
 
@@ -257,12 +265,17 @@ export const runPendingMigrationIfAny = async (): Promise<void> => {
   migrationGate.resolve();
   if (startupMigrationFailure) {
     try {
+      // 此时尚未读到设置语言,回退系统 locale(与启动外观同策略)。
+      const t = dataLocationTranslator();
       dialog.showMessageBox({
         type: 'error',
-        title: '数据迁移失败',
-        message: `迁移数据到 ${startupMigrationFailure.to} 失败,数据仍保留在原位置 ${startupMigrationFailure.from}。`,
+        title: t('dlocMigrationFailedTitle'),
+        message: t('dlocMigrationFailedBody', {
+          to: startupMigrationFailure.to,
+          from: startupMigrationFailure.from,
+        }),
         detail: startupMigrationFailure.error,
-        buttons: ['确定'],
+        buttons: [t('confirm')],
       });
     } catch {}
   }
@@ -289,22 +302,25 @@ export const setupDataLocationIpc = () => {
 
   // 选目录 + 校验 + 写 pending。结果交 renderer 决定是否立即重启。
   ipcMain.handle('data-location-change', async (event) => {
+    const t = dataLocationTranslator();
     if (activeProfileName) {
       return {
         status: 'error',
-        message: '小号数据由主账号统一管理，不能单独迁移数据目录',
+        message: t('dlocAltManagedByMain'),
       };
     }
     const runningProfiles = getRunningProfileNames();
     if (runningProfiles.length > 0) {
       return {
         status: 'error',
-        message: `请先关闭正在运行的小号：${runningProfiles.join('、')}`,
+        message: t('dlocCloseRunningProfiles', {
+          names: runningProfiles.join(t('listSeparator')),
+        }),
       };
     }
     const current = app.getPath('userData');
     const { canceled, filePaths } = await dialog.showOpenDialog({
-      title: '选择数据存储位置',
+      title: t('dlocChooseDialogTitle'),
       defaultPath: current,
       properties: ['openDirectory'],
     });
@@ -317,11 +333,10 @@ export const setupDataLocationIpc = () => {
         BrowserWindow.getFocusedWindow();
       const options: Electron.MessageBoxOptions = {
         type: 'warning',
-        title: '数据可能丢失',
-        message: '所选目录位于当前安装目录内',
-        detail:
-          '后续版本覆盖安装时，系统会先卸载旧版本，存放在安装目录内的数据可能被删除。您确定要这么做吗？',
-        buttons: ['仍然使用', '取消'],
+        title: t('dlocDataLossTitle'),
+        message: t('dlocInInstallDirMsg'),
+        detail: t('dlocInInstallDirDetail'),
+        buttons: [t('dlocKeepUsing'), t('cancel')],
         defaultId: 1,
         cancelId: 1,
         noLink: true,
@@ -337,22 +352,25 @@ export const setupDataLocationIpc = () => {
 
   // 将自定义数据目录迁回当前运行形态的默认位置。
   ipcMain.handle('data-location-reset', async () => {
+    const t = dataLocationTranslator();
     if (activeProfileName) {
       return {
         status: 'error',
-        message: '小号数据由主账号统一管理，不能单独迁移数据目录',
+        message: t('dlocAltManagedByMain'),
       };
     }
     const runningProfiles = getRunningProfileNames();
     if (runningProfiles.length > 0) {
       return {
         status: 'error',
-        message: `请先关闭正在运行的小号：${runningProfiles.join('、')}`,
+        message: t('dlocCloseRunningProfiles', {
+          names: runningProfiles.join(t('listSeparator')),
+        }),
       };
     }
     const current = app.getPath('userData');
     if (isSamePath(current, DEFAULT_USER_DATA)) {
-      return { status: 'error', message: '当前已是默认数据目录' };
+      return { status: 'error', message: t('dlocAlreadyDefault') };
     }
     return scheduleDataLocationMigration(current, DEFAULT_USER_DATA);
   });
@@ -365,12 +383,15 @@ export const setupDataLocationIpc = () => {
       const owner =
         BrowserWindow.fromWebContents(event.sender) ||
         BrowserWindow.getFocusedWindow();
+      const t = dataLocationTranslator();
       const options: Electron.MessageBoxOptions = {
         type: 'warning',
-        title: '暂时无法迁移',
-        message: '请先关闭所有小号窗口',
-        detail: `仍在运行：${runningProfiles.join('、')}`,
-        buttons: ['确定'],
+        title: t('dlocCannotMigrateNow'),
+        message: t('dlocCloseAltWindows'),
+        detail: t('dlocStillRunning', {
+          names: runningProfiles.join(t('listSeparator')),
+        }),
+        buttons: [t('confirm')],
       };
       if (owner) await dialog.showMessageBox(owner, options);
       else await dialog.showMessageBox(options);

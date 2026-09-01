@@ -8,6 +8,7 @@ import { PanelLoadingHide } from '../utils/panel-loading-hide';
 import { getViewMenu } from '../menus/view';
 import { injectPanelThemeMode } from '../utils/night-mode-inject';
 import { windowOpenToLoadOptions } from '../utils/window-open';
+import {getMainTranslator} from '../i18n';
 
 // 双引擎搜索侧边栏顶部告知条高度(px)。其下才是副引擎结果页。
 export const SECONDARY_SEARCH_HEADER_HEIGHT = 36;
@@ -139,6 +140,9 @@ export class SecondarySearchPanel {
 
   // 生成告知条 HTML(烘焙当前主题色 + 引擎名 + windowId)。
   private headerHtml(engineName: string): string {
+    const t = getMainTranslator(
+      Application.instance.settings?.object?.language,
+    );
     const winId = this.window.win.id;
     const dark = this.isDark;
     const bg = dark ? '#1f2430' : '#ffffff';
@@ -167,14 +171,14 @@ export class SecondarySearchPanel {
     </style></head><body>
       <div class="bar">
         <div class="logo"></div>
-        <div class="t">双引擎搜索<span class="name"> · ${engineName.replace(/</g, '&lt;')}</span></div>
-        <button class="btn" id="settings" title="双引擎搜索设置">
+        <div class="t">${t('searchDualEngine')}<span class="name"> · ${engineName.replace(/</g, '&lt;')}</span></div>
+        <button class="btn" id="settings" title="${t('dseSettings')}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3"></circle>
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
           </svg>
         </button>
-        <button class="btn" id="close" title="关闭">
+        <button class="btn" id="close" title="${t('close')}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
             <path d="M18 6 6 18M6 6l12 12"></path>
           </svg>

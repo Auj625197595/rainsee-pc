@@ -10,6 +10,8 @@ import {
   IBrowserExtensionImportSource,
 } from '~/interfaces';
 import { getCrxIdByKey } from '~/utils/crx';
+import { Application } from './application';
+import {getMainTranslator} from './i18n';
 
 const EXTENSION_ID_RE = /^[a-p]{32}$/i;
 const MAX_ICON_BYTES = 1024 * 1024;
@@ -66,6 +68,7 @@ const compareVersions = (a: string, b: string): number => {
 };
 
 const inferBrowser = (path: string): BrowserRoot => {
+  const t = getMainTranslator(Application.instance.settings?.object?.language);
   const normalized = path.toLowerCase();
   if (normalized.includes('edge') || normalized.includes('microsoft')) {
     return { browser: 'edge', browserName: 'Microsoft Edge', path };
@@ -73,7 +76,7 @@ const inferBrowser = (path: string): BrowserRoot => {
   if (normalized.includes('chrome') || normalized.includes('google')) {
     return { browser: 'chrome', browserName: 'Google Chrome', path };
   }
-  return { browser: 'browser', browserName: '本地浏览器', path };
+  return { browser: 'browser', browserName: t('bxmLocalBrowser'), path };
 };
 
 const getDefaultBrowserRoots = (): BrowserRoot[] => {
@@ -157,6 +160,7 @@ const readExcludedExtensionIds = async (profilePath: string) => {
 const findDefaultExtensionRoots = async (
   root: BrowserRoot,
 ): Promise<ExtensionRoot[]> => {
+  const t = getMainTranslator(Application.instance.settings?.object?.language);
   if (!(await isDirectory(root.path))) return [];
   const profileNames = await readProfileNames(root.path);
   let entries: any[] = [];
@@ -179,7 +183,7 @@ const findDefaultExtensionRoots = async (
       ...root,
       profileName:
         profileNames[profile.name] ||
-        (profile.name === 'Default' ? '默认配置' : profile.name),
+        (profile.name === 'Default' ? t('bxmDefaultProfile') : profile.name),
       profilePath,
       extensionsPath,
       excludedExtensionIds: await readExcludedExtensionIds(profilePath),
@@ -205,6 +209,7 @@ const looksLikeExtensionRoot = async (path: string): Promise<boolean> => {
 const findCustomExtensionRoots = async (
   selectedPath: string,
 ): Promise<ExtensionRoot[]> => {
+  const t = getMainTranslator(Application.instance.settings?.object?.language);
   const browser = inferBrowser(selectedPath);
   const queue = [{ path: resolve(selectedPath), depth: 0 }];
   const visited = new Set<string>();
@@ -224,7 +229,7 @@ const findCustomExtensionRoots = async (
         : current.path;
       found.push({
         ...browser,
-        profileName: basename(profilePath) || '所选配置',
+        profileName: basename(profilePath) || t('bxmSelectedProfile'),
         profilePath,
         extensionsPath: current.path,
         excludedExtensionIds: await readExcludedExtensionIds(profilePath),

@@ -156,6 +156,15 @@ export class Dropdown extends React.PureComponent<Props, State> {
     const { children, style } = this.props;
     const { expanded, label, value, menuPosition } = this.state;
 
+    // 触发按钮文案从当前选中项实时派生:子项文案被翻译(语言切换)时,收起态
+    // 的触发标签立即跟随,而不是停留在挂载时抓取的旧文案快照(state.label
+    // 仅在 defaultValue 变化时重同步)。仅作兜底保留。
+    const selected = React.Children.toArray(children).find(
+      (child) => React.isValidElement(child) && child.props.value === value,
+    ) as React.ReactElement<ItemProps> | undefined;
+    const displayLabel =
+      (React.isValidElement(selected) && selected.props.children) || label;
+
     const menu = (
       <DropdownMenu
         style={{
@@ -191,7 +200,7 @@ export class Dropdown extends React.PureComponent<Props, State> {
           this.root = root;
         }}
       >
-        <Label>{label}</Label>
+        <Label>{displayLabel}</Label>
         <DropIcon expanded={expanded} />
         {createPortal(menu, document.body)}
       </StyledDropdown>

@@ -9,6 +9,8 @@ import {
 } from '@phosphor-icons/react';
 
 import {ipcRenderer} from '~/common/renderer-ipc';
+import type {Translator} from '~/common/i18n';
+import {useI18n} from '~/renderer/components/I18n';
 import {
   IBrowserHistoryImportResult,
   IBrowserHistoryPreview,
@@ -52,34 +54,38 @@ const countBookmarks = (items: any[]) => {
   return {bookmarks, folders};
 };
 
-const bookmarkError = (value: string) => {
-  if (value?.startsWith('BROWSER_NOT_FOUND')) return '未找到该浏览器的数据目录。';
-  if (value?.startsWith('PROFILE_NOT_FOUND')) return '未找到可读取的浏览器用户资料。';
-  if (value?.startsWith('PARSE_FAILED')) return '书签文件无法读取或已损坏。';
-  return '读取书签失败，请关闭浏览器后重试。';
+const bookmarkError = (value: string, t: Translator) => {
+  if (value?.startsWith('BROWSER_NOT_FOUND')) return t('mdErrBrowserNotFound');
+  if (value?.startsWith('PROFILE_NOT_FOUND')) return t('mdErrProfileNotFound');
+  if (value?.startsWith('PARSE_FAILED')) return t('mdErrParseFailed');
+  return t('mdErrBookmarkGeneric');
 };
 
-const historyError = (value: string) => {
-  if (value?.startsWith('BROWSER_NOT_FOUND')) return '未找到该浏览器的历史数据库。';
-  if (value?.startsWith('PROFILE_NOT_FOUND')) return '未找到包含历史记录的用户资料。';
-  if (value?.startsWith('COPY_FAILED')) return '浏览器数据暂时无法复制，请稍后重试。';
-  if (value?.startsWith('PARSE_FAILED')) return '历史数据库无法读取或已损坏。';
-  return '读取历史记录失败，请稍后重试。';
+const historyError = (value: string, t: Translator) => {
+  if (value?.startsWith('BROWSER_NOT_FOUND')) return t('mdErrHistoryNotFound');
+  if (value?.startsWith('PROFILE_NOT_FOUND')) return t('mdErrHistoryProfileNotFound');
+  if (value?.startsWith('COPY_FAILED')) return t('mdErrCopyFailed');
+  if (value?.startsWith('PARSE_FAILED')) return t('mdErrHistoryParseFailed');
+  return t('mdErrHistoryGeneric');
 };
 
-const formatHistoryRange = (preview: IBrowserHistoryPreview) => {
+const formatHistoryRange = (preview: IBrowserHistoryPreview, t: Translator) => {
   if (preview.oldestDate == null || preview.newestDate == null) return '';
-  const format = (value: number) => new Intl.DateTimeFormat('zh-CN', {
+  const format = (value: number) => new Intl.DateTimeFormat(document.documentElement.lang, {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
   }).format(new Date(value));
   return preview.oldestDate === preview.newestDate
     ? format(preview.oldestDate)
-    : `${format(preview.oldestDate)} 至 ${format(preview.newestDate)}`;
+    : t('mdDateRange', {
+        from: format(preview.oldestDate),
+        to: format(preview.newestDate),
+      });
 };
 
 export const MigrationDialog = ({mode, onClose, onImported}: Props) => {
+  const t = useI18n();
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
   const [detected, setDetected] = React.useState<Record<BrowserId, boolean> | null>(null);
@@ -100,7 +106,7 @@ export const MigrationDialog = ({mode, onClose, onImported}: Props) => {
         selectDirectory,
       );
       if (result?.canceled) {
-        if (!extensionScan?.items.length) setError('未选择浏览器数据目录。');
+        if (!extensionScan?.items.length) setError(t('mdErrNoDir'));
         return;
       }
       if (!selectDirectory && result && !result.detected) {
@@ -113,12 +119,12 @@ export const MigrationDialog = ({mode, onClose, onImported}: Props) => {
       if (!result?.items?.length) {
         setError(
           result?.duplicateCount
-            ? '找到的扩展均已安装，无需重复导入。'
-            : '所选目录中没有找到可导入的扩展。',
+            ? t('mdErrAllInstalled')
+            : t('mdErrNoneFound'),
         );
       }
     } catch {
-      setError('读取浏览器扩展失败，请选择浏览器数据目录后重试。');
+      setError(t('mdErrReadFailed'));
     } finally {
       setBusy(false);
     }
@@ -134,7 +140,7 @@ export const MigrationDialog = ({mode, onClose, onImported}: Props) => {
       setBusy(true);
       ipcRenderer.invoke(mode === 'history' ? 'browser-history-detect' : 'browser-import-detect')
         .then((result) => setDetected(result))
-        .catch(() => setError('浏览器检测失败，请稍后重试。'))
+        .catch(() => setError(t('mdErrDetectFailed')))
         .finally(() => setBusy(false));
     } else {
       scanExtensions(false);
@@ -150,19 +156,19 @@ export const MigrationDialog = ({mode, onClose, onImported}: Props) => {
     try {
       const result = await ipcRenderer.invoke('browser-import-read', browser.id);
       if (result?.__error) {
-        setError(bookmarkError(result.__error));
+        setError(bookmarkError(result.__error, t));
         return;
       }
       const counts = countBookmarks(result);
       if (counts.bookmarks === 0 && counts.folders === 0) {
-        setError('该浏览器中没有可导入的书签。');
+        setError(t('mdErrNoBookmarks'));
         return;
       }
       setBookmarkData(result);
       setBookmarkSource(browser.name);
       setBookmarkCounts(counts);
     } catch {
-      setError('读取书签失败，请稍后重试。');
+      setError(t('mdErrBookmarkGeneric'));
     } finally {
       setBusy(false);
     }
@@ -174,9 +180,9 @@ export const MigrationDialog = ({mode, onClose, onImported}: Props) => {
     setError('');
     try {
       const result = await ipcRenderer.invoke('browser-import-commit', bookmarkData);
-      onImported('bookmarks', `已导入 ${result?.bookmarks || 0} 个书签`);
+      onImported('bookmarks', t('mdBookmarkImported', { count: result?.bookmarks || 0 }));
     } catch {
-      setError('导入书签失败，请稍后重试。');
+      setError(t('mdErrBookmarkImport'));
     } finally {
       setBusy(false);
     }
@@ -189,17 +195,17 @@ export const MigrationDialog = ({mode, onClose, onImported}: Props) => {
     try {
       const result = await ipcRenderer.invoke('browser-history-preview', browser.id);
       if (result?.__error) {
-        setError(historyError(result.__error));
+        setError(historyError(result.__error, t));
         return;
       }
       if (!result?.count) {
-        setError('该浏览器中没有可导入的历史记录。');
+        setError(t('mdErrNoHistory'));
         return;
       }
       setHistoryPreview(result);
       setHistorySource(browser.name);
     } catch {
-      setError('读取历史记录失败，请稍后重试。');
+      setError(t('mdErrHistoryGeneric'));
     } finally {
       setBusy(false);
     }
@@ -213,15 +219,15 @@ export const MigrationDialog = ({mode, onClose, onImported}: Props) => {
       const result: IBrowserHistoryImportResult & {__error?: string} =
         await ipcRenderer.invoke('browser-history-import', historyPreview.browserId);
       if (result?.__error) {
-        setError(historyError(result.__error));
+        setError(historyError(result.__error, t));
         return;
       }
       const message = result.imported > 0
-        ? `已导入 ${result.imported} 条历史记录`
-        : '历史记录已存在，无需重复导入';
+        ? t('mdHistoryImported', { count: result.imported })
+        : t('mdHistoryExists');
       onImported('history', message);
     } catch {
-      setError('导入历史记录失败，请稍后重试。');
+      setError(t('mdErrHistoryImport'));
     } finally {
       setBusy(false);
     }
@@ -243,15 +249,15 @@ export const MigrationDialog = ({mode, onClose, onImported}: Props) => {
           items: current.items.filter((item) => failed.has(item.key)),
         } : current);
         setSelectedKeys([...failed]);
-        setError(`已导入 ${result.imported.length} 个，${result.failed.length} 个导入失败。`);
+        setError(t('mdExtPartial', { imported: result.imported.length, failed: result.failed.length }));
         return;
       }
       const message = result?.imported?.length
-        ? `已导入 ${result.imported.length} 个扩展`
-        : '所选扩展已存在，已过滤重复项';
+        ? t('mdExtImported', { count: result.imported.length })
+        : t('mdExtDuplicates');
       onImported('extensions', message);
     } catch {
-      setError('导入失败，请确认浏览器扩展目录可读取。');
+      setError(t('mdErrExtImport'));
     } finally {
       setBusy(false);
     }
@@ -273,12 +279,12 @@ export const MigrationDialog = ({mode, onClose, onImported}: Props) => {
               <PuzzlePieceIcon size={22} />
             )}
             {mode === 'bookmarks'
-              ? '从其他浏览器导入书签'
+              ? t('mdImportBookmarksTitle')
               : mode === 'history'
-                ? '从其他浏览器导入历史'
-                : '从其他浏览器导入扩展'}
+                ? t('mdImportHistoryTitle')
+                : t('mdImportExtensionsTitle')}
           </S.ImportHeading>
-          <S.ImportIconButton type="button" title="关闭" disabled={busy} onClick={onClose}>
+          <S.ImportIconButton type="button" title={t('close')} disabled={busy} onClick={onClose}>
             <XIcon size={18} />
           </S.ImportIconButton>
         </S.ImportHeader>
@@ -290,12 +296,12 @@ export const MigrationDialog = ({mode, onClose, onImported}: Props) => {
                 <BrowsersIcon size={46} weight="duotone" />
                 <S.ImportConfirmTitle>{bookmarkSource}</S.ImportConfirmTitle>
                 <S.ImportConfirmText>
-                  找到 {bookmarkCounts.bookmarks} 个书签
-                  {bookmarkCounts.folders > 0 ? `，包含 ${bookmarkCounts.folders} 个文件夹` : ''}
+                  {t('mdFoundBookmarks', { count: bookmarkCounts.bookmarks })}
+                  {bookmarkCounts.folders > 0 ? t('mdWithFolders', { count: bookmarkCounts.folders }) : ''}
                 </S.ImportConfirmText>
               </S.ImportConfirm>
             ) : busy && !detected ? (
-              <S.ImportEmpty><S.ImportSpinner />正在检测浏览器…</S.ImportEmpty>
+              <S.ImportEmpty><S.ImportSpinner />{t('mdDetectingBrowsers')}</S.ImportEmpty>
             ) : (
               <S.BrowserList>
                 {BROWSERS.map((browser) => {
@@ -309,7 +315,7 @@ export const MigrationDialog = ({mode, onClose, onImported}: Props) => {
                     >
                       <S.BrowserDot $color={browser.color} />
                       <span>{browser.name}</span>
-                      <S.BrowserState>{available ? '选择' : '未检测到'}</S.BrowserState>
+                      <S.BrowserState>{available ? t('mdChoose') : t('mdNotDetected')}</S.BrowserState>
                     </S.BrowserOption>
                   );
                 })}
@@ -323,13 +329,13 @@ export const MigrationDialog = ({mode, onClose, onImported}: Props) => {
                 <ClockCounterClockwiseIcon size={46} weight="duotone" />
                 <S.ImportConfirmTitle>{historySource}</S.ImportConfirmTitle>
                 <S.ImportConfirmText>
-                  找到 {historyPreview.count} 条历史记录
+                  {t('mdFoundHistory', { count: historyPreview.count })}
                   {historyPreview.profileName ? ` · ${historyPreview.profileName}` : ''}
                 </S.ImportConfirmText>
-                <S.ImportConfirmText>{formatHistoryRange(historyPreview)}</S.ImportConfirmText>
+                <S.ImportConfirmText>{formatHistoryRange(historyPreview, t)}</S.ImportConfirmText>
               </S.ImportConfirm>
             ) : busy && !detected ? (
-              <S.ImportEmpty><S.ImportSpinner />正在检测浏览器…</S.ImportEmpty>
+              <S.ImportEmpty><S.ImportSpinner />{t('mdDetectingBrowsers')}</S.ImportEmpty>
             ) : (
               <S.BrowserList>
                 {BROWSERS.map((browser) => {
@@ -343,7 +349,7 @@ export const MigrationDialog = ({mode, onClose, onImported}: Props) => {
                     >
                       <S.BrowserDot $color={browser.color} />
                       <span>{browser.name}</span>
-                      <S.BrowserState>{available ? '选择' : '未检测到'}</S.BrowserState>
+                      <S.BrowserState>{available ? t('mdChoose') : t('mdNotDetected')}</S.BrowserState>
                     </S.BrowserOption>
                   );
                 })}
@@ -359,17 +365,17 @@ export const MigrationDialog = ({mode, onClose, onImported}: Props) => {
                 onClick={() => setSelectedKeys(allSelected ? [] : extensionItems.map((item) => item.key))}
               >
                 <S.ImportCheckbox $checked={allSelected}>{allSelected && <CheckIcon size={12} weight="bold" />}</S.ImportCheckbox>
-                全选
+                {t('extSelectAll')}
               </S.SelectAllButton>
               <S.SelectDirectoryButton type="button" disabled={busy} onClick={() => scanExtensions(true)}>
-                <FolderOpenIcon size={16} />选择其他目录
+                <FolderOpenIcon size={16} />{t('extChooseOtherDir')}
               </S.SelectDirectoryButton>
             </S.ImportToolbar>
             <S.ExtensionList>
               {busy && !extensionScan ? (
-                <S.ImportEmpty><S.ImportSpinner />正在读取浏览器扩展…</S.ImportEmpty>
+                <S.ImportEmpty><S.ImportSpinner />{t('mdReadingExtensions')}</S.ImportEmpty>
               ) : extensionItems.length === 0 ? (
-                <S.ImportEmpty><PuzzlePieceIcon size={40} weight="duotone" />{error || '没有可导入的扩展'}</S.ImportEmpty>
+                <S.ImportEmpty><PuzzlePieceIcon size={40} weight="duotone" />{error || t('mdNothingToImport')}</S.ImportEmpty>
               ) : extensionItems.map((item) => {
                 const checked = selectedKeys.includes(item.key);
                 return (
@@ -399,28 +405,28 @@ export const MigrationDialog = ({mode, onClose, onImported}: Props) => {
         <S.ImportFooter>
           <S.ImportStatus $error={!!error}>
             {error || (mode === 'extensions' && extensionScan?.duplicateCount
-              ? `已过滤 ${extensionScan.duplicateCount} 个重复扩展`
+              ? t('mdDuplicatesFiltered', { count: extensionScan.duplicateCount })
               : '')}
           </S.ImportStatus>
           <S.ImportActions>
             {mode === 'bookmarks' && bookmarkData && (
-              <S.ImportButton type="button" disabled={busy} onClick={() => setBookmarkData(null)}>返回</S.ImportButton>
+              <S.ImportButton type="button" disabled={busy} onClick={() => setBookmarkData(null)}>{t('mdBack')}</S.ImportButton>
             )}
             {mode === 'history' && historyPreview && (
-              <S.ImportButton type="button" disabled={busy} onClick={() => setHistoryPreview(null)}>返回</S.ImportButton>
+              <S.ImportButton type="button" disabled={busy} onClick={() => setHistoryPreview(null)}>{t('mdBack')}</S.ImportButton>
             )}
-            <S.ImportButton type="button" disabled={busy} onClick={onClose}>取消</S.ImportButton>
+            <S.ImportButton type="button" disabled={busy} onClick={onClose}>{t('cancel')}</S.ImportButton>
             {mode === 'bookmarks' ? (
               <S.ImportButton $primary type="button" disabled={!bookmarkData || busy} onClick={commitBookmarks}>
-                {busy && bookmarkData ? '正在导入…' : '确认导入'}
+                {busy && bookmarkData ? t('mdImporting') : t('mdConfirmImport')}
               </S.ImportButton>
             ) : mode === 'history' ? (
               <S.ImportButton $primary type="button" disabled={!historyPreview || busy} onClick={commitHistory}>
-                {busy && historyPreview ? '正在导入…' : '确认导入'}
+                {busy && historyPreview ? t('mdImporting') : t('mdConfirmImport')}
               </S.ImportButton>
             ) : (
               <S.ImportButton $primary type="button" disabled={!selectedKeys.length || busy} onClick={commitExtensions}>
-                {busy && extensionScan ? '正在处理…' : `导入 (${selectedKeys.length})`}
+                {busy && extensionScan ? t('mdProcessing') : t('mdImportN', { count: selectedKeys.length })}
               </S.ImportButton>
             )}
           </S.ImportActions>

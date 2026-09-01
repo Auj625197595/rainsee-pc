@@ -14,15 +14,18 @@ import {
 } from './style';
 import store from '../../store';
 import { UIStyle } from '~/renderer/mixins/default-styles';
+import { useI18n } from '~/renderer/components/I18n';
 
 const formatMemory = (bytes: number) => {
-  if (!bytes) return '读取中';
+  const t = useI18n();
+  if (!bytes) return t('pvvReading');
   const mb = bytes / 1024 / 1024;
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
   return `${mb.toFixed(mb >= 100 ? 0 : 1)} MB`;
 };
 
 export const App = observer(() => {
+  const t = useI18n();
   return (
     <ThemeProvider theme={{ ...store.theme }}>
       <UIStyle />
@@ -35,16 +38,16 @@ export const App = observer(() => {
       >
         <ImageWrap>
           {store.thumbnail ? (
-            <Thumbnail src={store.thumbnail} alt="标签页预览图" />
+            <Thumbnail src={store.thumbnail} alt={t('pvvThumbAlt')} />
           ) : (
             <Placeholder favicon={store.favicon} />
           )}
           <MemoryBadge
             onClick={() => store.openMemoryPanel()}
-            title="查看全部"
-            aria-label={`当前标签运行内存 ${formatMemory(
-              store.memory.memoryBytes,
-            )}，查看全部`}
+            title={t('pvvViewAll')}
+            aria-label={t('pvvMemoryAria', {
+              memory: formatMemory(store.memory.memoryBytes),
+            })}
           >
             <span>{formatMemory(store.memory.memoryBytes)}</span>
           </MemoryBadge>

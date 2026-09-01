@@ -7,6 +7,7 @@ import { Section, onMoreClick } from '../Section';
 import { More } from '../Passwords/styles';
 import { StyledItem } from './styles';
 import { ICON_LOCATION } from '~/renderer/constants';
+import { getSettingsTranslator } from '../../../utils';
 
 const Item = observer(({ data }: { data: IFormFillData }) => {
   return (
@@ -18,13 +19,14 @@ const Item = observer(({ data }: { data: IFormFillData }) => {
 });
 
 export const Addresses = observer(() => {
+  const t = getSettingsTranslator();
   const style = {
     flexDirection: 'column',
     padding: '0px 16px 8px 16px',
   };
 
   return (
-    <Section label="地址" icon={ICON_LOCATION} style={style}>
+    <Section label={t('afAddresses')} icon={ICON_LOCATION} style={style}>
       {store.autoFill.addresses.map((item) => (
         <Item key={item._id} data={item} />
       ))}

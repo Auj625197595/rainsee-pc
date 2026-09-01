@@ -20,8 +20,9 @@ import {
   Chevron,
 } from './style';
 import store from '../../store';
-import { onSwitchChange } from '../../utils';
+import { onSwitchChange, getSettingsTranslator } from '../../utils';
 import { observer } from 'mobx-react-lite';
+import type { MessageKey } from '~/common/i18n';
 import {
   EnginesTable,
   TableRow,
@@ -63,6 +64,7 @@ const ChevronIcon = () => (
 
 // 搜索引擎 AI 建议面板开关:高亮显示,突出这是个新能力。
 const SearchAnnotatorToggle = observer(() => {
+  const t = getSettingsTranslator();
   const value = (store.settings as any).searchAnnotator as boolean;
 
   return (
@@ -71,8 +73,8 @@ const SearchAnnotatorToggle = observer(() => {
         <Sparkle size={19} weight="fill" />
       </SettingIcon>
       <div>
-        <Title>搜索引擎 AI 建议面板</Title>
-        <SecondaryText>在搜索结果中提供相关性提示与答案建议。</SecondaryText>
+        <Title>{t('searchAiSuggestionsPanel')}</Title>
+        <SecondaryText>{t('abAiSuggestionsDesc')}</SecondaryText>
       </div>
       <Control>
         <Switch value={value} />
@@ -82,6 +84,7 @@ const SearchAnnotatorToggle = observer(() => {
 });
 
 const SuggestionsToggle = observer(() => {
+  const t = getSettingsTranslator();
   const { suggestions } = store.settings;
 
   return (
@@ -90,10 +93,8 @@ const SuggestionsToggle = observer(() => {
         <MagnifyingGlass size={19} weight="fill" />
       </SettingIcon>
       <div>
-        <Title>展示搜索和网站建议</Title>
-        <SecondaryText>
-          在地址栏输入时显示标签页、历史记录和书签等联想。
-        </SecondaryText>
+        <Title>{t('searchSuggestions')}</Title>
+        <SecondaryText>{t('abSuggestionsDesc')}</SecondaryText>
       </div>
       <Control>
         <Switch value={suggestions} />
@@ -104,7 +105,14 @@ const SuggestionsToggle = observer(() => {
 
 // 各联想来源开关(总开关关闭时禁用并置灰)。indent 体现其为总开关的下级项。
 const SuggestSourceRow = observer(
-  ({ settingKey, title }: { settingKey: string; title: string }) => {
+  ({
+    settingKey,
+    labelKey,
+  }: {
+    settingKey: string;
+    labelKey: MessageKey;
+  }) => {
+    const t = getSettingsTranslator();
     const { suggestions } = store.settings;
     const value = (store.settings as any)[settingKey] as boolean;
 
@@ -113,7 +121,7 @@ const SuggestSourceRow = observer(
         disabled={!suggestions}
         onClick={suggestions ? onSwitchChange(settingKey) : undefined}
       >
-        <Title>{title}</Title>
+        <Title>{t(labelKey)}</Title>
         <Control>
           <Switch value={value} />
         </Control>
@@ -139,11 +147,12 @@ const onSecondarySearchEngineChange = (value: string) => {
   store.save();
 };
 const SearchEngineRow = observer(() => {
+  const t = getSettingsTranslator();
   const se = store.searchEngine;
 
   return (
     <GroupRowStatic>
-      <Title>搜索引擎</Title>
+      <Title>{t('abSearchEngine')}</Title>
       <Control>
         <Dropdown defaultValue={se.name} onChange={onSearchEngineChange}>
           {Object.values(store.settings.searchEngines).map((item, key) => (
@@ -162,14 +171,15 @@ const SearchEngineRow = observer(() => {
 
 const EFFICIENCY_MODES: Array<{
   value: EfficiencySearchMode;
-  label: string;
+  labelKey: MessageKey;
 }> = [
-  { value: 'normal', label: '正常' },
-  { value: 'dual', label: '双列搜索' },
-  { value: 'multi-tab', label: '多开标签' },
+  { value: 'normal', labelKey: 'abEfficiencyNormal' },
+  { value: 'dual', labelKey: 'abEfficiencyDual' },
+  { value: 'multi-tab', labelKey: 'abEfficiencyMultiTab' },
 ];
 
 const EfficiencySearchSetting = observer(() => {
+  const t = getSettingsTranslator();
   const mode = store.settings.efficiencySearchMode;
   // 渲染期读取以订阅变化(effect 才能在 highlightedSetting 改变后重跑)。
   const highlight = store.highlightedSetting;
@@ -206,7 +216,7 @@ const EfficiencySearchSetting = observer(() => {
 
   return (
     <EfficiencySearchCard id="setting-efficiency-search" flashing={flashing}>
-      <ModeSelector role="radiogroup" aria-label="效率搜索模式">
+      <ModeSelector role="radiogroup" aria-label={t('abEfficiencyModeAria')}>
         {EFFICIENCY_MODES.map((item) => {
           return (
             <ModeButton
@@ -220,7 +230,7 @@ const EfficiencySearchSetting = observer(() => {
                 store.save();
               }}
             >
-              {item.label}
+              {t(item.labelKey)}
             </ModeButton>
           );
         })}
@@ -231,11 +241,12 @@ const EfficiencySearchSetting = observer(() => {
 
 // 副搜索引擎选择(双引擎关闭时禁用并置灰)。
 const SecondaryEngineRow = observer(() => {
+  const t = getSettingsTranslator();
   const se = store.secondarySearchEngine;
 
   return (
     <GroupRowStatic>
-      <Title>副搜索引擎</Title>
+      <Title>{t('searchSecondaryEngine')}</Title>
       <Control>
         <Dropdown
           defaultValue={se?.name}
@@ -256,6 +267,7 @@ const SecondaryEngineRow = observer(() => {
 });
 
 const MultiEngineRows = observer(() => {
+  const t = getSettingsTranslator();
   const selected = new Set(store.settings.efficiencySearchEngineKeywords || []);
 
   const toggle = (keyword: string) => {
@@ -273,9 +285,7 @@ const MultiEngineRows = observer(() => {
   return (
     <GroupRowStatic>
       <div style={{ width: '100%' }}>
-        <ChoiceHelp>
-          至少选择两个搜索引擎；此选择不受默认搜索引擎影响。
-        </ChoiceHelp>
+        <ChoiceHelp>{t('abMultiEngineHelp')}</ChoiceHelp>
         <EngineChoices>
           {store.settings.searchEngines.map((engine) => {
             const checked = selected.has(engine.keyword);
@@ -289,7 +299,7 @@ const MultiEngineRows = observer(() => {
                 selected={checked}
                 disabled={disabled}
                 onClick={() => toggle(engine.keyword)}
-                title={disabled ? '多开标签至少需要两个搜索引擎' : undefined}
+                title={disabled ? t('abMultiEngineMinTwo') : undefined}
               >
                 <ChoiceMark selected={checked}>
                   {checked && <Check size={12} weight="bold" />}
@@ -341,6 +351,7 @@ const reorderEngines = (fromKeyword: string, toKeyword: string) => {
 };
 
 export const SearchEngine = observer(({ data }: { data: ISearchEngine }) => {
+  const t = getSettingsTranslator();
   const isDefault = store.searchEngine.keyword === data.keyword;
   const dragging = store.draggedEngineKeyword === data.keyword;
 
@@ -386,9 +397,9 @@ export const SearchEngine = observer(({ data }: { data: ISearchEngine }) => {
         draggable
         onDragStart={onDragStart}
         onDragEnd={onDragEnd}
-        title="拖动排序"
+        title={t('dragToSort')}
       />
-      <EditButton onClick={onEditMenuClick(data)} title="编辑" />
+      <EditButton onClick={onEditMenuClick(data)} title={t('edit')} />
     </TableRow>
   );
 });
@@ -402,22 +413,24 @@ const onAddClick = () => {
 };
 
 export const ManageSearchEngines = observer(() => {
+  const t = getSettingsTranslator();
+
   return (
     <>
       <Header>
         <Back onClick={onBackClick} />
-        管理搜索引擎
+        {t('manageSearchEngines')}
       </Header>
       <Row>
-        <Title>搜索引擎</Title>
+        <Title>{t('abSearchEngine')}</Title>
         <Control>
-          <NormalButton onClick={onAddClick}>添加</NormalButton>
+          <NormalButton onClick={onAddClick}>{t('add')}</NormalButton>
         </Control>
       </Row>
       <EnginesTable>
         <TableRow>
-          <TableHeader>搜索引擎</TableHeader>
-          <TableHeader>关键词</TableHeader>
+          <TableHeader>{t('abSearchEngine')}</TableHeader>
+          <TableHeader>{t('sdlgKeyword')}</TableHeader>
           <TableHeader></TableHeader>
           <TableHeader></TableHeader>
         </TableRow>
@@ -434,41 +447,54 @@ const onManageSearchEngines = () => {
 };
 
 export const AddressBar = observer(() => {
+  const t = getSettingsTranslator();
   const efficiencyMode = store.settings.efficiencySearchMode;
 
   return (
     <>
-      <GroupTitle>搜索建议</GroupTitle>
+      <GroupTitle>{t('abSuggestionsSection')}</GroupTitle>
       <Group>
         <SuggestionsToggle />
       </Group>
 
-      <GroupTitle>建议来源</GroupTitle>
+      <GroupTitle>{t('abSuggestSourcesSection')}</GroupTitle>
       <SuggestionGrid>
-        <SuggestSourceRow settingKey="suggestTabs" title="打开的标签页" />
+        <SuggestSourceRow settingKey="suggestTabs" labelKey="abSuggestTabs" />
         <SuggestSourceRow
           settingKey="suggestSearchHistory"
-          title="历史搜索词"
+          labelKey="abSuggestSearchHistory"
         />
-        <SuggestSourceRow settingKey="suggestBookmarks" title="书签" />
-        <SuggestSourceRow settingKey="suggestHistory" title="历史记录" />
-        <SuggestSourceRow settingKey="suggestEngine" title="搜索引擎建议词" />
-        <SuggestSourceRow settingKey="suggestClipboard" title="剪贴板内容" />
+        <SuggestSourceRow
+          settingKey="suggestBookmarks"
+          labelKey="abSuggestBookmarks"
+        />
+        <SuggestSourceRow
+          settingKey="suggestHistory"
+          labelKey="abSuggestHistory"
+        />
+        <SuggestSourceRow
+          settingKey="suggestEngine"
+          labelKey="abSuggestEngine"
+        />
+        <SuggestSourceRow
+          settingKey="suggestClipboard"
+          labelKey="abSuggestClipboard"
+        />
       </SuggestionGrid>
 
       {/* 搜索引擎:默认引擎下拉 + 管理入口(箭头示意可跳转) */}
-      <GroupTitle>搜索引擎</GroupTitle>
+      <GroupTitle>{t('abSearchEngine')}</GroupTitle>
       <Group>
         <SearchEngineRow />
         <GroupRow onClick={onManageSearchEngines}>
-          <Title>管理搜索引擎</Title>
+          <Title>{t('manageSearchEngines')}</Title>
           <Chevron>
             <ChevronIcon />
           </Chevron>
         </GroupRow>
       </Group>
 
-      <GroupTitle>效率搜索</GroupTitle>
+      <GroupTitle>{t('abEfficiencySection')}</GroupTitle>
       <EfficiencySearchSetting />
       {efficiencyMode !== 'normal' && (
         <Group>
@@ -480,7 +506,7 @@ export const AddressBar = observer(() => {
         </Group>
       )}
 
-      <GroupTitle>智能</GroupTitle>
+      <GroupTitle>{t('abSmartSection')}</GroupTitle>
       <Group>
         <SearchAnnotatorToggle />
       </Group>

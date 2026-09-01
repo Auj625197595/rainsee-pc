@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { observer } from 'mobx-react-lite';
 
+import { useI18n } from '~/renderer/components/I18n';
 import { StyledSmallDialog, Label, ActionButton } from './style';
 
 type ClickEvent = (e: React.MouseEvent<HTMLDivElement>) => void;
@@ -14,7 +15,7 @@ export const SelectionDialog = observer(
     onSelectAllClick,
     onMoveClick,
     onPinClick,
-    selectAllLabel = '全选',
+    selectAllLabel,
   }: {
     amount: number;
     visible: boolean;
@@ -26,31 +27,32 @@ export const SelectionDialog = observer(
     selectAllLabel?: string;
     theme?: any;
   }) => {
+    const t = useI18n();
     return (
       <StyledSmallDialog visible={visible}>
         <Label>
-          已选中 <b>{amount}</b> 项
+          {t('sdSelectedN', {count: amount})}
         </Label>
         {onSelectAllClick && (
           <ActionButton variant="ghost" onClick={onSelectAllClick}>
-            {selectAllLabel}
+            {selectAllLabel ?? t('selectAll')}
           </ActionButton>
         )}
         {onMoveClick && (
           <ActionButton variant="primary" onClick={onMoveClick}>
-            移动
+            {t('moveAction')}
           </ActionButton>
         )}
         {onPinClick && (
           <ActionButton variant="ghost" onClick={onPinClick}>
-            置顶
+            {t('sdPinToTop')}
           </ActionButton>
         )}
         <ActionButton variant="danger" onClick={onDeleteClick}>
-          删除
+          {t('delete')}
         </ActionButton>
         <ActionButton variant="ghost" onClick={onCancelClick}>
-          取消
+          {t('cancel')}
         </ActionButton>
       </StyledSmallDialog>
     );

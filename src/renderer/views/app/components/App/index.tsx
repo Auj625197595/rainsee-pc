@@ -22,6 +22,7 @@ import { Toolbar } from '../Toolbar';
 import { Sidebar } from '../Sidebar';
 import ClearExitOverlay from '../ClearExitOverlay';
 import store from '../../store';
+import { getShellTranslator } from '../../utils/i18n';
 import { UIStyle } from '~/renderer/mixins/default-styles';
 import { BookmarkBar } from '../BookmarkBar';
 import { HeaderFileDropPanel } from '../HeaderFileDropPanel';
@@ -345,6 +346,7 @@ const SidebarLayout = observer(() => {
 });
 
 const App = observer(() => {
+  const t = getShellTranslator();
   const [showProfileOnboardingNotice, setShowProfileOnboardingNotice] =
     React.useState(false);
 
@@ -434,9 +436,9 @@ const App = observer(() => {
       {showProfileOnboardingNotice && (
         <AppToastStack aria-live="polite">
           <ProfileOnboardingToast role="status">
-            <span>已跳过首次使用引导</span>
+            <span>{t('shellOnboardingSkipped')}</span>
             <ProfileOnboardingAction type="button" onClick={restoreOnboarding}>
-              恢复引导
+              {t('shellRestoreOnboarding')}
             </ProfileOnboardingAction>
           </ProfileOnboardingToast>
         </AppToastStack>

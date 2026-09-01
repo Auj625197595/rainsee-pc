@@ -20,6 +20,7 @@ import {
 import store from '../../store';
 import { UIStyle } from '~/renderer/mixins/default-styles';
 import { IExtItem } from '~/interfaces';
+import { useI18n } from '~/renderer/components/I18n';
 
 const onPinClick = (ext: IExtItem) => (e: React.MouseEvent) => {
   e.stopPropagation();
@@ -42,6 +43,7 @@ const onManageClick = () => {
 };
 
 export const App = observer(() => {
+  const t = useI18n();
   const { extensions } = store;
   const rootRef = React.useRef<HTMLDivElement>(null);
 
@@ -65,9 +67,9 @@ export const App = observer(() => {
     >
       <StyledApp ref={rootRef}>
         <UIStyle />
-        <Header>扩展</Header>
+        <Header>{t('exlTitle')}</Header>
         <List>
-          {extensions.length === 0 && <Empty>暂无已启用的扩展</Empty>}
+          {extensions.length === 0 && <Empty>{t('exlEmpty')}</Empty>}
           {extensions.map((ext) => {
             const pinned = store.isPinned(ext.id);
             return (
@@ -79,7 +81,7 @@ export const App = observer(() => {
                 {ext.optionsUrl && (
                   <OptionsButton
                     onClick={onOptionsClick(ext)}
-                    title="扩展选项"
+                    title={t('exlOptions')}
                   >
                     <GearSix size={16} />
                   </OptionsButton>
@@ -87,7 +89,7 @@ export const App = observer(() => {
                 <PinButton
                   pinned={pinned}
                   onClick={onPinClick(ext)}
-                  title={pinned ? '取消固定' : '固定到地址栏'}
+                  title={pinned ? t('exlUnpin') : t('exlPin')}
                 >
                   {pinned ? (
                     <PushPin size={16} weight="fill" />
@@ -103,7 +105,7 @@ export const App = observer(() => {
         <Footer>
           <FooterItem onClick={onManageClick}>
             <SlidersHorizontal size={18} />
-            管理拓展
+            {t('exlManage')}
           </FooterItem>
         </Footer>
       </StyledApp>

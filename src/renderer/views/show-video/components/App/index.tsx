@@ -6,6 +6,7 @@ import store from '../../store';
 import { Button } from '~/renderer/components/Button';
 import { ipcRenderer } from 'electron';
 import { UIStyle } from '~/renderer/mixins/default-styles';
+import { useI18n } from '~/renderer/components/I18n';
 
 
 const onClick = (type: string) => () => {
@@ -13,6 +14,7 @@ const onClick = (type: string) => () => {
   store.hide();
 };
 const onCopyClick = () => {
+  const t = useI18n();
   const s = (store.videoUrls || []).join("\n");
   const textarea = document.createElement('textarea');
   textarea.value = s;
@@ -20,26 +22,27 @@ const onCopyClick = () => {
   textarea.select();
   navigator.clipboard.writeText(textarea.value)
     .then(() => {
-      alert("以下链接已复制到剪贴板：\n" + s);
+      alert(t('svvCopiedAlert', { links: s }));
     })
     .catch((error) => {
-      alert("复制文本失败：\n" + error);
+      alert(t('svvCopyFailedAlert', { error }));
     });
   document.body.removeChild(textarea);
   store.hide();
 };
 
 export const App = observer(() => {
+  const t = useI18n();
   const videoUrls = store.videoUrls || [];
   return (
     <ThemeProvider theme={{ ...store.theme }}>
       <StyledApp visible={store.visible}>
         <UIStyle />
         <Buttons>
-          <Button onClick={onClick("full")}>全屏播放</Button>
-          <Button onClick={onClick("float")}>悬浮播放</Button>
-          <Button onClick={onClick("other")}>外部播放</Button>
-          <Button onClick={onCopyClick}>复制地址</Button>
+          <Button onClick={onClick("full")}>{t('svvFullscreen')}</Button>
+          <Button onClick={onClick("float")}>{t('svvFloat')}</Button>
+          <Button onClick={onClick("other")}>{t('svvExternal')}</Button>
+          <Button onClick={onCopyClick}>{t('svvCopyUrl')}</Button>
         </Buttons>
       </StyledApp>
     </ThemeProvider>

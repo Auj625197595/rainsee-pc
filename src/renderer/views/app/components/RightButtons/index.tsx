@@ -11,6 +11,7 @@ import {
   Separator,
 } from './style';
 import store from '../../store';
+import { getShellTranslator } from '../../utils/i18n';
 import {SiteButtons} from '../SiteButtons';
 import {
   renderClusterButton,
@@ -134,6 +135,7 @@ const useVisibleExtensionCount = (total: number) => {
 export const RightButtons = observer(() => {
   // 地址栏右侧的可定制集群按钮(默认顺序 扩展→下载→订阅→雨见AI),按用户排序、
   // 跳过隐藏项渲染。菜单(3-dot)固定在最末,不在可定制列表内。
+  const t = getShellTranslator();
   const layout = store.settings.toolbarLayout;
   const rightVisible = layout.right.filter((id) =>
     id === 'downloads'
@@ -180,7 +182,7 @@ export const RightButtons = observer(() => {
           </React.Fragment>
         ))}
         {store.isIncognito && (
-          <span title="无痕模式">
+          <span title={t('shellIncognito')}>
             <ToolbarButton
               rainseeAction="incognito"
               icon={ICON_INCOGNITO}

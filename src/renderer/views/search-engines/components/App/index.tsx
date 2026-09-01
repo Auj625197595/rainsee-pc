@@ -16,8 +16,10 @@ import {
   ItemLabel,
   Check,
 } from './style';
+import { useI18n } from '~/renderer/components/I18n';
 
 export const App = observer(() => {
+  const t = useI18n();
   const engines = store.settings.searchEngines || [];
   const selected = store.settings.searchEngine;
 
@@ -26,9 +28,9 @@ export const App = observer(() => {
       <StyledApp visible={store.visible}>
         <UIStyle />
         <Header>
-          <HeaderTitle>选择搜索引擎</HeaderTitle>
+          <HeaderTitle>{t('svChooseEngineTitle')}</HeaderTitle>
           <SettingsButton
-            title="搜索引擎设置"
+            title={t('sevEngineSettings')}
             style={{ backgroundImage: `url(${ICON_SETTINGS})` }}
             onClick={() => store.openSettings()}
           />

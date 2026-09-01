@@ -1,5 +1,6 @@
 import { clipboard, ipcRenderer, shell } from 'electron';
 import * as remote from '@electron/remote';
+import { createLocaleTranslator } from '~/common/i18n';
 import { IDownloadItem } from '~/interfaces';
 
 // 下载项操作:供「⋯」下拉菜单(DownloadItemMenu)与右键原生菜单共用,
@@ -45,12 +46,12 @@ export const trashDownload = (item: IDownloadItem) => {
     })
     .catch(() => {
       // 文件可能正被占用或无删除权限,提示用户而不是静默失败。
+      const t = createLocaleTranslator(undefined);
       remote.dialog.showMessageBox(remote.getCurrentWindow(), {
-        title: '无法删除文件',
-        buttons: ['关闭'],
+        title: t('dldDeleteFailedTitle'),
+        buttons: [t('dldDeleteFailedClose')],
         type: 'warning',
-        message:
-          '无法执行操作，可能文件已打开，或您没有删除权限。\n\n请关闭文件后重试。',
+        message: t('dldDeleteFailedMsg'),
       });
     });
 };
@@ -59,15 +60,16 @@ export const trashDownload = (item: IDownloadItem) => {
 export const getDownloadMenuTemplate = (
   item: IDownloadItem,
 ): Electron.MenuItemConstructorOptions[] => {
+  const t = createLocaleTranslator(undefined);
   const template: Electron.MenuItemConstructorOptions[] = [];
 
   if (!item.canceled) {
     if (item.completed) {
-      template.push({ label: '打开文件', click: () => openItem(item) });
+      template.push({ label: t('dldOpenFile'), click: () => openItem(item) });
     } else {
       template.push({
         type: 'checkbox',
-        label: '完成时打开',
+        label: t('dldOpenWhenDone'),
         checked: !!item.openWhenDone,
         click: () => toggleOpenWhenDone(item),
       });
@@ -78,32 +80,32 @@ export const getDownloadMenuTemplate = (
   if (!item.completed && !item.canceled) {
     template.push(
       item.paused && !item.retrying
-        ? { label: '恢复下载', click: () => resumeDownload(item) }
-        : { label: '暂停下载', click: () => pauseDownload(item) },
+        ? { label: t('dldResume'), click: () => resumeDownload(item) }
+        : { label: t('dldPause'), click: () => pauseDownload(item) },
     );
   }
 
   if (!item.canceled) {
     template.push({
-      label: '在文件夹中显示',
+      label: t('dldShowInFolder'),
       click: () => showInFolder(item),
     });
   }
 
-  template.push({ label: '复制下载链接', click: () => copyLink(item) });
+  template.push({ label: t('dldCopyLink'), click: () => copyLink(item) });
   template.push({ type: 'separator' });
 
   if (item.completed) {
-    template.push({ label: '删除文件', click: () => trashDownload(item) });
+    template.push({ label: t('dldDeleteFile'), click: () => trashDownload(item) });
   }
 
   if (item.completed || item.canceled) {
     template.push({
-      label: '从列表中移除',
+      label: t('dldRemoveFromList'),
       click: () => removeDownload(item),
     });
   } else {
-    template.push({ label: '取消下载', click: () => cancelDownload(item) });
+    template.push({ label: t('dldCancelDownload'), click: () => cancelDownload(item) });
   }
 
   return template;

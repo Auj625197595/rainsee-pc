@@ -22,6 +22,7 @@ import {
 import store, { IPreviewTab } from '../../store';
 import { UIStyle } from '~/renderer/mixins/default-styles';
 import { useTabHoverActivation } from '~/renderer/utils/tab-hover-activation';
+import { useI18n } from '~/renderer/components/I18n';
 
 const CloseIcon = () => (
   <svg
@@ -67,6 +68,7 @@ const GlobeIcon = () => (
 );
 
 const PreviewTabRow = observer(({ tab }: { tab: IPreviewTab }) => {
+  const t = useI18n();
   const hoverActivation = useTabHoverActivation({
     enabled:
       store.tabHoverActivationBehavior !== 'off' &&
@@ -115,7 +117,7 @@ const PreviewTabRow = observer(({ tab }: { tab: IPreviewTab }) => {
       </RowFav>
       <RowTitle>{tab.title}</RowTitle>
       <RowClose
-        title="从分组移出"
+        title={t('tgpRemoveFromGroup')}
         onMouseEnter={hoverActivation.cancel}
         onMouseDown={hoverActivation.cancel}
         onClick={(e: React.MouseEvent) => {
@@ -140,6 +142,7 @@ const PreviewTabRow = observer(({ tab }: { tab: IPreviewTab }) => {
 });
 
 export const App = observer(() => {
+  const t = useI18n();
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   // 改名输入框:本地 state 为输入源(避免每次 IPC 刷新回写打断输入),
   // 仅在切换分组(store.groupId 变化)时用 store.groupName 重新初始化。
@@ -158,7 +161,7 @@ export const App = observer(() => {
           <UIStyle />
           <Header>
             <ColorButton
-              title="点击选择组色"
+              title={t('shellPickGroupColor')}
               onClick={() => setPaletteOpen((v) => !v)}
             >
               <ColorDot style={{ backgroundColor: store.groupColor }} />
@@ -181,7 +184,7 @@ export const App = observer(() => {
             </ColorButton>
             <NameInput
               value={name}
-              placeholder={`${store.tabs.length} 个标签页`}
+              placeholder={t('sghTabCount', { count: store.tabs.length })}
               onFocus={() => {
                 store.editingName = true;
               }}
@@ -196,8 +199,8 @@ export const App = observer(() => {
             />
             <HeaderAddButton
               type="button"
-              title="在分组中新建标签页"
-              aria-label="在分组中新建标签页"
+              title={t('shellNewTabInGroup')}
+              aria-label={t('shellNewTabInGroup')}
               onClick={() => store.action({ type: 'new' })}
             >
               <Plus size={16} weight="bold" />

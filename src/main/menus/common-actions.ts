@@ -1,6 +1,7 @@
 import { extname } from 'path';
 import { dialog, clipboard } from 'electron';
 import { Application } from '../application';
+import { getMainTranslator } from '../i18n';
 import { showPrintPreview } from '../print-preview';
 
 export const saveAs = async () => {
@@ -32,6 +33,9 @@ export const copyPageAsMarkdown = async () => {
   const view = viewManager.selected;
   if (!view) return;
   const { webContents } = view;
+  const t = getMainTranslator(
+    Application.instance.settings?.object?.language,
+  );
 
   // 该函数被序列化后注入页面执行,内部不能引用外部作用域变量。
   const converter = function () {
@@ -579,13 +583,13 @@ export const copyPageAsMarkdown = async () => {
     );
     if (markdown && markdown.trim()) {
       clipboard.writeText(markdown);
-      showPageToast(webContents, '已复制为 Markdown');
+      showPageToast(webContents, t('ctxCopiedAsMarkdown'));
     } else {
-      showPageToast(webContents, '未获取到可复制内容');
+      showPageToast(webContents, t('ctxNothingToCopy'));
     }
   } catch (e) {
     console.error('[copyPageAsMarkdown] failed:', e);
-    showPageToast(webContents, '复制失败');
+    showPageToast(webContents, t('stCopyFailed'));
   }
 };
 

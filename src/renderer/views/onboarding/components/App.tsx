@@ -5,6 +5,7 @@ import { ipcRenderer } from '~/common/renderer-ipc';
 import * as S from './styles';
 import { C } from './styles';
 import {MigrationDialog, MigrationMode} from './MigrationDialog';
+import type { MessageKey } from '~/common/i18n';
 
 // 应用图标：内联 file-loader 加载（与 Titlebar/About 一致，!! 前缀绕过 webpack5 asset module）
 const APP_ICON = require('!!file-loader?esModule=false&outputPath=res!../../../../../static/icons/icon.png');
@@ -32,6 +33,7 @@ import {
   PuzzlePiece,
   Browsers,
 } from '@phosphor-icons/react';
+import { useI18n } from '~/renderer/components/I18n';
 
 type ThemeChoice = 'system' | 'light' | 'dark';
 type TabChoice = 'left' | 'top';
@@ -53,8 +55,8 @@ const FEATURES = [
   },
   {
     Icon: PlayCircle, bg: '#F3E8FF', fg: '#9333EA',
-    title: '智能播放器', tag: '支持 m3u8 下载',
-    tagColor: '#9333EA', desc: '视频弹出独立播放器，一键下载。',
+    title: 'onbFeatPlayerTitle' as MessageKey, tag: 'onbFeatPlayerTag' as MessageKey,
+    tagColor: '#9333EA', desc: 'onbFeatPlayerDesc' as MessageKey,
   },
   {
     Icon: BookmarksSimple, bg: '#FFEDD5', fg: '#EA580C',
@@ -70,6 +72,7 @@ const FEATURES = [
 
 export default function App() {
   const manual = new URLSearchParams(window.location.search).get('manual') === '1';
+  const t = useI18n();
   const currentSettings = React.useMemo(() => {
     try {
       return ipcRenderer.sendSync('get-settings-sync') || {};
@@ -153,10 +156,10 @@ export default function App() {
       {/* 顶栏 */}
       <S.Header>
         <S.LogoBox>
-          <S.LogoMark src={APP_ICON} alt="雨见浏览器" />
-          <S.BrandText>雨见浏览器</S.BrandText>
+          <S.LogoMark src={APP_ICON} alt={t('aboutTitle')} />
+          <S.BrandText>{t('aboutTitle')}</S.BrandText>
         </S.LogoBox>
-        <S.SkipButton onClick={closeOrFinish}>{manual ? '关闭引导' : '跳过引导'}</S.SkipButton>
+        <S.SkipButton onClick={closeOrFinish}>{manual ? t('onbCloseGuide') : t('onbSkipGuide')}</S.SkipButton>
       </S.Header>
 
       {/* 滑动主体 */}
@@ -166,16 +169,16 @@ export default function App() {
           <S.Slide>
             <S.Page1Wrap>
               <S.Page1Content>
-                <S.HeroTitle style={anim(0.12)}>全新探索体验</S.HeroTitle>
+                <S.HeroTitle style={anim(0.12)}>{t('onbHeroTitle')}</S.HeroTitle>
                 <S.HeroSubtitle style={anim(0.18)}>
-                  快、纯粹、智能。
+                  {t('onbHeroText1')}
                   <br />
-                  为你重新定义桌面浏览。
+                  {t('onbHeroText2')}
                 </S.HeroSubtitle>
                 <S.PrivacyCard style={anim(0.24)}>
                   <S.PrivacyTitle>
                     <ShieldCheck size={18} weight="fill" color={C.primary} />
-                    隐私与安全
+                    {t('onbPrivacyTitle')}
                   </S.PrivacyTitle>
                   <S.PrivacyText>
                     纯本地浏览器：不收集、不上传您的任何浏览数据。
@@ -190,9 +193,9 @@ export default function App() {
           <S.Slide>
             <S.Page2Wrap>
               <S.PageHead>
-                <S.PageTitle style={anim(0.05)}>为您量身打造</S.PageTitle>
+                <S.PageTitle style={anim(0.05)}>{t('onbPage2Title')}</S.PageTitle>
                 <S.PageSubtitle style={anim(0.1)}>
-                  每一个能力，都为更高效的桌面浏览而生
+                  {t('onbPage2Text')}
                 </S.PageSubtitle>
               </S.PageHead>
               <S.FeaturesGrid>
@@ -201,9 +204,9 @@ export default function App() {
                     <S.FeatureIconWrap $bg={f.bg} $fg={f.fg}>
                       <f.Icon size={24} weight="fill" />
                     </S.FeatureIconWrap>
-                    <S.FeatureTitle>{f.title}</S.FeatureTitle>
-                    <S.FeatureTag $color={f.tagColor}>{f.tag}</S.FeatureTag>
-                    <S.FeatureDesc>{f.desc}</S.FeatureDesc>
+                    <S.FeatureTitle>{t(f.title)}</S.FeatureTitle>
+                    <S.FeatureTag $color={f.tagColor}>{t(f.tag)}</S.FeatureTag>
+                    <S.FeatureDesc>{t(f.desc)}</S.FeatureDesc>
                   </S.FeatureCard>
                 ))}
               </S.FeaturesGrid>
@@ -214,9 +217,9 @@ export default function App() {
           <S.Slide>
             <S.MigrationPageWrap>
               <S.PageHead>
-                <S.PageTitle style={anim(0.05)}>带上常用数据</S.PageTitle>
+                <S.PageTitle style={anim(0.05)}>{t('onbPage3Title')}</S.PageTitle>
                 <S.PageSubtitle style={anim(0.1)}>
-                  从本机其他浏览器迁移书签、历史与扩展
+                  {t('onbPage3Text')}
                 </S.PageSubtitle>
               </S.PageHead>
               <S.MigrationCards>
@@ -225,14 +228,14 @@ export default function App() {
                     <BookmarksSimple size={30} weight="duotone" />
                   </S.MigrationCardIcon>
                   <S.MigrationCardBody>
-                    <S.MigrationCardTitle>导入书签</S.MigrationCardTitle>
-                    <S.MigrationCardText>支持 Chrome、Edge 与 Firefox</S.MigrationCardText>
+                    <S.MigrationCardTitle>{t('onbImportBookmarks')}</S.MigrationCardTitle>
+                    <S.MigrationCardText>{t('onbImportBookmarksDesc')}</S.MigrationCardText>
                     <S.MigrationBrowserTags>
                       <span>Chrome</span><span>Edge</span><span>Firefox</span>
                     </S.MigrationBrowserTags>
                   </S.MigrationCardBody>
                   <S.MigrationAction type="button" onClick={() => setMigrationMode('bookmarks')}>
-                    <Browsers size={17} />{migrationStatus.bookmarks || '选择浏览器'}
+                    <Browsers size={17} />{migrationStatus.bookmarks || t('onbChooseBrowser')}
                   </S.MigrationAction>
                 </S.MigrationCard>
 
@@ -241,14 +244,14 @@ export default function App() {
                     <ClockCounterClockwise size={30} weight="duotone" />
                   </S.MigrationCardIcon>
                   <S.MigrationCardBody>
-                    <S.MigrationCardTitle>导入历史</S.MigrationCardTitle>
-                    <S.MigrationCardText>迁移本机浏览器中的访问记录</S.MigrationCardText>
+                    <S.MigrationCardTitle>{t('onbImportHistory')}</S.MigrationCardTitle>
+                    <S.MigrationCardText>{t('onbImportHistoryDesc')}</S.MigrationCardText>
                     <S.MigrationBrowserTags>
                       <span>Chrome</span><span>Edge</span><span>Firefox</span>
                     </S.MigrationBrowserTags>
                   </S.MigrationCardBody>
                   <S.MigrationAction type="button" onClick={() => setMigrationMode('history')}>
-                    <ClockCounterClockwise size={17} />{migrationStatus.history || '选择浏览器'}
+                    <ClockCounterClockwise size={17} />{migrationStatus.history || t('onbChooseBrowser')}
                   </S.MigrationAction>
                 </S.MigrationCard>
 
@@ -257,14 +260,14 @@ export default function App() {
                     <PuzzlePiece size={30} weight="duotone" />
                   </S.MigrationCardIcon>
                   <S.MigrationCardBody>
-                    <S.MigrationCardTitle>导入扩展</S.MigrationCardTitle>
-                    <S.MigrationCardText>读取 Chrome、Edge 中已安装的扩展</S.MigrationCardText>
+                    <S.MigrationCardTitle>{t('onbImportExtensions')}</S.MigrationCardTitle>
+                    <S.MigrationCardText>{t('onbImportExtensionsDesc')}</S.MigrationCardText>
                     <S.MigrationBrowserTags>
-                      <span>Chrome</span><span>Edge</span><span>自动去重</span>
+                      <span>Chrome</span><span>Edge</span><span>{t('onbAutoDedup')}</span>
                     </S.MigrationBrowserTags>
                   </S.MigrationCardBody>
                   <S.MigrationAction type="button" onClick={() => setMigrationMode('extensions')}>
-                    <PuzzlePiece size={17} />{migrationStatus.extensions || '扫描扩展'}
+                    <PuzzlePiece size={17} />{migrationStatus.extensions || t('onbScanExtensions')}
                   </S.MigrationAction>
                 </S.MigrationCard>
               </S.MigrationCards>
@@ -275,9 +278,9 @@ export default function App() {
           <S.Slide>
             <S.Page3Wrap>
               <S.PageHead>
-                <S.PageTitle style={{ ...anim(0.05), fontSize: '34px' }}>最后一步</S.PageTitle>
+                <S.PageTitle style={{ ...anim(0.05), fontSize: '34px' }}>{t('onbPage4Title')}</S.PageTitle>
                 <S.PageSubtitle style={anim(0.1)}>
-                  根据您的喜好快速配置，随时可在设置中修改
+                  {t('onbPage4Text')}
                 </S.PageSubtitle>
               </S.PageHead>
 
@@ -285,14 +288,14 @@ export default function App() {
                 {/* 外观主题 */}
                 <div style={anim(0.15)}>
                   <S.SectionHead>
-                    <S.SectionLabel>外观主题</S.SectionLabel>
-                    <S.SectionHint>跟随系统的明暗切换，护眼又省心</S.SectionHint>
+                    <S.SectionLabel>{t('onbThemeSection')}</S.SectionLabel>
+                    <S.SectionHint>{t('onbThemeHint')}</S.SectionHint>
                   </S.SectionHead>
                   <S.PickGrid $cols={3}>
                     {([
-                      { key: 'light' as ThemeChoice, label: '浅色', Icon: Sun, variant: 'light' },
-                      { key: 'dark' as ThemeChoice, label: '深色', Icon: Moon, variant: 'dark' },
-                      { key: 'system' as ThemeChoice, label: '跟随系统', Icon: Monitor, variant: 'half' },
+                      { key: 'light' as ThemeChoice, label: 'onbThemeLight', Icon: Sun, variant: 'light' },
+                      { key: 'dark' as ThemeChoice, label: 'onbThemeDark', Icon: Moon, variant: 'dark' },
+                      { key: 'system' as ThemeChoice, label: 'onbThemeSystem', Icon: Monitor, variant: 'half' },
                     ]).map((o) => (
                       <S.PickCard key={o.key} $active={theme === o.key} onClick={() => setTheme(o.key)}>
                         <S.CheckBadge $active={theme === o.key}>
@@ -324,7 +327,7 @@ export default function App() {
                         </S.PickPreview>
                         <S.PickLabel $active={theme === o.key} $mt>
                           <o.Icon size={15} weight="fill" />
-                          {o.label}
+                          {t(o.label)}
                         </S.PickLabel>
                       </S.PickCard>
                     ))}
@@ -334,13 +337,13 @@ export default function App() {
                 {/* 标签栏位置 */}
                 <div style={anim(0.2)}>
                   <S.SectionHead>
-                    <S.SectionLabel>标签栏位置</S.SectionLabel>
-                    <S.SectionHint>本浏览器主打垂直标签，默认推荐左侧</S.SectionHint>
+                    <S.SectionLabel>{t('onbTabsSection')}</S.SectionLabel>
+                    <S.SectionHint>{t('onbTabsHint')}</S.SectionHint>
                   </S.SectionHead>
                   <S.PickGrid $cols={2}>
                     {([
-                      { key: 'top' as TabChoice, label: '顶部', Icon: Rectangle, layout: 'top' as const },
-                      { key: 'left' as TabChoice, label: '左侧（垂直）', Icon: SidebarSimple, layout: 'left' as const },
+                      { key: 'top' as TabChoice, label: 'onbTabsTop', Icon: Rectangle, layout: 'top' as const },
+                      { key: 'left' as TabChoice, label: 'onbTabsLeft', Icon: SidebarSimple, layout: 'left' as const },
                     ]).map((o) => (
                       <S.PickCard key={o.key} $active={tabbar === o.key} $row onClick={() => setTabbar(o.key)}>
                         <S.CheckBadge $active={tabbar === o.key}>
@@ -349,7 +352,7 @@ export default function App() {
                         <TabPreview layout={o.layout} />
                         <S.PickLabel $active={tabbar === o.key}>
                           <o.Icon size={16} weight="fill" />
-                          {o.label}
+                          {t(o.label)}
                         </S.PickLabel>
                       </S.PickCard>
                     ))}
@@ -363,8 +366,8 @@ export default function App() {
                       <RocketLaunch size={18} weight="fill" />
                     </S.PanelIconBox>
                     <div>
-                      <S.PanelTitle>启动行为</S.PanelTitle>
-                      <S.PanelSub>决定每次打开浏览器最先看到什么</S.PanelSub>
+                      <S.PanelTitle>{t('onbStartupTitle')}</S.PanelTitle>
+                      <S.PanelSub>{t('onbStartupSub')}</S.PanelSub>
                     </div>
                   </S.PanelLeft>
                   <S.SelectWrap>
@@ -372,8 +375,8 @@ export default function App() {
                       value={startup}
                       onChange={(e) => setStartup(e.target.value as StartupChoice)}
                     >
-                      <option value="continue">恢复上次标签</option>
-                      <option value="empty">新标签页</option>
+                      <option value="continue">{t('onbStartupContinue')}</option>
+                      <option value="empty">{t('onbStartupEmpty')}</option>
                     </S.StartupSelect>
                     <S.SelectCaret>
                       <CaretDown size={14} weight="bold" />
@@ -388,8 +391,8 @@ export default function App() {
                       <ShieldCheck size={18} weight="fill" />
                     </S.PanelIconBox>
                     <div>
-                      <S.PanelTitle>广告拦截</S.PanelTitle>
-                      <S.PanelSub>清爽的网页浏览 隐私保护</S.PanelSub>
+                      <S.PanelTitle>{t('onbAdblockTitle')}</S.PanelTitle>
+                      <S.PanelSub>{t('onbAdblockSub')}</S.PanelSub>
                     </div>
                   </S.PanelLeft>
                   <S.Toggle $active={adblock} onClick={() => setAdblock(!adblock)} />
@@ -402,8 +405,8 @@ export default function App() {
                       <MouseSimple size={18} weight="fill" />
                     </S.PanelIconBox>
                     <div>
-                      <S.PanelTitle>双击关闭标签页</S.PanelTitle>
-                      <S.PanelSub>双击标签页即可快速关闭</S.PanelSub>
+                      <S.PanelTitle>{t('onbDblCloseTitle')}</S.PanelTitle>
+                      <S.PanelSub>{t('onbDblCloseSub')}</S.PanelSub>
                     </div>
                   </S.PanelLeft>
                   <S.Toggle
@@ -420,8 +423,8 @@ export default function App() {
                         <HandPointing size={18} weight="fill" />
                       </S.PanelIconBox>
                       <div>
-                        <S.PanelTitle>鼠标手势</S.PanelTitle>
-                        <S.PanelSub>按住右键画轨迹即可操控页面</S.PanelSub>
+                        <S.PanelTitle>{t('onbGestureTitle')}</S.PanelTitle>
+                        <S.PanelSub>{t('onbGestureSub')}</S.PanelSub>
                       </div>
                     </S.PanelLeft>
                     <S.Toggle $active={gestures} onClick={() => setGestures(!gestures)} />
@@ -429,20 +432,20 @@ export default function App() {
                   <S.GestureRow>
                     <S.GestureItem>
                       <GestureSvg variant="back" />
-                      <S.GestureName>后退</S.GestureName>
+                      <S.GestureName>{t('onbGestureBack')}</S.GestureName>
                     </S.GestureItem>
                     <S.GestureItem>
                       <GestureSvg variant="forward" />
-                      <S.GestureName>前进</S.GestureName>
+                      <S.GestureName>{t('onbGestureForward')}</S.GestureName>
                     </S.GestureItem>
                     <S.GestureItem>
                       <GestureSvg variant="reload" />
-                      <S.GestureName>刷新</S.GestureName>
+                      <S.GestureName>{t('onbGestureReload')}</S.GestureName>
                     </S.GestureItem>
                   </S.GestureRow>
                   <S.GestureNote>
                     <GearSix size={12} />
-                    以上为默认手势，可在设置中自定义 8 方向轨迹
+                    {t('onbGestureNote')}
                   </S.GestureNote>
                 </S.GesturePanel>
               </S.SettingsList>
@@ -455,10 +458,10 @@ export default function App() {
       <S.FloatingCTAWrap>
         <S.PrimaryButton onClick={ctaAction}>
           {page === 3 && <RocketLaunch size={18} weight="fill" />}
-          {page === 0 && '同意并继续'}
-          {page === 1 && '迁移浏览数据'}
-          {page === 2 && '继续设置'}
-          {page === 3 && (manual ? '保存并关闭' : '开启浏览之旅')}
+          {page === 0 && t('onbBtnPage0')}
+          {page === 1 && t('onbBtnPage1')}
+          {page === 2 && t('onbBtnPage2')}
+          {page === 3 && (manual ? t('onbBtnPage3Manual') : t('onbBtnPage3'))}
           {(page === 1 || page === 2) && <ArrowRight size={16} weight="bold" />}
         </S.PrimaryButton>
       </S.FloatingCTAWrap>
@@ -467,7 +470,7 @@ export default function App() {
       <S.Footer>
         <S.BackButton $visible={page > 0} onClick={prev}>
           <ArrowLeft size={14} weight="bold" />
-          上一步
+          {t('onbBack')}
         </S.BackButton>
         <S.FooterCenter>
           <S.Dots>
@@ -475,7 +478,7 @@ export default function App() {
               <S.Dot key={i} $active={page === i} onClick={() => go(i)} />
             ))}
           </S.Dots>
-          <S.ExitButton onClick={exitApp}>{manual ? '关闭' : '退出'}</S.ExitButton>
+          <S.ExitButton onClick={exitApp}>{manual ? t('onbClose') : t('onbExit')}</S.ExitButton>
         </S.FooterCenter>
       </S.Footer>
 

@@ -24,8 +24,10 @@ import {
   Title,
   UrlInput,
 } from './style';
+import { useI18n } from '~/renderer/components/I18n';
 
 export const App = observer(() => {
+  const t = useI18n();
   const fileNameRef = React.useRef<HTMLInputElement>(null);
   const [fileName, setFileName] = React.useState('');
   const [directory, setDirectory] = React.useState('');
@@ -67,7 +69,7 @@ export const App = observer(() => {
       downloaderType,
     });
     if (!response?.ok) {
-      setError(response?.message || '无法开始下载');
+      setError(response?.message || t('dlpFailed'));
       setBusy(false);
     }
   };
@@ -89,10 +91,12 @@ export const App = observer(() => {
       >
         <UIStyle />
         <Header>
-          <Title>下载文件</Title>
-          <Source title={store.data.source}>来自 {store.data.source}</Source>
+          <Title>{t('dlpTitle')}</Title>
+          <Source title={store.data.source}>
+            {t('dlpFrom', { source: store.data.source })}
+          </Source>
           <UrlInput
-            aria-label="下载链接"
+            aria-label={t('dlpLinkAria')}
             title={store.data.url}
             value={store.data.url}
             readOnly
@@ -102,7 +106,7 @@ export const App = observer(() => {
         </Header>
 
         <Field>
-          <FieldLabel htmlFor="download-file-name">文件名</FieldLabel>
+          <FieldLabel htmlFor="download-file-name">{t('dlpFilename')}</FieldLabel>
           <FileInput
             ref={fileNameRef}
             id="download-file-name"
@@ -117,11 +121,11 @@ export const App = observer(() => {
         </Field>
 
         <Field>
-          <FieldLabel>存储位置</FieldLabel>
+          <FieldLabel>{t('dlpLocation')}</FieldLabel>
           <PathButton
             type="button"
             title={directory}
-            aria-label="选择存储位置"
+            aria-label={t('dlpChooseLocationAria')}
             onClick={selectDirectory}
           >
             <PathText>{directory}</PathText>
@@ -130,14 +134,14 @@ export const App = observer(() => {
         </Field>
 
         <Field>
-          <FieldLabel htmlFor="download-method">下载方式</FieldLabel>
+          <FieldLabel htmlFor="download-method">{t('dlpMethod')}</FieldLabel>
           <SelectControl>
             <Select
               id="download-method"
               value={downloaderType}
               onChange={(event) => setDownloaderType(event.target.value)}
             >
-              <option value="browser">浏览器</option>
+              <option value="browser">{t('dlpMethodBrowser')}</option>
               {store.data.downloaders.map((downloader) => (
                 <option key={downloader.type} value={downloader.type}>
                   {downloader.name}
@@ -157,7 +161,7 @@ export const App = observer(() => {
             <OpenOption
               title={
                 externalDownloader
-                  ? '外部下载器不支持下载后自动打开'
+                  ? t('dlpAutoOpenUnsupported')
                   : undefined
               }
             >
@@ -167,7 +171,7 @@ export const App = observer(() => {
                 disabled={busy || externalDownloader}
                 onChange={(event) => setOpenWhenDone(event.target.checked)}
               />
-              下载后打开
+              {t('dlpOpenWhenDone')}
             </OpenOption>
           )}
           <CancelButton
@@ -175,7 +179,7 @@ export const App = observer(() => {
             disabled={busy}
             onClick={() => submit('cancel')}
           >
-            取消
+            {t('cancel')}
           </CancelButton>
           <PrimaryButton
             type="button"
@@ -184,7 +188,7 @@ export const App = observer(() => {
               submit(openWhenDone && !externalDownloader ? 'open' : 'save')
             }
           >
-            {busy ? '处理中...' : '保存'}
+            {busy ? t('dlpBusy') : t('save')}
           </PrimaryButton>
         </Actions>
       </StyledApp>

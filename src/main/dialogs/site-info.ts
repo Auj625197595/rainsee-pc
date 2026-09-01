@@ -7,6 +7,7 @@ import { IPermissionRecord } from '~/interfaces';
 import { getSingledHost } from '~/utils/url';
 import { PersistentDialog } from './dialog';
 import { Application } from '../application';
+import { getMainTranslator } from '../i18n';
 
 const WIDTH = 380;
 const MIN_HEIGHT = 240;
@@ -294,7 +295,7 @@ export class SiteInfoDialog extends PersistentDialog {
     return {
       title: webContents?.getTitle() || host || url,
       url,
-      host: host || url || '此页面',
+      host: host || url || getMainTranslator(Application.instance.settings?.object?.language)('siThisPage'),
       protocol,
       secure: protocol === 'https',
       cookies,

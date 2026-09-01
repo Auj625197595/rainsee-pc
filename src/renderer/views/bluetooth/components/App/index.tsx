@@ -28,8 +28,10 @@ import store, {
   cancel,
 } from '../../store';
 import { UIStyle } from '~/renderer/mixins/default-styles';
+import { useI18n } from '~/renderer/components/I18n';
 
 export const App = observer(() => {
+  const t = useI18n();
   const listRef = React.useRef<HTMLDivElement>(null);
 
   // 已选设备在扫描推送中消失时清空选中,保持「连接」按钮状态正确。
@@ -52,15 +54,15 @@ export const App = observer(() => {
             <BluetoothIcon size={20} weight="bold" />
           </IconBadge>
           <HeaderMain>
-            <Eyebrow>蓝牙</Eyebrow>
-            <Title>选择蓝牙设备</Title>
+            <Eyebrow>{t('btEyebrow')}</Eyebrow>
+            <Title>{t('btTitle')}</Title>
             <Domain>{store.domain}</Domain>
           </HeaderMain>
         </Header>
 
         <DeviceList ref={listRef}>
           {store.devices.length === 0 && (
-            <Empty>正在搜索附近的蓝牙设备，请确认设备已开启…</Empty>
+            <Empty>{t('btSearching')}</Empty>
           )}
           {store.devices.map((device) => (
             <DeviceItem
@@ -74,7 +76,7 @@ export const App = observer(() => {
             >
               <BluetoothIcon size={16} weight="fill" />
               <DeviceMain>
-                <DeviceName>{device.deviceName || '未知设备'}</DeviceName>
+                <DeviceName>{device.deviceName || t('btUnknownDevice')}</DeviceName>
                 <DeviceId>{device.deviceId}</DeviceId>
               </DeviceMain>
             </DeviceItem>
@@ -88,10 +90,10 @@ export const App = observer(() => {
               disabled={!store.selectedId}
               onClick={submit}
             >
-              连接
+              {t('btConnect')}
             </ActionButton>
             <ActionButton variant="secondary" onClick={cancel}>
-              取消
+              {t('cancel')}
             </ActionButton>
           </Buttons>
         </Footer>

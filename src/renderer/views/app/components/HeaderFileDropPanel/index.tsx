@@ -19,6 +19,8 @@ import {
   FileType,
   IActionAccent,
 } from './style';
+import { getShellTranslator } from '../../utils/i18n';
+import type { MessageKey } from '~/common/i18n';
 
 export type HeaderDropAction =
   | 'pdf-read'
@@ -31,7 +33,7 @@ export type HeaderDropAction =
 
 interface DropActionItem {
   id: HeaderDropAction;
-  label: string;
+  labelKey: MessageKey;
   icon: React.ComponentType<any>;
   accent: IActionAccent;
   disabled?: boolean;
@@ -78,36 +80,51 @@ const ACCENTS: Record<string, IActionAccent> = {
 
 const ACTIONS: Record<HeaderDropFileType, DropActionItem[]> = {
   pdf: [
-    { id: 'pdf-read', label: '阅读', icon: BookOpen, accent: ACCENTS.blue },
+    { id: 'pdf-read', labelKey: 'hfpRead', icon: BookOpen, accent: ACCENTS.blue },
+    {
+      labelKey: 'edit',
+      icon: PencilSimple,
+      accent: ACCENTS.violet,
+    },
+    {
+      labelKey: 'hfpCompress',
+      icon: ArrowsInSimple,
+      accent: ACCENTS.green,
+    },
+    {
+      labelKey: 'hfpImportKb',
+      icon: Database,
+      accent: ACCENTS.rose,
+    },
   ],
   image: [
     {
       id: 'image-view',
-      label: '查看',
+      labelKey: 'hfpView',
       icon: ImageSquare,
       accent: ACCENTS.cyan,
     },
     {
       id: 'image-compress',
-      label: '压缩',
+      labelKey: 'hfpCompress',
       icon: MagicWand,
       accent: ACCENTS.green,
     },
     {
       id: 'image-search',
-      label: '以图搜索',
+      labelKey: 'hfpImageSearch',
       icon: MagnifyingGlass,
       accent: ACCENTS.amber,
     },
   ],
   video: [
-    { id: 'video-play', label: '播放', icon: Play, accent: ACCENTS.rose },
+    { id: 'video-play', labelKey: 'hfpPlay', icon: Play, accent: ACCENTS.rose },
   ],
   reader: [
-    { id: 'reader-read', label: '查看', icon: BookOpen, accent: ACCENTS.green },
+    { id: 'reader-read', labelKey: 'hfpView', icon: BookOpen, accent: ACCENTS.green },
   ],
   html: [
-    { id: 'html-open', label: '打开', icon: FileHtml, accent: ACCENTS.amber },
+    { id: 'html-open', labelKey: 'hfpOpen', icon: FileHtml, accent: ACCENTS.amber },
   ],
 };
 
@@ -119,12 +136,12 @@ const DEFAULT_ACTIONS: Record<HeaderDropFileType, HeaderDropAction> = {
   html: 'html-open',
 };
 
-const TYPE_LABELS: Record<HeaderDropFileType, string> = {
-  pdf: 'PDF 文档',
-  image: '图片文件',
-  video: '视频文件',
-  reader: '可阅读文件',
-  html: '网页文件',
+const TYPE_LABELS: Record<HeaderDropFileType, MessageKey> = {
+  pdf: 'hfpTypePdf',
+  image: 'hfpTypeImage',
+  video: 'hfpTypeVideo',
+  reader: 'hfpTypeReader',
+  html: 'hfpTypeHtml',
 };
 
 interface DraggedFile {
@@ -178,6 +195,7 @@ const NON_READER_MIME_TYPES = new Set([
 
 const getDraggedFile = (
   dataTransfer: DataTransfer | null,
+  t: (key: MessageKey) => string,
 ): DraggedFile | null => {
   if (!dataTransfer) return null;
   const items = Array.from(dataTransfer.items || []).filter(
@@ -193,12 +211,12 @@ const getDraggedFile = (
   // Windows 原生文件刚进入 Electron 窗口时，FileList/getAsFile 可能暂时为空，
   // 但 DataTransferItem.type 已可用。先按 MIME 展示面板，drop 时再用真实路径校验。
   const mime = (items[0]?.type || '').split(';')[0].trim().toLowerCase();
-  if (mime === 'application/pdf') return { name: 'PDF 文件', type: 'pdf' };
-  if (mime.startsWith('image/')) return { name: '图片文件', type: 'image' };
-  if (mime.startsWith('video/')) return { name: '视频文件', type: 'video' };
-  if (mime === 'text/html') return { name: 'HTML 文件', type: 'html' };
+  if (mime === 'application/pdf') return { name: t('hfpNamePdf'), type: 'pdf' };
+  if (mime.startsWith('image/')) return { name: t('hfpNameImage'), type: 'image' };
+  if (mime.startsWith('video/')) return { name: t('hfpNameVideo'), type: 'video' };
+  if (mime === 'text/html') return { name: t('hfpNameHtml'), type: 'html' };
   if (READER_MIME_TYPES.has(mime)) {
-    return { name: '可阅读文件', type: 'reader' };
+    return { name: t('hfpNameReader'), type: 'reader' };
   }
   // 兜底：epub/mobi/azw3/md/fb2/cbz/cbr 等阅读器格式在 Windows 注册表常未登记
   // Content Type，Chromium 在 dragenter/dragover 期间无法读文件内容、推断不出
@@ -208,7 +226,7 @@ const getDraggedFile = (
   // 先把菜单亮出来；drop 时再用 getHeaderDropFileType(filePath) 校验真实扩展名，
   // 非阅读器格式会被拦截，不会误打开。
   if (items.length > 0 && !NON_READER_MIME_TYPES.has(mime)) {
-    return { name: '可阅读文件', type: 'reader' };
+    return { name: t('hfpNameReader'), type: 'reader' };
   }
   return null;
 };
@@ -224,6 +242,7 @@ interface Props {
 }
 
 export const HeaderFileDropPanel = ({ targetRef, windowId }: Props) => {
+  const t = getShellTranslator();
   const [draggedFile, setDraggedFile] = React.useState<DraggedFile | null>(
     null,
   );
@@ -256,7 +275,7 @@ export const HeaderFileDropPanel = ({ targetRef, windowId }: Props) => {
     const onDragEnter = (event: DragEvent) => {
       if (!isInsideTarget(event) || !hasDraggedFiles(event.dataTransfer))
         return;
-      const file = getDraggedFile(event.dataTransfer);
+      const file = getDraggedFile(event.dataTransfer, t);
       event.preventDefault();
       event.stopPropagation();
       if (!file) return;
@@ -275,7 +294,7 @@ export const HeaderFileDropPanel = ({ targetRef, windowId }: Props) => {
         return;
       }
 
-      const detectedFile = getDraggedFile(event.dataTransfer);
+      const detectedFile = getDraggedFile(event.dataTransfer, t);
       if (
         detectedFile &&
         (!draggedFileRef.current ||
@@ -318,7 +337,8 @@ export const HeaderFileDropPanel = ({ targetRef, windowId }: Props) => {
         updateDraggedFile(null);
         return;
       }
-      const file = draggedFileRef.current || getDraggedFile(event.dataTransfer);
+      const file =
+        draggedFileRef.current || getDraggedFile(event.dataTransfer, t);
       const hoveredAction = activeActionRef.current;
       const nativeFile = event.dataTransfer?.files?.[0];
       updateDraggedFile(null);
@@ -351,7 +371,7 @@ export const HeaderFileDropPanel = ({ targetRef, windowId }: Props) => {
   return (
     <DropOverlay>
       <FileSummary>
-        <FileType>{TYPE_LABELS[draggedFile.type]}</FileType>
+        <FileType>{t(TYPE_LABELS[draggedFile.type])}</FileType>
         <FileName title={draggedFile.name}>{draggedFile.name}</FileName>
       </FileSummary>
       <ActionList>
@@ -367,12 +387,12 @@ export const HeaderFileDropPanel = ({ targetRef, windowId }: Props) => {
               $accent={item.accent}
               title={
                 item.disabled
-                  ? `${item.label}（暂未开放）`
-                  : `拖到此处${item.label}`
+                  ? t('hfpNotYet', { label: t(item.labelKey) })
+                  : t('hfpDropHere', { label: t(item.labelKey) })
               }
             >
               <Icon size={19} weight="bold" />
-              <span>{item.label}</span>
+              <span>{t(item.labelKey)}</span>
             </ActionButton>
           );
         })}

@@ -2,6 +2,7 @@ import { nativeImage } from 'electron';
 
 import store from '../../store';
 import { getIconByUrlNet } from '~/utils/url';
+import { getShellTranslator } from '../../utils/i18n';
 
 // 默认地球图标(与 SidebarTab/BookmarkBar 的 GlobeIcon 同源,#5F6368)。
 // nativeImage 不支持 SVG,需经 <img>+canvas 栅格化(见 rasterizeUrl)。
@@ -88,11 +89,12 @@ const resolveTabIcon = async (
 // 构建工具箱中的最近关闭子菜单，保留原按钮的图标、标题和恢复逻辑。
 export const buildRecentlyClosedTabsMenu =
   async (): Promise<Electron.MenuItemConstructorOptions> => {
+    const t = getShellTranslator();
     const items = store.tabs.recentlyClosedView;
     if (items.length === 0) {
       return {
-        label: '最近关闭的标签页',
-        submenu: [{ label: '暂无最近关闭的标签', enabled: false }],
+        label: t('shellRecentTabsMenu'),
+        submenu: [{ label: t('shellNoRecentTabs'), enabled: false }],
       };
     }
 
@@ -102,7 +104,7 @@ export const buildRecentlyClosedTabsMenu =
     );
 
     return {
-      label: '最近关闭的标签页',
+      label: t('shellRecentTabsMenu'),
       submenu: items.map((t, i) => ({
         label: t.title,
         icon: icons[i] && !icons[i].isEmpty() ? icons[i] : undefined,

@@ -23,9 +23,7 @@ import {
   RowActions,
   ActionBtn,
 } from './style';
-
-// 内部标签页无法直接 require('electron')，文件操作走 preload 暴露的 window.electron.shell。
-const shell: typeof import('electron').shell = (window as any).electron?.shell;
+import { useI18n } from '~/renderer/components/I18n';
 
 // ===== 文件类型图标(内联 SVG，跟随 currentColor)=====
 
@@ -119,13 +117,14 @@ const IconTrash = () => (
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
 export const DownloadRow = observer(({ data }: { data: IDownloadItem }) => {
+  const t = useI18n();
   const status = store.statusOf(data);
   const completed = status === 'completed';
   const canceled = status === 'canceled';
   const active = status === 'active';
 
   const onRowClick = () => {
-    if (completed) shell?.openPath(data.savePath);
+    if (completed) void store.open(data).catch(() => undefined);
   };
 
   const onPauseResume = (e: React.MouseEvent) => {
@@ -141,7 +140,7 @@ export const DownloadRow = observer(({ data }: { data: IDownloadItem }) => {
 
   const onShowInFolder = (e: React.MouseEvent) => {
     e.stopPropagation();
-    shell?.showItemInFolder(data.savePath);
+    void store.showInFolder(data).catch(() => undefined);
   };
 
   const onRemove = (e: React.MouseEvent) => {
@@ -164,9 +163,11 @@ export const DownloadRow = observer(({ data }: { data: IDownloadItem }) => {
           <>
             <SubLine>
               <SubText tone="accent">
-                {formatBytes(data.receivedBytes)} / {formatBytes(data.totalBytes)}
+                {data.preparing
+                  ? t('dlvSniffing')
+                  : `${formatBytes(data.receivedBytes)} / ${formatBytes(data.totalBytes)}`}
               </SubText>
-              {!data.paused && !data.interrupted && (
+              {!data.preparing && !data.paused && !data.interrupted && (
                 <>
                   <Dot />
                   <SubText>{formatSpeed(data.speedBytesPerSecond)}</SubText>
@@ -177,10 +178,10 @@ export const DownloadRow = observer(({ data }: { data: IDownloadItem }) => {
                   <Dot />
                   <SubText>
                     {data.retrying
-                      ? '网络中断，正在恢复'
+                      ? t('dlvRecovering')
                       : data.interrupted
-                        ? '下载中断，点击恢复'
-                        : '已暂停'}
+                        ? t('dlvInterrupted')
+                        : t('dlvPaused')}
                   </SubText>
                 </>
               )}
@@ -188,7 +189,7 @@ export const DownloadRow = observer(({ data }: { data: IDownloadItem }) => {
             <ProgressTrack>
               <ProgressFill
                 animated={!data.paused && !data.interrupted}
-                style={{ width: `${percent}%` }}
+                style={{ width: `${data.preparing ? 100 : percent}%` }}
               />
             </ProgressTrack>
           </>
@@ -204,7 +205,7 @@ export const DownloadRow = observer(({ data }: { data: IDownloadItem }) => {
 
         {canceled && (
           <SubLine>
-            <SubText tone="danger">已取消</SubText>
+            <SubText tone="danger">{t('dlvCanceled')}</SubText>
           </SubLine>
         )}
       </RowText>
@@ -214,11 +215,15 @@ export const DownloadRow = observer(({ data }: { data: IDownloadItem }) => {
           <>
             <ActionBtn
               onClick={onPauseResume}
-              title={data.paused && !data.retrying ? '恢复下载' : '暂停下载'}
+              title={
+                data.paused && !data.retrying
+                  ? t('dlvResumeTitle')
+                  : t('dlvPauseTitle')
+              }
             >
               {data.paused && !data.retrying ? <IconResume /> : <IconPause />}
             </ActionBtn>
-            <ActionBtn danger onClick={onCancel} title="取消下载">
+            <ActionBtn danger onClick={onCancel} title={t('dlvCancelTitle')}>
               <IconClose />
             </ActionBtn>
           </>
@@ -226,17 +231,17 @@ export const DownloadRow = observer(({ data }: { data: IDownloadItem }) => {
 
         {completed && (
           <>
-            <ActionBtn onClick={onShowInFolder} title="在文件夹中显示">
+            <ActionBtn onClick={onShowInFolder} title={t('dlvShowInFolder')}>
               <IconFolder />
             </ActionBtn>
-            <ActionBtn danger onClick={onRemove} title="从列表中移除">
+            <ActionBtn danger onClick={onRemove} title={t('dlvRemoveTitle')}>
               <IconTrash />
             </ActionBtn>
           </>
         )}
 
         {canceled && (
-          <ActionBtn danger onClick={onRemove} title="从列表中移除">
+          <ActionBtn danger onClick={onRemove} title={t('dlvRemoveTitle')}>
             <IconClose />
           </ActionBtn>
         )}

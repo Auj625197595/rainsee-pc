@@ -21,19 +21,34 @@ import { spawn } from 'child_process';
 import { join } from 'path';
 import { existsSync } from 'fs';
 
+import { Application } from '../application';
+import {getMainTranslator} from '../i18n';
+import type {Translator} from '~/common/i18n';
+
 export interface IHelloResult {
   ok: boolean;
   result: number;
   msg: string;
 }
 
-const RESULT_MESSAGES: { [k: number]: string } = {
-  0: '已验证',
-  1: '当前设备不支持 Windows Hello',
-  2: '未配置 Windows Hello,请先在「设置 - 账户 - 登录选项」中设置 PIN',
-  3: 'Windows Hello 被组策略禁用',
-  4: '验证失败次数过多',
-  5: '已取消验证',
+// 结果文案回给渲染层显示:按当前设置语言即时翻译,不在模块顶层缓存。
+const resultMessage = (result: number, t: Translator): string => {
+  switch (result) {
+    case 0:
+      return t('whVerified');
+    case 1:
+      return t('whNotSupported');
+    case 2:
+      return t('whNotConfigured');
+    case 3:
+      return t('whDisabledByPolicy');
+    case 4:
+      return t('whRetriesExhausted');
+    case 5:
+      return t('whCanceled');
+    default:
+      return t('whNotVerified');
+  }
 };
 
 // 打包后脚本在 resources/win-hello.ps1(extraResources 解包到 asar 外,供外部进程读取);
@@ -45,6 +60,8 @@ function resolveScriptPath(): string {
 }
 
 export function verifyWindowsHello(reason: string): Promise<IHelloResult> {
+  // 取不到 settings(极早期调用)时回退 auto,由系统 locale 解析语言。
+  const t = getMainTranslator(Application.instance?.settings?.object?.language);
   // 非 Windows 平台直接放行(开发环境 / 跨平台兼容)
   if (process.platform !== 'win32') {
     return Promise.resolve({ ok: true, result: 0, msg: '非 Windows 平台,跳过验证' });
@@ -55,7 +72,7 @@ export function verifyWindowsHello(reason: string): Promise<IHelloResult> {
     return Promise.resolve({
       ok: false,
       result: -1,
-      msg: 'Windows Hello 脚本缺失,请重装应用',
+      msg: t('whScriptMissing'),
     });
   }
 
@@ -82,7 +99,7 @@ export function verifyWindowsHello(reason: string): Promise<IHelloResult> {
       resolve({
         ok: false,
         result: -1,
-        msg: '无法启动 Windows Hello 验证:' + err.message,
+        msg: t('whLaunchFailed') + ':' + err.message,
       });
     });
 
@@ -98,7 +115,7 @@ export function verifyWindowsHello(reason: string): Promise<IHelloResult> {
         resolve({
           ok: false,
           result: -1,
-          msg: 'Windows Hello 响应异常' + (stderr ? ':' + stderr.trim() : ''),
+          msg: t('whBadResponse') + (stderr ? ':' + stderr.trim() : ''),
         });
         return;
       }
@@ -106,7 +123,7 @@ export function verifyWindowsHello(reason: string): Promise<IHelloResult> {
       resolve({
         ok: num === 0,
         result: num,
-        msg: RESULT_MESSAGES[num] || '验证未通过',
+        msg: resultMessage(num, t),
       });
     });
   });

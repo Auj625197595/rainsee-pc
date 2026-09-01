@@ -1,6 +1,10 @@
 import { IBookmark } from '~/interfaces';
 import { ipcRenderer } from '~/common/renderer-ipc';
+import { createLocaleTranslator, Translator } from '~/common/i18n';
 import store from '../store';
+
+// 书签管理器语言偏好(store.settings 由 WebUI 注入并随 update-settings 刷新)。
+const t = () => createLocaleTranslator(store.settings.language);
 
 export type SortCriteria = 'title-asc' | 'title-desc' | 'url-asc' | 'url-desc';
 
@@ -29,19 +33,21 @@ export const compareBookmark = (
   return titleA.localeCompare(titleB, 'zh');
 };
 
-export const getBookmarkTitle = (item: IBookmark) => {
+export const getBookmarkTitle = (item: IBookmark, tr?: Translator) => {
   if (!item.static) return item.title;
 
+  const translator = tr || t();
+
   if (item.static === 'main') {
-    return '书签栏';
+    return translator('bookmarkBar');
   }
 
   if (item.static === 'mobile') {
-    return '移动设备书签';
+    return translator('mobileDeviceBookmarks');
   }
 
   if (item.static === 'other') {
-    return '其它文件夹';
+    return translator('bookmarksOtherFolder');
   }
 
   return item.title;
@@ -50,11 +56,14 @@ export const getBookmarkTitle = (item: IBookmark) => {
 // Chrome's bookmark manager shows a folder's location alongside the item,
 // especially in search results. Keep the full ancestor chain so the location
 // remains useful even when the current view is filtered or searched.
-export const getBookmarkPath = (item: IBookmark): string => {
+export const getBookmarkPath = (item: IBookmark, tr?: Translator): string => {
   if (!item?.isFolder) return '';
   const ancestors = item.parent ? store.getFolderPath(item.parent) : [];
-  const path = ancestors.map(getBookmarkTitle).filter(Boolean).join(' > ');
-  return path || '我的书签';
+  const path = ancestors
+    .map((x) => getBookmarkTitle(x, tr))
+    .filter(Boolean)
+    .join(' > ');
+  return path || t()('bmMyBookmarks');
 };
 
 export const addImported = async (arr: any[], parent: IBookmark = null) => {

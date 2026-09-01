@@ -5,6 +5,7 @@ import {ipcRenderer} from '~/common/renderer-ipc';
 import {Dialog, Title, Content, Buttons, CloseButton} from '../../Dialog';
 import {NormalButton} from '../../App';
 import store from '../../../store';
+import {getSettingsTranslator} from '../../../utils';
 
 const TextArea = (props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) => (
   <textarea
@@ -25,6 +26,7 @@ const TextArea = (props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) => (
 );
 
 export default observer(() => {
+  const t = getSettingsTranslator();
   const [value, setValue] = React.useState('');
   const [filterCount, setFilterCount] = React.useState(0);
   const visible = store.dialogContent === 'adblock-rule';
@@ -51,21 +53,21 @@ export default observer(() => {
 
   return (
     <Dialog visible={visible} style={{width: 460, marginLeft: 'auto'}}>
-      <Title>广告拦截订阅</Title>
+      <Title>{t('searchAdblockSubscriptions')}</Title>
       <Content>
         <div style={{fontSize: 12, opacity: 0.7, marginBottom: 8}}>
-          {`一行一个订阅地址，支持 ublock / adblockplus / adguard 格式。当前规则数：${filterCount}`}
+          {t('pvRuleSubHint', {count: filterCount})}
         </div>
         <TextArea
           value={value}
-          placeholder={'例如：https://easylist.to/easylist/easylist.txt'}
+          placeholder={t('pvSubPlaceholder')}
           onChange={(e) => setValue(e.target.value)}
         />
       </Content>
       <Buttons>
         <CloseButton/>
         <NormalButton onClick={onSave}>
-          保存
+          {t('save')}
         </NormalButton>
       </Buttons>
     </Dialog>

@@ -24,6 +24,7 @@ import {
 } from './style';
 import store from '../../store';
 import { UIStyle } from '~/renderer/mixins/default-styles';
+import { useI18n } from '~/renderer/components/I18n';
 
 const onClose = () => {
   store.hide();
@@ -42,6 +43,7 @@ const onSkip = () => {
 };
 
 export const App = observer(() => {
+  const t = useI18n();
   const rootRef = React.useRef<HTMLDivElement>(null);
 
   // 内容高度自适应: 测量后上报给主进程重排弹窗
@@ -65,9 +67,9 @@ export const App = observer(() => {
   const downloading = store.status === 'downloading';
   const downloaded = store.status === 'downloaded';
 
-  let primaryText = '立即更新';
-  if (downloading) primaryText = `下载中 ${store.progress}%`;
-  else if (downloaded) primaryText = '立即安装并重启';
+  let primaryText = t('updInstallNow');
+  if (downloading) primaryText = t('updDownloading', { percent: store.progress });
+  else if (downloaded) primaryText = t('updReadyInstall');
 
   return (
     <ThemeProvider theme={{ ...store.theme }}>
@@ -75,22 +77,24 @@ export const App = observer(() => {
         <UIStyle />
         <Header>
           <TitleWrap>
-            <Title>发现新版本</Title>
+            <Title>{t('updTitle')}</Title>
             <VersionLine>
-              当前 v{store.currentVersion}
-              <NewVersionTag>新版本 v{store.version}</NewVersionTag>
+              {t('updCurrentVersion', { version: store.currentVersion })}
+              <NewVersionTag>
+                {t('updNewTag', { version: store.version })}
+              </NewVersionTag>
             </VersionLine>
           </TitleWrap>
           {!store.mandatory && <CloseButton onClick={onClose}>✕</CloseButton>}
         </Header>
 
         <NotesCard>
-          <NotesTitle>更新内容</NotesTitle>
+          <NotesTitle>{t('updNotesTitle')}</NotesTitle>
           <NotesScroll>
             {notes.length > 0 ? (
               notes.map((n, i) => <NoteItem key={i}>{n}</NoteItem>)
             ) : (
-              <NoteItem>本次更新包含若干优化与修复。</NoteItem>
+              <NoteItem>{t('updNoteDefault')}</NoteItem>
             )}
           </NotesScroll>
         </NotesCard>
@@ -98,7 +102,7 @@ export const App = observer(() => {
         {(downloading || downloaded) && (
           <ProgressWrap>
             <ProgressLabel>
-              <span>{downloaded ? '下载完成' : '正在下载更新'}</span>
+              <span>{downloaded ? t('updDownloadDone') : t('updDownloadingStatus')}</span>
               <span>{store.progress}%</span>
             </ProgressLabel>
             <ProgressBar>
@@ -112,7 +116,7 @@ export const App = observer(() => {
         <Actions>
           {!store.mandatory && !downloading && !downloaded && (
             <Button variant="ghost" onClick={onSkip}>
-              跳过此版本
+              {t('updSkipVersion')}
             </Button>
           )}
           <Button variant="primary" disabled={downloading} onClick={onUpdate}>

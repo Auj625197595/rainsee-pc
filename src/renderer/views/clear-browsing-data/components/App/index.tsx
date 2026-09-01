@@ -24,6 +24,7 @@ import {
   Footer,
   ClearAllButton,
 } from './style';
+import { useI18n } from '~/renderer/components/I18n';
 
 type StatusState = 'clearing' | 'success' | 'error' | 'unsupported' | 'empty';
 type AllStatusState = 'idle' | 'clearing' | 'success' | 'error' | 'empty';
@@ -81,24 +82,25 @@ export const App = observer(() => {
     : status === 'clearing'
     ? Broom
     : WarningCircle;
+  const t = useI18n();
   const statusTitle =
     status === 'clearing'
-      ? '正在清理当前页面...'
+      ? t('cbdCleaningPage')
       : successful
-      ? '当前页面清理成功'
+      ? t('cbdPageDone')
       : status === 'unsupported'
-      ? '当前页面不支持清理'
+      ? t('cbdPageUnsupported')
       : status === 'empty'
-      ? '尚未勾选清理类型'
-      : '当前页面清理失败';
+      ? t('cbdNothingSelected')
+      : t('cbdPageFailed');
 
   return (
     <ThemeProvider theme={{ ...store.theme }}>
       <StyledApp visible={store.visible}>
         <UIStyle />
         <Header>
-          <Title>清理浏览数据</Title>
-          <IconButton title="清理设置" onClick={() => store.openSettings()}>
+          <Title>{t('cbdTitle')}</Title>
+          <IconButton title={t('cbdSettingsTitle')} onClick={() => store.openSettings()}>
             <GearSix size={17} weight="bold" />
           </IconButton>
         </Header>
@@ -108,7 +110,7 @@ export const App = observer(() => {
           </StatusIcon>
           <StatusText>
             <StatusTitle>{statusTitle}</StatusTitle>
-            <StatusDetail>{host || '仅支持普通网站页面'}</StatusDetail>
+            <StatusDetail>{host || t('cbdOnlyWebsites')}</StatusDetail>
           </StatusText>
         </Status>
         <Footer>
@@ -118,14 +120,14 @@ export const App = observer(() => {
           >
             <GlobeHemisphereWest size={18} weight="bold" />
             {allStatus === 'clearing'
-              ? '正在清理全部网页数据...'
+              ? t('cbdCleaningAll')
               : allStatus === 'success'
-                ? '全部网页数据清理成功'
+                ? t('cbdAllDone')
                 : allStatus === 'error'
-                  ? '全部网页数据清理失败'
+                  ? t('cbdAllFailed')
                   : allStatus === 'empty'
-                    ? '尚未勾选清理类型'
-                    : '清理全部网页数据'}
+                    ? t('cbdNothingSelected')
+                    : t('cbdCleanAll')}
           </ClearAllButton>
         </Footer>
       </StyledApp>

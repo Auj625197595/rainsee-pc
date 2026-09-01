@@ -1,3 +1,6 @@
+import { Application } from '../application';
+import { getMainTranslator } from '../i18n';
+
 // 钥匙图标点击后,在「当前网页」注入的轻量 toast("已尝试自动填充...")。
 //
 // 为什么注入到网页而不是 renderer DOM:
@@ -8,14 +11,18 @@
 //   - pointer-events:none,点击穿透,不挡用户操作网页;
 //   - position:fixed + z-index 顶到视口底部居中;
 // webContents.executeJavaScript 由 embedder 注入,绕过页面 CSP,故无脚本策略风险。
-const DEFAULT_MESSAGE = '已尝试自动填充（如果没有反应，请确定是否是登录页）';
+// 默认文案按当前语言即时翻译(默认参数在每次调用时求值,不缓存)。
+const defaultToastMessage = () =>
+  getMainTranslator(Application.instance?.settings?.object?.language)(
+    'afTriedAutofill',
+  );
 const DURATION = 2600;
 
 /**
  * 生成可注入当前网页的 toast 代码。
  * @param message toast 文案,默认为"已尝试自动填充..."
  */
-export const getAutofillToastCode = (message: string = DEFAULT_MESSAGE): string => {
+export const getAutofillToastCode = (message: string = defaultToastMessage()): string => {
   const MSG = JSON.stringify(message);
   const DUR = String(DURATION);
 

@@ -20,7 +20,20 @@ import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { readFileSync, statSync } from 'fs';
 import { getLogDir, getLogPath } from './logger';
+import {getMainTranslator} from './i18n';
 import type { AppWindow } from './windows/app';
+
+// 恢复覆盖层/原生弹窗文案:按当前设置即时创建翻译器,不缓存。与下方
+// getRecoverableWindows 同理延迟 require,避免与 application 的循环依赖;
+// 极早期取不到设置时回退 auto(由系统 locale 解析)。
+const recoveryTranslator = () => {
+  try {
+    const application = require('./application').Application.instance as import('./application').Application;
+    return getMainTranslator(application?.settings?.object?.language);
+  } catch {
+    return getMainTranslator(undefined);
+  }
+};
 
 // unresponsive 确认窗口:Electron 的 unresponsive 在事件循环阻塞时较快触发,
 // 这里再等 N 秒,期间收到 responsive/did-finish-load(说明已恢复)就取消,
@@ -58,17 +71,18 @@ const timestamp = () => {
 
 // 取日志文件尾部。返回 utf8 文本 + 总字节数 + 是否截断。
 const readLogTail = (): { text: string; bytes: number; truncated: boolean } => {
+  const t = recoveryTranslator();
   const path = getLogPath();
-  if (!path) return { text: '(日志路径未知)', bytes: 0, truncated: false };
+  if (!path) return { text: t('wspLogPathUnknown'), bytes: 0, truncated: false };
   let buf: Buffer;
   let total = 0;
   try {
     total = statSync(path).size;
     buf = readFileSync(path);
   } catch {
-    return { text: '(无法读取日志文件)', bytes: 0, truncated: false };
+    return { text: t('wspLogReadFailed'), bytes: 0, truncated: false };
   }
-  if (!buf || buf.length === 0) return { text: '(日志为空)', bytes: 0, truncated: false };
+  if (!buf || buf.length === 0) return { text: t('wspLogEmpty'), bytes: 0, truncated: false };
 
   let truncated = false;
   let slice = buf;
@@ -84,10 +98,11 @@ const readLogTail = (): { text: string; bytes: number; truncated: boolean } => {
 
 // 合成现场头部:触发时间/原因/版本/环境/主窗口URL。复制给作者时能自解释。
 const buildHeader = (reason: string): string => {
+  const t = recoveryTranslator();
   const lines: string[] = [];
-  lines.push('===== 雨见浏览器 白屏/卡死诊断 =====');
+  lines.push(t('wspHeader'));
   lines.push(`触发时间: ${timestamp()}`);
-  lines.push(`触发原因: ${reason || '(未知)'}`);
+  lines.push(`触发原因: ${reason || t('wspUnknown')}`);
   try {
     lines.push(`应用: ${app.getName()} v${app.getVersion()}`);
   } catch {}
@@ -111,10 +126,11 @@ const buildHeader = (reason: string): string => {
 // 创建覆盖层窗口。失败返回 null。
 const createOverlay = (appWindow: AppWindow): BrowserWindow | null => {
   try {
+    const t = recoveryTranslator();
     const parent = appWindow.win;
     const overlay = new BrowserWindow({
       parent,
-      title: '浏览器白屏恢复',
+      title: t('wspOverlayTitle'),
       width: 680,
       height: 540,
       minWidth: 480,
@@ -300,16 +316,16 @@ const recoverFromOom = async (appWindow: AppWindow, reason: string) => {
   console.error(`[whitescreen] 系统可用内存不足,准备重启恢复标签页: ${reason}`);
 
   // 快照与原生对话框并行进行,减少用户确认后的等待时间。
+  const t = recoveryTranslator();
   const windows = getRecoverableWindows();
   const persistPromise = persistTabsForCrashRecovery(windows);
   try {
     await dialog.showMessageBox(appWindow.win, {
       type: 'warning',
-      title: '系统内存不足',
-      message: '当前系统可用内存不足',
-      detail:
-        '系统暂时无法为浏览器分配足够的运行内存，页面已无法继续正常显示。请关闭其他占用内存较多的程序，然后重启浏览器。重启后将自动恢复本次打开的标签页。',
-      buttons: ['重启浏览器'],
+      title: t('wspOomTitle'),
+      message: t('wspOomMessage'),
+      detail: t('wspOomDetail'),
+      buttons: [t('wspRestartBrowser')],
       defaultId: 0,
       noLink: true,
     });
@@ -328,9 +344,10 @@ const ensureIpc = () => {
   ipcReady = true;
 
   ipcMain.handle('crash-reporter-get-log', () => {
+    const t = recoveryTranslator();
     const tail = readLogTail();
     const note = tail.truncated
-      ? '(…日志已截断,仅显示最后 60KB;完整日志点"打开日志目录")\n\n'
+      ? t('wspLogTruncated', {action: t('aboutOpenLogs')}) + '\n\n'
       : '';
     return {
       text: buildHeader(lastReason) + note + tail.text,

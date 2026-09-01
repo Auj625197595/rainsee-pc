@@ -7,23 +7,27 @@ import store from '../../store';
 import List from '../List';
 import { UIStyle } from '~/renderer/mixins/default-styles';
 import { StyledApp, Header, HeaderIcon, HeaderTitle, Count } from './style';
+import { useI18n } from '~/renderer/components/I18n';
 
-export const App = observer(() => (
-  <ThemeProvider theme={{ ...store.theme }}>
-    <StyledApp
-      visible={store.visible}
-      onMouseEnter={() => store.notifyEnter()}
-      onMouseLeave={() => store.notifyLeave()}
-    >
-      <UIStyle />
-      <Header>
-        <HeaderIcon>
-          <Key size={15} weight="bold" />
-        </HeaderIcon>
-        <HeaderTitle>可填充的密码</HeaderTitle>
-        <Count>{store.items.length}</Count>
-      </Header>
-      <List />
-    </StyledApp>
-  </ThemeProvider>
-));
+export const App = observer(() => {
+  const t = useI18n();
+  return (
+    <ThemeProvider theme={{ ...store.theme }}>
+      <StyledApp
+        visible={store.visible}
+        onMouseEnter={() => store.notifyEnter()}
+        onMouseLeave={() => store.notifyLeave()}
+      >
+        <UIStyle />
+        <Header>
+          <HeaderIcon>
+            <Key size={15} weight="bold" />
+          </HeaderIcon>
+          <HeaderTitle>{t('shellFillablePasswords')}</HeaderTitle>
+          <Count>{store.items.length}</Count>
+        </Header>
+        <List />
+      </StyledApp>
+    </ThemeProvider>
+  );
+});

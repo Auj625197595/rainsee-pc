@@ -237,14 +237,8 @@ export const buildGestureCode = (config: GestureConfig): string => {
         (document.body || document.documentElement).appendChild(leftHint);
       }
       const arrows = {U: '↑', D: '↓', L: '←', R: '→'};
-      const shortLabels = {
-        copy: '复制',
-        download: '下载',
-        'open-left': '左侧打开',
-        'open-right': '右侧打开',
-        'open-left-background': '左侧后台',
-        'open-right-background': '右侧后台',
-      };
+      // 短标签由主进程按当前语言翻译后经 config 下发,注入脚本不做文案硬编码。
+      const shortLabels = (config && config.leftShortLabels) || {};
       leftHintIcon.textContent = arrows[direction] || '';
       leftHintText.textContent = shortLabels[actionId] || actionId;
       const distance = (config.leftThreshold || 24) + 48;

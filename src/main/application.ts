@@ -1,5 +1,6 @@
 import {
   app,
+  BrowserWindow,
   clipboard,
   dialog,
   globalShortcut,
@@ -19,11 +20,13 @@ console.log('[PDF Drag-Drop] *** MAIN PROCESS STARTED - NEW CODE LOADED ***');
 import { SessionsService } from './sessions-service';
 import { initExtensionAutoUpdater } from './extension-updater';
 import { checkFiles } from '~/utils/files';
-import {buildKoodoReaderUrl} from '~/constants/files';
+import { buildKoodoReaderUrl } from '~/constants/files';
 import { isURL, prefixHttp } from '~/utils';
 import { Settings } from './models/settings';
 import { isOnboardingNeeded, showOnboarding } from './onboarding';
 import { translateText } from './services/translate';
+import { normalizeAppLanguage, resolveAppLanguage } from '~/common/i18n';
+import { getMainTranslator } from './i18n';
 
 // 文本选择面板/划词翻译下发给 preload 的精简配置。
 // 用结构化类型,免 import ISettings;settings.object 结构兼容即可。
@@ -32,6 +35,7 @@ const buildSelectionTranslateConfig = (s: {
   selectionWordCountEnabled?: boolean;
   selectionTranslateEnabled?: boolean;
   selectionTranslateTarget?: string;
+  language?: unknown;
 }) => ({
   panelEnabled: s.selectionPanelEnabled !== false,
   wordCountEnabled: s.selectionWordCountEnabled !== false,
@@ -40,6 +44,7 @@ const buildSelectionTranslateConfig = (s: {
     typeof s.selectionTranslateTarget === 'string' && s.selectionTranslateTarget
       ? s.selectionTranslateTarget
       : 'zh-CN',
+  language: s.language,
 });
 
 // 解析冷启动参数后把目标 URL注入首个窗口。若交给 renderer 再从
@@ -71,17 +76,18 @@ import { WindowsService } from './windows-service';
 import { StorageService } from './services/storage';
 import { getMainMenu } from './menus/main';
 import {
-  SHORTCUT_ACTIONS,
-  SHORTCUT_CATEGORIES,
+  localizeShortcutActions,
+  localizeShortcutCategories,
   resolveAccelerators,
 } from './menus/shortcut-actions';
 import {
   GESTURE_ACTIONS,
-  GESTURE_CATEGORIES,
-  PRESET_SHAPES,
   effectiveShape,
   buildGestureConfig,
-  LEFT_GESTURE_ACTIONS,
+  localizeGestureCategories,
+  localizeGestureActions,
+  localizePresetShapes,
+  localizeLeftGestureActions,
 } from './menus/gesture-actions';
 import { getWebUIURL } from '~/common/webui-main';
 import { registerDefaultBrowserIpc } from './services/default-browser';
@@ -94,7 +100,10 @@ import {
   getInstalledMeta,
   repairDevelopmentPwaShortcuts,
 } from './services/pwa';
-import {ensureIncognitoIcon, installIncognitoShortcut} from './services/incognito-icon';
+import {
+  ensureIncognitoIcon,
+  installIncognitoShortcut,
+} from './services/incognito-icon';
 import { DialogsService } from './services/dialogs-service';
 import { requestAuth } from './dialogs/auth';
 // 开源版：无账号、无云同步、无上报。云端相关服务一律不引入。
@@ -107,11 +116,11 @@ import { activeProfileName, profileStartupError } from './bootstrap-paths';
 import { parseProfileArgument } from '~/common/profiles';
 import { getActiveProxyCredentials } from './profile-network';
 import { DesktopScreenshotService } from './services/desktop-screenshot';
-import {reloadCertificateErrorPermissions} from './services/certificate-error-permissions';
-import {NativeBlankPopupManager} from './native-blank-popup';
+import { reloadCertificateErrorPermissions } from './services/certificate-error-permissions';
+import { NativeBlankPopupManager } from './native-blank-popup';
 import { WorkspaceService } from './workspace-service';
 import { SedentaryReminderService } from './services/sedentary-reminder';
-import {GoogleConnectivityService} from './services/google-connectivity';
+import { GoogleConnectivityService } from './services/google-connectivity';
 import {
   findSecondInstanceWindow,
   singleInstanceCoordinator,
@@ -121,8 +130,8 @@ type StartupPhase = 'boot' | 'window-serviceable' | 'deferred';
 type DeferredStartupTrigger = 'renderer-ready' | 'app-mode-ready' | 'timeout';
 
 export class Application {
-  public tempTabUrl = "";
-  
+  public tempTabUrl = '';
+
   public static instance = new Application();
 
   public sessions: SessionsService;
@@ -188,13 +197,14 @@ export class Application {
     // 先提供稳定的查询结果，延迟服务就绪后会替换为读取实际更新状态的 handler。
     ipcMain.handle('is-update-available', () => false);
     if (profileStartupError) {
+      const t = getMainTranslator(this.settings?.object?.language);
       app.whenReady().then(async () => {
         try {
           await dialog.showMessageBox({
             type: 'error',
-            title: '无法打开小号',
-            message: profileStartupError || '小号启动失败',
-            buttons: ['确定'],
+            title: t('profileCannotOpen'),
+            message: t(profileStartupError as import('~/common/i18n').MessageKey),
+            buttons: [t('confirm')],
           });
         } finally {
           app.exit(1);
@@ -239,9 +249,13 @@ export class Application {
         return;
       }
 
-      let credentials: {username: string; password: string} | undefined;
+      let credentials: { username: string; password: string } | undefined;
       try {
-        credentials = await requestAuth(window.win, request.url, webContents.id);
+        credentials = await requestAuth(
+          window.win,
+          request.url,
+          webContents.id,
+        );
       } catch (error) {
         console.error('[auth] failed to show credentials dialog', error);
       }
@@ -252,6 +266,61 @@ export class Application {
         callback();
       }
     });
+
+    // Chrome presents a chooser when a server requests a client certificate;
+    // Electron otherwise silently picks the first certificate in the store.
+    app.on(
+      'select-client-certificate',
+      async (event, webContents, requestUrl, certificateList, callback) => {
+        if (!certificateList?.length) return;
+        event.preventDefault();
+        const owner = this.windows.findByBrowserView(webContents.id);
+        const browserWindow =
+          owner?.win ||
+          BrowserWindow.getAllWindows().find(
+            (window) =>
+              !window.isDestroyed() &&
+              window
+                .getBrowserViews()
+                .some((view) => view.webContents.id === webContents.id),
+          );
+        if (!browserWindow || browserWindow.isDestroyed()) {
+          callback();
+          return;
+        }
+        const t = getMainTranslator(this.settings?.object?.language);
+        const labels = certificateList.map((certificate) => {
+          const subject =
+            certificate.subject?.commonName ||
+            certificate.subjectName ||
+            t('certDefaultSubject');
+          const issuer =
+            certificate.issuer?.commonName ||
+            certificate.issuerName ||
+            t('certUnknownIssuer');
+          const expiry = certificate.validExpiry
+            ? new Date(certificate.validExpiry * 1000).toLocaleDateString(
+                'zh-CN',
+              )
+            : t('certUnknownDate');
+          return t('certItemSummary', {subject, issuer, expiry});
+        });
+        try {
+          const result = await dialog.showMessageBox(browserWindow, {
+            type: 'question',
+            title: t('certSelectTitle'),
+            message: t('certRequestMessage', {url: requestUrl}),
+            buttons: [...labels, t('cancel')],
+            cancelId: labels.length,
+            defaultId: labels.length,
+            noLink: true,
+          });
+          callback(certificateList[result.response]);
+        } catch {
+          callback();
+        }
+      },
+    );
 
     ipcMain.on('create-window', (e, incognito = false) => {
       this.windows.open(incognito);
@@ -314,7 +383,8 @@ export class Application {
         if (
           !Number.isInteger(popupContentsId) ||
           typeof targetOrigin !== 'string'
-        ) return;
+        )
+          return;
         this.nativeBlankPopups.relayToOpener(
           e.sender,
           popupContentsId,
@@ -324,14 +394,17 @@ export class Application {
       },
     );
 
-    ipcMain.on('native-blank-popup-is-opener-closed', (e, popupContentsId: number) => {
-      e.returnValue = true;
-      if (!Number.isInteger(popupContentsId)) return;
-      e.returnValue = this.nativeBlankPopups.isOpenerClosed(
-        e.sender,
-        popupContentsId,
-      );
-    });
+    ipcMain.on(
+      'native-blank-popup-is-opener-closed',
+      (e, popupContentsId: number) => {
+        e.returnValue = true;
+        if (!Number.isInteger(popupContentsId)) return;
+        e.returnValue = this.nativeBlankPopups.isOpenerClosed(
+          e.sender,
+          popupContentsId,
+        );
+      },
+    );
 
     ipcMain.on('native-blank-popup-close', (e, popupContentsId: number) => {
       if (!Number.isInteger(popupContentsId)) return;
@@ -410,7 +483,7 @@ export class Application {
       const target = existing || this.windows.open(incognito, startupUrl, true);
       target.showAndFocus();
       if (existing) {
-        target.viewManager.create({url: startupUrl, active: true});
+        target.viewManager.create({ url: startupUrl, active: true });
       }
       return;
     }
@@ -469,7 +542,7 @@ export class Application {
       clearTimeout(this.firstRealTabTimeout);
       this.firstRealTabTimeout = null;
     }
-    startupMark('main.first_real_tab.ready', {url: url.slice(0, 120)});
+    startupMark('main.first_real_tab.ready', { url: url.slice(0, 120) });
     const resolvers = this.firstRealTabResolvers;
     this.firstRealTabResolvers = [];
     for (const resolve of resolvers) resolve();
@@ -510,18 +583,23 @@ export class Application {
       this.startupCriticalReadyListening = false;
     }
 
-    startupMark('main.deferred_work.triggered', {trigger});
-    this.deferredStartupPromise = this.runDeferredStartupWork().catch((error) => {
-      console.error('[startup] deferred work failed', error);
-      startupMark('main.deferred_work.failed', {trigger});
-    });
+    startupMark('main.deferred_work.triggered', { trigger });
+    this.deferredStartupPromise = this.runDeferredStartupWork().catch(
+      (error) => {
+        console.error('[startup] deferred work failed', error);
+        startupMark('main.deferred_work.failed', { trigger });
+      },
+    );
     return this.deferredStartupPromise;
   }
 
   private loadStartupExtensions(attempt = 1) {
     void this.sessions.loadExtensions().catch((error) => {
-      console.error(`[extensions] startup load attempt ${attempt} failed`, error);
-      startupMark('main.extensions.load.retry_scheduled', {attempt});
+      console.error(
+        `[extensions] startup load attempt ${attempt} failed`,
+        error,
+      );
+      startupMark('main.extensions.load.retry_scheduled', { attempt });
       if (attempt >= 3) return;
       const retryTimer = setTimeout(
         () => this.loadStartupExtensions(attempt + 1),
@@ -565,7 +643,11 @@ export class Application {
           this.screenshotAccelerators.push(accelerator);
         }
       } catch (error) {
-        console.warn('[desktop-screenshot] shortcut register failed:', accelerator, error);
+        console.warn(
+          '[desktop-screenshot] shortcut register failed:',
+          accelerator,
+          error,
+        );
       }
     }
   }
@@ -636,9 +718,7 @@ export class Application {
     for (const accelerator of accelerators) {
       if (!accelerator) continue;
       try {
-        if (
-          globalShortcut.register(accelerator, () => this.toggleBossKey())
-        ) {
+        if (globalShortcut.register(accelerator, () => this.toggleBossKey())) {
           this.bossKeyAccelerators.push(accelerator);
         }
       } catch (error) {
@@ -682,24 +762,20 @@ export class Application {
 
   private ensureBossKeyTray() {
     if (this.bossKeyTray && !this.bossKeyTray.isDestroyed()) return;
-    const iconPath = join(
-      app.getAppPath(),
-      'static',
-      'icons',
-      'icon.png',
-    );
+    const t = getMainTranslator(this.settings?.object?.language);
+    const iconPath = join(app.getAppPath(), 'static', 'icons', 'icon.png');
     const icon = nativeImage.createFromPath(iconPath);
     this.bossKeyTray = new Tray(icon);
-    this.bossKeyTray.setToolTip(`${app.name} - 已隐藏`);
+    this.bossKeyTray.setToolTip(t('winBossHiddenTooltip', {name: app.name}));
     this.bossKeyTray.on('click', () => this.restoreFromBossKey());
     this.bossKeyTray.setContextMenu(
       Menu.buildFromTemplate([
         {
-          label: '显示窗口',
+          label: t('winShowWindow'),
           click: () => this.restoreFromBossKey(),
         },
         { type: 'separator' },
-        { label: '退出', click: () => app.quit() },
+        { label: t('winQuit'), click: () => app.quit() },
       ]),
     );
   }
@@ -720,7 +796,8 @@ export class Application {
       }
     }
     this.bossKeyMutedViewIds.clear();
-    const target = this.windows.current || this.windows.lastFocused || this.windows.list[0];
+    const target =
+      this.windows.current || this.windows.lastFocused || this.windows.list[0];
     target?.showAndFocus();
     if (this.bossKeyTray && !this.bossKeyTray.isDestroyed()) {
       this.bossKeyTray.destroy();
@@ -733,9 +810,10 @@ export class Application {
   private registerShortcutIpc() {
     ipcMain.handle('get-shortcut-actions', () => {
       const overrides = this.settings.object.shortcuts || {};
+      const translator = getMainTranslator(this.settings.object.language);
       return {
-        categories: SHORTCUT_CATEGORIES,
-        actions: SHORTCUT_ACTIONS.map((a) => ({
+        categories: localizeShortcutCategories(translator),
+        actions: localizeShortcutActions(translator).map((a) => ({
           id: a.id,
           label: a.label,
           category: a.category,
@@ -757,20 +835,17 @@ export class Application {
       return true;
     });
 
-    ipcMain.handle(
-      'set-shortcut',
-      (_e, id: string, accelerators: string[]) => {
-        if (!id || !Array.isArray(accelerators)) return false;
-        this.settings.updateSettings({
-          shortcuts: {
-            ...(this.settings.object.shortcuts || {}),
-            [id]: accelerators,
-          },
-        });
-        this.rebuildMenu();
-        return true;
-      },
-    );
+    ipcMain.handle('set-shortcut', (_e, id: string, accelerators: string[]) => {
+      if (!id || !Array.isArray(accelerators)) return false;
+      this.settings.updateSettings({
+        shortcuts: {
+          ...(this.settings.object.shortcuts || {}),
+          [id]: accelerators,
+        },
+      });
+      this.rebuildMenu();
+      return true;
+    });
 
     ipcMain.handle('reset-shortcut', (_e, id?: string) => {
       const next = { ...(this.settings.object.shortcuts || {}) };
@@ -806,9 +881,14 @@ export class Application {
         const sameAsDefault =
           !!cmd &&
           !!cmd.defaultShortcut &&
-          this.normalizeAccel(cmd.defaultShortcut) === this.normalizeAccel(accel);
+          this.normalizeAccel(cmd.defaultShortcut) ===
+            this.normalizeAccel(accel);
         // 内存立即生效(app-scoped before-input-event 表 + global globalShortcut 同步更新)
-        this.sessions.chromeExtensions.setExtensionCommandOverride(extId, name, accel);
+        this.sessions.chromeExtensions.setExtensionCommandOverride(
+          extId,
+          name,
+          accel,
+        );
         // 持久化
         const next = { ...(this.settings.object.extensionShortcuts || {}) };
         const perExt = { ...(next[extId] || {}) };
@@ -837,7 +917,10 @@ export class Application {
         }
         this.settings.updateSettings({ extensionShortcuts: next });
         // 清 overrides,使 reload 后 processExtension 恢复 manifest 默认
-        this.sessions.chromeExtensions.clearExtensionCommandOverride(extId, name);
+        this.sessions.chromeExtensions.clearExtensionCommandOverride(
+          extId,
+          name,
+        );
         await this.sessions.reloadExtension(extId);
         return true;
       },
@@ -849,17 +932,18 @@ export class Application {
     // 设置页:拉取动作目录 + 预设形状 + 每个动作的当前/默认 shape。
     ipcMain.handle('get-gesture-actions', () => {
       const overrides = this.settings.object.mouseGestures || {};
-      const gestureConfig = buildGestureConfig(this.settings.object);
+      const translator = getMainTranslator(this.settings.object.language);
+      const gestureConfig = buildGestureConfig(this.settings.object, translator);
       return {
-        categories: GESTURE_CATEGORIES,
-        actions: GESTURE_ACTIONS,
-        presets: PRESET_SHAPES,
+        categories: localizeGestureCategories(translator),
+        actions: localizeGestureActions(translator),
+        presets: localizePresetShapes(translator),
         bindings: GESTURE_ACTIONS.map((a) => ({
           id: a.id,
           shape: effectiveShape(a.id, overrides),
           defaultShape: effectiveShape(a.id, undefined),
         })),
-        leftActions: LEFT_GESTURE_ACTIONS,
+        leftActions: localizeLeftGestureActions(translator),
         leftThreshold: this.settings.object.mouseLeftGestureThreshold,
         // Return the effective map so the settings UI shows the new default
         // (background open) even when an older profile omitted these fields.
@@ -893,33 +977,61 @@ export class Application {
     // 启用开关 / 轨迹颜色。
     ipcMain.handle(
       'set-gesture-option',
-      (_e, key: 'enabled' | 'leftEnabled' | 'color' | 'leftThreshold' | 'leftGesture' | 'leftOpenInBackground' | 'sideButton', value: any) => {
+      (
+        _e,
+        key:
+          | 'enabled'
+          | 'leftEnabled'
+          | 'color'
+          | 'leftThreshold'
+          | 'leftGesture'
+          | 'leftOpenInBackground'
+          | 'sideButton',
+        value: any,
+      ) => {
         if (key === 'enabled') {
           this.settings.updateSettings({ mouseGesturesEnabled: !!value });
         } else if (key === 'leftEnabled') {
           this.settings.updateSettings({ mouseLeftGesturesEnabled: !!value });
         } else if (key === 'color' && typeof value === 'string') {
           this.settings.updateSettings({ mouseGestureColor: value });
-        } else if (key === 'leftThreshold' && typeof value === 'number' && Number.isFinite(value)) {
+        } else if (
+          key === 'leftThreshold' &&
+          typeof value === 'number' &&
+          Number.isFinite(value)
+        ) {
           this.settings.updateSettings({
-            mouseLeftGestureThreshold: Math.max(8, Math.min(200, Math.round(value))),
+            mouseLeftGestureThreshold: Math.max(
+              8,
+              Math.min(200, Math.round(value)),
+            ),
           });
         } else if (key === 'leftOpenInBackground') {
           this.settings.updateSettings({
             mouseLeftGestureOpenInBackground: !!value,
           });
-        } else if (key === 'leftGesture' && value && typeof value.direction === 'string') {
+        } else if (
+          key === 'leftGesture' &&
+          value &&
+          typeof value.direction === 'string'
+        ) {
           const direction = value.direction.toUpperCase();
           if (!['U', 'D', 'L', 'R'].includes(direction)) return false;
-          const next = {...(this.settings.object.mouseLeftGestures || {})};
-          next[direction] = value.actionId == null || value.actionId === '' ? null : String(value.actionId);
-          this.settings.updateSettings({mouseLeftGestures: next});
+          const next = { ...(this.settings.object.mouseLeftGestures || {}) };
+          next[direction] =
+            value.actionId == null || value.actionId === ''
+              ? null
+              : String(value.actionId);
+          this.settings.updateSettings({ mouseLeftGestures: next });
         } else if (key === 'sideButton' && value) {
           const button = String(value.button);
           if (!['3', '4'].includes(button)) return false;
-          const next = {...(this.settings.object.mouseSideButtons || {})};
-          next[button] = value.actionId == null || value.actionId === '' ? null : String(value.actionId);
-          this.settings.updateSettings({mouseSideButtons: next});
+          const next = { ...(this.settings.object.mouseSideButtons || {}) };
+          next[button] =
+            value.actionId == null || value.actionId === ''
+              ? null
+              : String(value.actionId);
+          this.settings.updateSettings({ mouseSideButtons: next });
         }
         this.broadcastGestureConfig();
         return true;
@@ -927,19 +1039,25 @@ export class Application {
     );
 
     // preload 识别出手势 → 执行对应动作。
-    ipcMain.on('gesture-trigger', (_e, payload: { actionId: string; webContentsId: number }) => {
-      if (!payload || !payload.actionId) return;
-      try {
-        this.runGestureAction(payload.actionId, payload.webContentsId);
-      } catch (err) {
-        console.warn('[gesture-trigger]', err);
-      }
-    });
+    ipcMain.on(
+      'gesture-trigger',
+      (_e, payload: { actionId: string; webContentsId: number }) => {
+        if (!payload || !payload.actionId) return;
+        try {
+          this.runGestureAction(payload.actionId, payload.webContentsId);
+        } catch (err) {
+          console.warn('[gesture-trigger]', err);
+        }
+      },
+    );
   }
 
   // 把最新配置推给所有窗口的所有 view(view.webContents),preload 监听后刷新缓存。
   private broadcastGestureConfig() {
-    const cfg = buildGestureConfig(this.settings.object);
+    const cfg = buildGestureConfig(
+      this.settings.object,
+      getMainTranslator(this.settings.object.language),
+    );
     for (const appWindow of this.windows.list) {
       try {
         appWindow.viewManager.views.forEach((v) => {
@@ -988,7 +1106,11 @@ export class Application {
         } else if (key === 'engine') {
           this.settings.updateSettings({ translateEngine: value });
           engineChanged = true;
-        } else if (key === 'customLlmConfig' && value && typeof value === 'object') {
+        } else if (
+          key === 'customLlmConfig' &&
+          value &&
+          typeof value === 'object'
+        ) {
           this.settings.updateSettings({ customLlmConfig: value });
           // 自定义配置变更仅对 custom-llm 引擎有意义;统一触发 redrive 简化判断。
           if (this.settings.object.translateEngine === 'custom-llm') {
@@ -1008,7 +1130,11 @@ export class Application {
       for (const appWindow of this.windows.list) {
         appWindow.viewManager.views.forEach((view) => {
           if (!view.webContents.isDestroyed()) {
-            view.webContents.send('selection-panel-site-rule-changed', host, hidden);
+            view.webContents.send(
+              'selection-panel-site-rule-changed',
+              host,
+              hidden,
+            );
           }
         });
       }
@@ -1078,8 +1204,9 @@ export class Application {
       if (typeof text !== 'string' || !text.trim()) return;
       const appWindow = this.windows.findByBrowserView(e.sender.id);
       const engine =
-        this.settings.object.searchEngines?.[this.settings.object.searchEngine] ||
-        this.settings.object.searchEngines?.[0];
+        this.settings.object.searchEngines?.[
+          this.settings.object.searchEngine
+        ] || this.settings.object.searchEngines?.[0];
       const keyword = encodeURIComponent(text.trim());
       const url = engine?.url
         ? engine.url.replace('%s', keyword)
@@ -1122,14 +1249,17 @@ export class Application {
     // 供 LLM 引擎消歧(微软引擎忽略)。
     ipcMain.on(
       'selection-translate-request',
-      (_e, p: {
-        id: number;
-        text: string;
-        target: string;
-        webContentsId: number;
-        title?: string;
-        description?: string;
-      }) => {
+      (
+        _e,
+        p: {
+          id: number;
+          text: string;
+          target: string;
+          webContentsId: number;
+          title?: string;
+          description?: string;
+        },
+      ) => {
         if (!p || typeof p.text !== 'string' || !p.webContentsId) return;
         const wc = webContents.fromId(p.webContentsId);
         const reply = (payload: unknown) => {
@@ -1143,7 +1273,11 @@ export class Application {
         })
           .then((text) => reply({ id: p.id, ok: true, text }))
           .catch((err) =>
-            reply({ id: p.id, ok: false, error: String((err as Error)?.message || err) }),
+            reply({
+              id: p.id,
+              ok: false,
+              error: String((err as Error)?.message || err),
+            }),
           );
       },
     );
@@ -1206,7 +1340,9 @@ export class Application {
   // IPC 同一条执行路径。
   public dispatchGesture(actionId: string, webContentsId: number) {
     if (!actionId) return;
-    console.log('[gesture-fire] dispatch actionId=' + actionId + ' wc=' + webContentsId);
+    console.log(
+      '[gesture-fire] dispatch actionId=' + actionId + ' wc=' + webContentsId,
+    );
     try {
       this.runGestureAction(actionId, webContentsId);
     } catch (err) {
@@ -1215,7 +1351,14 @@ export class Application {
   }
 
   public dispatchLeftGesture(
-    payload: { actionId: string; url: string; imageUrl?: string; isImage?: boolean; x?: number; y?: number },
+    payload: {
+      actionId: string;
+      url: string;
+      imageUrl?: string;
+      isImage?: boolean;
+      x?: number;
+      y?: number;
+    },
     webContentsId: number,
   ) {
     const appWindow = this.windows.findByBrowserView(webContentsId);
@@ -1225,7 +1368,11 @@ export class Application {
     if (!appWindow || !wc || !url) return;
     if (/^javascript:/i.test(url)) return;
     if (action === 'copy') {
-      if (payload.isImage && typeof payload.x === 'number' && typeof payload.y === 'number') {
+      if (
+        payload.isImage &&
+        typeof payload.x === 'number' &&
+        typeof payload.y === 'number'
+      ) {
         try {
           wc.copyImageAt(payload.x, payload.y);
           return;
@@ -1240,7 +1387,12 @@ export class Application {
       wc.downloadURL(url);
       return;
     }
-    if (action === 'open-left' || action === 'open-right' || action === 'open-left-background' || action === 'open-right-background') {
+    if (
+      action === 'open-left' ||
+      action === 'open-right' ||
+      action === 'open-left-background' ||
+      action === 'open-right-background'
+    ) {
       appWindow.send('left-gesture-open-link', {
         url,
         side: action.includes('left') ? 'left' : 'right',
@@ -1298,16 +1450,14 @@ export class Application {
         appWindow?.webContents.send('select-previous-tab');
         break;
       case 'scroll-to-top':
-        wc
-          ?.executeJavaScript('window.scrollTo({top:0,behavior:"smooth"})')
-          .catch(() => {});
+        wc?.executeJavaScript(
+          'window.scrollTo({top:0,behavior:"smooth"})',
+        ).catch(() => {});
         break;
       case 'scroll-to-bottom':
-        wc
-          ?.executeJavaScript(
-            'window.scrollTo({top:document.documentElement.scrollHeight,behavior:"smooth"})',
-          )
-          .catch(() => {});
+        wc?.executeJavaScript(
+          'window.scrollTo({top:document.documentElement.scrollHeight,behavior:"smooth"})',
+        ).catch(() => {});
         break;
       case 'zoom-in':
         viewManager?.changeZoom('in');
@@ -1365,17 +1515,43 @@ export class Application {
         startupMark('main.post_window_services.ready');
       })
       .catch((error) => {
-        console.error('[startup] post-window services initialization failed', error);
+        console.error(
+          '[startup] post-window services initialization failed',
+          error,
+        );
       });
   }
 
   private async onReady() {
     startupMark('main.ready_pipeline.entered');
-    app.commandLine.appendSwitch('lang', 'zh-CN');
     const readyTimer = startupTimer();
     startupMark('main.electron_ready.wait.begin');
     await app.whenReady();
-    startupMark('main.electron_ready.wait.end', {durationMs: readyTimer()});
+    startupMark('main.electron_ready.wait.end', { durationMs: readyTimer() });
+    // `getSystemLocale()` is reliable after ready. Resolve `auto` here, before
+    // any BrowserWindow/renderer is created, so navigator.language and extension
+    // catalogs follow the actual OS locale rather than Chromium's en-US default.
+    await this.settings.ready();
+    const preference = normalizeAppLanguage(this.settings.object.language);
+    if (preference === 'auto') {
+      let systemLocale = 'en-US';
+      try {
+        const getSystemLocale = (app as any).getSystemLocale;
+        systemLocale =
+          typeof getSystemLocale === 'function'
+            ? getSystemLocale.call(app) || systemLocale
+            : Intl.DateTimeFormat().resolvedOptions().locale || systemLocale;
+      } catch {
+        systemLocale =
+          process.env.LANG ||
+          Intl.DateTimeFormat().resolvedOptions().locale ||
+          systemLocale;
+      }
+      app.commandLine.appendSwitch(
+        'lang',
+        resolveAppLanguage(preference, systemLocale),
+      );
+    }
     // bootstrap-paths 已在 Electron ready 前完成数据迁移并确定 userData。这里等
     // ready 回调放行,确保失败提示已安排且任何数据库/会话/窗口都不会提前打开。
     const migrationTimer = startupTimer();
@@ -1385,7 +1561,9 @@ export class Application {
     } catch {
       // gate 不会 reject(失败也 resolve 回退到旧目录),此处仅兜底。
     }
-    startupMark('main.migration_gate.wait.end', {durationMs: migrationTimer()});
+    startupMark('main.migration_gate.wait.end', {
+      durationMs: migrationTimer(),
+    });
 
     // 解析一次冷启动目标。只有显式 HTTP(S) 目标会在 windows.open() 内立即
     // 导航，因此必须先等证书白名单。普通启动先加载本地 app.html，权限查询可与
@@ -1396,7 +1574,11 @@ export class Application {
 
     const preWindowServicesTimer = startupTimer();
     startupMark('main.pre_window_services.begin', {
-      startupTarget: startupUrl ? (/^file:/i.test(startupUrl) ? 'file' : 'url') : 'none',
+      startupTarget: startupUrl
+        ? /^file:/i.test(startupUrl)
+          ? 'file'
+          : 'url'
+        : 'none',
     });
 
     checkFiles();
@@ -1418,9 +1600,9 @@ export class Application {
     startupMark('main.storage.open_databases.end', {durationMs: databaseTimer()});
     // certificate-error requires the persisted allow-list to be ready before
     // the first navigation can synchronously consult it.
-    const certificatePermissionsReady = reloadCertificateErrorPermissions(this.storage).catch(
-      () => undefined,
-    );
+    const certificatePermissionsReady = reloadCertificateErrorPermissions(
+      this.storage,
+    ).catch(() => undefined);
     if (startupNeedsCertificatePermissions) {
       const certificateTimer = startupTimer();
       startupMark('main.certificate_permissions.wait.begin');
@@ -1441,7 +1623,7 @@ export class Application {
     const sessionsTimer = startupTimer();
     startupMark('main.sessions.construct.begin');
     this.sessions = new SessionsService();
-    startupMark('main.sessions.construct.end', {durationMs: sessionsTimer()});
+    startupMark('main.sessions.construct.end', { durationMs: sessionsTimer() });
     // Settings starts loading with Application construction. As soon as both
     // settings and sessions exist, install adblock before the renderer restores
     // real tabs; this avoids letting the first page escape request filtering.
@@ -1520,7 +1702,7 @@ export class Application {
     } catch (onboardingErr) {
       console.error('[onboarding] error', onboardingErr);
     }
-    startupMark('main.onboarding_check.end', {durationMs: onboardingTimer()});
+    startupMark('main.onboarding_check.end', { durationMs: onboardingTimer() });
 
     // 冷启动带 --incognito(从固定的「无痕浏览」任务栏/开始菜单项首次启动):首窗即无痕。
     // 外部 HTML/URL 同时注入首窗,避免 renderer 等待设置和会话恢复后才开始加载。
@@ -1534,7 +1716,7 @@ export class Application {
       startupUrl,
       !!startupUrl,
     );
-    startupMark('main.window.open.end', {durationMs: windowTimer()});
+    startupMark('main.window.open.end', { durationMs: windowTimer() });
     this.enterWindowServiceablePhase();
     this.initializePostWindowServices();
     mainWindow.webContents.once('did-finish-load', () => {
@@ -1547,7 +1729,9 @@ export class Application {
     const settingsTimer = startupTimer();
     startupMark('main.settings.ready.wait.begin');
     await this.settings.ready();
-    startupMark('main.settings.ready.wait.end', {durationMs: settingsTimer()});
+    startupMark('main.settings.ready.wait.end', {
+      durationMs: settingsTimer(),
+    });
     this.rebuildMenu();
 
     app.on('activate', () => {
@@ -1598,7 +1782,7 @@ export class Application {
       const cacheTimer = startupTimer();
       startupMark('main.storage.load_caches.begin');
       await this.storage.loadCaches();
-      startupMark('main.storage.load_caches.end', {durationMs: cacheTimer()});
+      startupMark('main.storage.load_caches.end', { durationMs: cacheTimer() });
       this.windows.broadcast('reload-bookmarks');
     } catch (e) {
       console.error('deferred storage.loadCaches failed', e);
@@ -1668,7 +1852,10 @@ export class Application {
         videoWhitelist.runVideoPlayerWhitelistService();
         userAgentConfig.runUserAgentConfigService();
       } catch (error) {
-        console.error('[startup] deferred network/cloud services failed', error);
+        console.error(
+          '[startup] deferred network/cloud services failed',
+          error,
+        );
       } finally {
         startupMark('main.deferred_network_cloud_services.end', {
           durationMs: servicesTimer(),

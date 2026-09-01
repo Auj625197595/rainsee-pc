@@ -1,10 +1,13 @@
 // 此文件由 scripts/gen-adblock-picker.js 从 dom_picker.js 自动生成，请勿手改主体逻辑。
 // 来源: browserv4/moduleMain/src/main/assets/adblock/dom_picker.js
-// 改动: 1) i18n 占位符替换为中文常量; 2) 顶部注入 JSInterface -> Electron ipcRenderer 桥。
+// 改动: 1) i18n 占位符在注入前由主进程按当前语言填充(见 getAdblockPickerCode);
+// 2) JSInterface 由标签 preload
+// 在用户启动拾取器时临时安装,不向网页暴露通用 Electron IPC。
 //
-// 注入到标签页 webContents(contextIsolation:false, preload 暴露 window.electron.ipcRenderer)。
-// picker 主体通过 window.JSInterface 回传, 由下方 shim 转成 ipc 消息发给所属窗口。
+// picker 主体通过 window.JSInterface 回传,取消或提交后 preload 会撤销该接口。
 /* eslint-disable */
+import {Application} from '../application';
+import {getMainTranslator} from '../i18n';
 
 const PICKER_BODY = `(function() {
   if (window.__YJAdblockPicker) {
@@ -21,22 +24,7 @@ const PICKER_BODY = `(function() {
   var PICKER_RULE_MAX_LINES = 4;
   var RULE_MAX_LENGTH = 64 * 1024;
   var URL_SELECTOR_PATH_MAX_LENGTH = 160;
-  var I18N = {
-    dragHandle: "拖动面板",
-    parent: "上一层",
-    child: "下一层",
-    back: "返回",
-    previewHide: "预览隐藏",
-    previewCancel: "取消预览",
-    saveRule: "隐藏元素",
-    blockResource: "拦截资源",
-    cancel: "取消",
-    matches: "匹配 %1$s 个",
-    size: "尺寸 %1$s×%2$s",
-    childHistory: "已展开 %1$s 层",
-    unableBuildRule: "无法生成规则",
-    element: "元素"
-  };
+  var I18N = __YJ_PICKER_I18N_JSON__;
 
   function formatI18n(template) {
     var values = [];
@@ -1206,30 +1194,28 @@ const PICKER_BODY = `(function() {
 
 /**
  * 生成可注入网页的元素拾取器代码。
+ * 面板文案按当前语言翻译后以 JSON 注入;带数量的词条用 {count}/{w}/{h} 参数,
+ * 注入时把参数占位回填为页面侧 formatI18n 认识的 %1$s/%2$s。
  * @param windowId 所属浏览器窗口 id, 回传 ipc 时拼到频道名
  */
-export const getAdblockPickerCode = (windowId: number): string => {
-  const WINDOW_ID = JSON.stringify(windowId);
-  const shim = `
-    (function () {
-      try {
-        var ipc = window.electron && window.electron.ipcRenderer;
-        window.JSInterface = window.JSInterface || {};
-        window.JSInterface.onAdblockPickerEnter = function () {
-          try { ipc && ipc.send("adblock-picker-state-" + ${WINDOW_ID}, "enter"); } catch (e) {}
-        };
-        window.JSInterface.onAdblockPickerCancel = function () {
-          try { ipc && ipc.send("adblock-picker-state-" + ${WINDOW_ID}, "cancel"); } catch (e) {}
-        };
-        window.JSInterface.onAdblockPickerSubmit = function (ruleText) {
-          try { ipc && ipc.send("adblock-picker-state-" + ${WINDOW_ID}, "submit", ruleText || ""); } catch (e) {}
-        };
-        window.JSInterface.saveGeneratedAdblockRule = function (ruleText) {
-          try { ipc && ipc.send("save-adblock-rule-" + ${WINDOW_ID}, ruleText || ""); } catch (e) {}
-        };
-      } catch (e) {}
-    })();
-  `;
+export const getAdblockPickerCode = (_windowId: number): string => {
+  const t = getMainTranslator(Application.instance.settings?.object?.language);
+  const i18n = {
+    dragHandle: t('apDragHandle'),
+    parent: t('apParent'),
+    child: t('apChild'),
+    back: t('apBack'),
+    previewHide: t('apPreviewHide'),
+    previewCancel: t('apPreviewCancel'),
+    saveRule: t('apHideElement'),
+    blockResource: t('apBlockResource'),
+    cancel: t('cancel'),
+    matches: t('apMatchesN', {count: '%1$s'}),
+    size: t('apSize', {w: '%1$s', h: '%2$s'}),
+    childHistory: t('apChildHistoryN', {count: '%1$s'}),
+    unableBuildRule: t('apUnableBuildRule'),
+    element: t('apElement'),
+  };
   const starter = `
     (function () {
       try {
@@ -1239,5 +1225,5 @@ export const getAdblockPickerCode = (windowId: number): string => {
       } catch (e) {}
     })();
   `;
-  return shim + PICKER_BODY + starter;
+  return PICKER_BODY.replace('__YJ_PICKER_I18N_JSON__', JSON.stringify(i18n)) + starter;
 };

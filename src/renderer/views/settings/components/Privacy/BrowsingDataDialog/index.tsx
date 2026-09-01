@@ -5,13 +5,15 @@ import styled, {css} from 'styled-components';
 import {Dialog, Title, Content, Buttons, CloseButton} from '../../Dialog';
 import {NormalButton} from '../../App';
 import store from '../../../store';
-import {saveWebBrowsingSettings} from '../../../utils';
+import {saveWebBrowsingSettings, getSettingsTranslator} from '../../../utils';
 import {ITheme} from '~/interfaces';
+import type {MessageKey} from '~/common/i18n';
 import {getPalette} from '~/renderer/views/bookmarks/utils/palette';
+import {ipcRenderer} from '~/common/renderer-ipc';
 
 // 「立即清除浏览数据」对话框(原占位 alert「此功能开发中」的实现)。
 // 复用主进程 performClearOnExit 编排 + 主窗口进度覆盖层:
-// 确定后 (window as any).clearBrowsingDataNow(view-preload 注入) → 主进程显示
+// 确定后通过受控 WebUI IPC → 主进程显示
 // 覆盖层、跑清理、完成后隐藏覆盖层(不退出)。
 
 const Item = styled.div`
@@ -56,14 +58,18 @@ const Check = () => (
   </svg>
 );
 
-const ITEMS: {key: 'cache' | 'cookies' | 'history' | 'searchHistory'; label: string}[] = [
-  {key: 'history', label: '历史记录'},
-  {key: 'cache', label: '网页缓存'},
-  {key: 'cookies', label: 'Cookie'},
-  {key: 'searchHistory', label: '搜索历史'},
+const ITEMS: {
+  key: 'cache' | 'cookies' | 'history' | 'searchHistory';
+  labelKey: MessageKey;
+}[] = [
+  {key: 'history', labelKey: 'pvItemHistory'},
+  {key: 'cache', labelKey: 'pvItemCache'},
+  {key: 'cookies', labelKey: 'wbCookie'},
+  {key: 'searchHistory', labelKey: 'wbSearchHistory'},
 ];
 
 export default observer(() => {
+  const t = getSettingsTranslator();
   const visible = store.dialogContent === 'browsing-data';
   // 本地选择态会在确认清理时持久化,供工具栏的当前站点/全部站点清理复用。
   const [items, setItems] = React.useState(() => ({
@@ -86,12 +92,7 @@ export default observer(() => {
     try {
       store.settings.clearBrowsingData = {...items};
       saveWebBrowsingSettings({clearBrowsingData: {...items}});
-      // 设置页是 webui(nodeIntegration:false),不能直接用 ipcRenderer;
-      // 由 view-preload 注入 (window as any).clearBrowsingDataNow 桥接。
-      const fn = (window as any).clearBrowsingDataNow;
-      if (typeof fn === 'function') {
-        await fn(items);
-      }
+      await ipcRenderer.invoke('clear-browsing-data-now', {items});
     } catch (e) {
       console.error('[clear-browsing-data] failed', e);
     } finally {
@@ -102,19 +103,19 @@ export default observer(() => {
 
   return (
     <Dialog visible={visible} style={{width: 344, marginLeft: 'auto'}}>
-      <Title>清除浏览数据</Title>
+      <Title>{t('searchClearBrowsingData')}</Title>
       <Content>
         {ITEMS.map((it) => (
           <Item key={it.key} onClick={() => toggle(it.key)}>
             <Box checked={items[it.key]}>{items[it.key] && <Check />}</Box>
-            {it.label}
+            {t(it.labelKey)}
           </Item>
         ))}
       </Content>
       <Buttons>
         <CloseButton />
         <NormalButton onClick={onClear} disabled={clearing}>
-          {clearing ? '清理中…' : '立即清除'}
+          {clearing ? t('pvClearing') : t('pvClearNow')}
         </NormalButton>
       </Buttons>
     </Dialog>

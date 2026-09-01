@@ -69,10 +69,16 @@ import Tree from '../Tree';
 import { Bookmark } from '../Bookmark';
 import { FolderPicker } from '../FolderPicker';
 import { ipcRenderer } from '~/common/renderer-ipc';
+import {
+  createTranslator,
+  resolveAppLanguage,
+  Translator,
+} from '~/common/i18n';
 import { Button } from '~/renderer/components/Button';
 import { ICON_EDIT, ICON_TRASH, ICON_FOLDER } from '~/renderer/constants';
 import { WebUIStyle } from '~/renderer/mixins/default-styles';
 import { OpenInNewTabToggle } from '~/renderer/components/OpenInNewTabToggle';
+import { useI18n } from '~/renderer/components/I18n';
 
 // ===== 内联图标（跟随 currentColor）=====
 
@@ -238,20 +244,30 @@ const BrowserDot = ({ color }: { color: string }) => (
   </svg>
 );
 
-// 后端 __error 信封 → 中文提示。
-const mapImportError = (msg: string): string => {
+// 页面文案走统一 i18n 目录(见 docs/internationalization.md)。语言偏好来自
+// WebUI 注入的 settings,auto 时以 navigator.language 为系统语言基线——主进程
+// 在创建渲染器前已设 --lang,两者一致。
+const getAppTranslator = (): Translator =>
+  createTranslator(
+    resolveAppLanguage(
+      store.settings.language,
+      typeof navigator === 'undefined' ? undefined : navigator.language,
+    ),
+  );
+
+// 后端 __error 信封 → 本地化提示。
+const mapImportError = (msg: string, t: Translator): string => {
   if (msg.startsWith('BROWSER_NOT_FOUND'))
-    return '未找到该浏览器的书签数据，请确认已安装';
-  if (msg.startsWith('PROFILE_NOT_FOUND')) return '未找到浏览器配置文件';
-  if (msg.startsWith('PARSE_FAILED'))
-    return '读取书签失败，请关闭目标浏览器后重试';
-  return '导入失败，请重试';
+    return t('importErrorBrowserNotFound');
+  if (msg.startsWith('PROFILE_NOT_FOUND')) return t('importErrorProfileNotFound');
+  if (msg.startsWith('PARSE_FAILED')) return t('importErrorParseFailed');
+  return t('importErrorGeneric');
 };
 
-const getImportErrorMessage = (error: unknown): string => {
+const getImportErrorMessage = (error: unknown, t: Translator): string => {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === 'string' && error) return error;
-  return String(error || '未知错误');
+  return String(error || t('importErrorUnknown'));
 };
 
 const IconFlag = () => (
@@ -466,11 +482,12 @@ const onCrumbDrop =
 
 // 文件夹选择器触发按钮的路径文本。
 const folderPathLabel = (id: string | null): string => {
+  const t = getAppTranslator();
   const targetId =
     id ?? store.list.find((x) => x.static === 'main')?._id ?? null;
-  if (!targetId) return '书签栏';
+  if (!targetId) return t('bookmarkBar');
   const path = store.getFolderPath(targetId).map(getBookmarkTitle);
-  return path.length > 0 ? path.join(' / ') : '书签栏';
+  return path.length > 0 ? path.join(' / ') : t('bookmarkBar');
 };
 
 // 返回上一级目录:跳到当前文件夹的 parent
@@ -515,16 +532,17 @@ const countImported = (arr: any[]) => {
 
 const onPickBrowser = (id: 'chrome' | 'edge' | 'firefox') => async () => {
   if (store.importBusy) return;
+  const t = getAppTranslator();
   store.importBusy = true;
   store.importError = null;
   try {
     const res = await ipcRenderer.invoke('browser-import-read', id);
     if (res && res.__error) {
-      store.importError = mapImportError(res.__error);
+      store.importError = mapImportError(res.__error, t);
     } else {
       const counts = countImported(res);
       if (counts.bookmarks === 0 && counts.folders === 0) {
-        store.importError = '未读取到任何书签';
+        store.importError = t('noBookmarksRead');
       } else {
         // 先停在确认页，等用户确认再写入。
         store.pendingImport = res;
@@ -535,7 +553,9 @@ const onPickBrowser = (id: 'chrome' | 'edge' | 'firefox') => async () => {
     }
   } catch (error) {
     console.error('[browser-import] read failed', error);
-    store.importError = `导入失败：${getImportErrorMessage(error)}`;
+    store.importError = t('importFailed', {
+      reason: getImportErrorMessage(error, t),
+    });
   } finally {
     store.importBusy = false;
   }
@@ -543,6 +563,7 @@ const onPickBrowser = (id: 'chrome' | 'edge' | 'firefox') => async () => {
 
 const onConfirmImport = async () => {
   if (store.importBusy || !store.pendingImport) return;
+  const t = getAppTranslator();
   store.importBusy = true;
   store.importError = null;
   try {
@@ -550,7 +571,9 @@ const onConfirmImport = async () => {
     store.closeBrowserImport();
   } catch (error) {
     console.error('[browser-import] commit failed', error);
-    store.importError = `导入失败：${getImportErrorMessage(error)}`;
+    store.importError = t('importFailed', {
+      reason: getImportErrorMessage(error, t),
+    });
   } finally {
     store.importBusy = false;
   }
@@ -653,11 +676,12 @@ const BookmarksUrlSync = observer(() => {
 });
 
 const BookmarksContent = observer(() => {
+  const t = useI18n();
   const [editing, setEditing] = React.useState(false);
   const items = store.visibleItems;
   const path = store.path;
   const currentTitle =
-    path.length > 0 ? getBookmarkTitle(path[path.length - 1]) : '书签';
+    path.length > 0 ? getBookmarkTitle(path[path.length - 1]) : t('bookmarks');
   // 面包屑拖拽悬停高亮:key = crumbKey(item) 或根标记。
   const [crumbHoverKey, setCrumbHoverKey] = React.useState<string | null>(null);
 
@@ -677,14 +701,14 @@ const BookmarksContent = observer(() => {
         onSelectAllClick={onSelectAllClick}
         onMoveClick={onMoveSelected}
         onPinClick={store.canManualSort ? onPinSelected : undefined}
-        selectAllLabel={store.allVisibleSelected ? '取消全选' : '全选'}
+        selectAllLabel={store.allVisibleSelected ? t('deselectAll') : t('selectAll')}
       />
 
       <HeaderRow>
         <div>
           <HeadingRow>
             {path.length > 0 && (
-              <BackBtn onClick={onBackClick} title="返回上一级">
+              <BackBtn onClick={onBackClick} title={t('backToParent')}>
                 <IconBack />
               </BackBtn>
             )}
@@ -697,29 +721,31 @@ const BookmarksContent = observer(() => {
               active={store.showFlaggedOnly}
               onClick={onToggleFlaggedOnly}
               title={
-                store.showFlaggedOnly ? '显示全部书签' : '仅显示已标记的书签'
+                store.showFlaggedOnly
+                  ? t('showAllBookmarks')
+                  : t('showFlaggedOnly')
               }
             >
               <IconFlag />
-              仅看标记
+              {t('flaggedOnly')}
             </ToggleBtn>
           )}
           {store.hasFlagged && (
-            <GhostBtn onClick={onClearFlags} title="清除所有重点标记">
-              清除标记
+            <GhostBtn onClick={onClearFlags} title={t('clearFlagsTitle')}>
+              {t('clearFlags')}
             </GhostBtn>
           )}
           <OpenInNewTabToggle
             checked={store.openInNewTab}
             onChange={(v) => store.setOpenInNewTab(v)}
-            title="勾选后在新标签页打开书签；未勾选则在当前页打开"
+            title={t('openInNewTabHint')}
           />
           <GhostBtn
             onClick={toggleEditing}
-            title={editing ? '完成编辑' : '编辑书签'}
+            title={editing ? t('finishEditing') : t('editBookmarks')}
           >
             <IconEdit />
-            {editing ? '完成' : '编辑'}
+            {editing ? t('done') : t('edit')}
           </GhostBtn>
           <GhostBtn
             onClick={onSortClick}
@@ -727,12 +753,12 @@ const BookmarksContent = observer(() => {
             disabled={store.searched !== '' || store.currentFolderReadOnly}
           >
             <IconSort />
-            排序
+            {t('sort')}
           </GhostBtn>
           {!store.currentFolderReadOnly && (
             <PrimaryBtn onClick={onNewFolderClick}>
               <IconPlus />
-              新建文件夹
+              {t('newFolder')}
             </PrimaryBtn>
           )}
         </ActionBtns>
@@ -751,7 +777,7 @@ const BookmarksContent = observer(() => {
             }
             onDrop={onCrumbDrop(null, () => setCrumbHoverKey(null))}
           >
-            我的书签
+            {t('myBookmarks')}
           </Crumb>
           {path.map((item) => (
             <React.Fragment key={item._id}>
@@ -773,7 +799,7 @@ const BookmarksContent = observer(() => {
             </React.Fragment>
           ))}
         </Breadcrumb>
-        <CountText>共 {items.length} 项</CountText>
+        <CountText>{t('itemsCount', { count: items.length })}</CountText>
       </ListHeaderRow>
 
       <CardList>
@@ -813,6 +839,7 @@ const BookmarksContent = observer(() => {
 // 开源版：书签云同步面板与安全提醒已随云服务移除。
 
 export default observer(() => {
+  const t = useI18n();
   const [toolboxVisible, setToolboxVisible] = React.useState(false);
 
   const duplicateGroups = store.duplicateGroups;
@@ -823,7 +850,10 @@ export default observer(() => {
   const removeDuplicateBookmarks = () => {
     if (duplicateRemoveIds.length === 0) return;
     const confirmed = window.confirm(
-      `检测到 ${duplicateGroups.length} 组重复 URL，将删除 ${duplicateRemoveIds.length} 个书签并保留每组第一个。是否继续？`,
+      t('duplicateConfirm', {
+        groups: duplicateGroups.length,
+        count: duplicateRemoveIds.length,
+      }),
     );
     if (!confirmed) return;
     store.removeItems(duplicateRemoveIds);
@@ -832,14 +862,14 @@ export default observer(() => {
   let dialogTitle = '新建文件夹';
 
   if (store.dialogContent === 'edit') {
-    dialogTitle = '编辑书签';
+    dialogTitle = t('editBookmark');
   } else if (store.dialogContent === 'rename-folder') {
-    dialogTitle = '重命名文件夹';
+    dialogTitle = t('renameFolder');
   } else if (store.dialogContent === 'move') {
     dialogTitle =
       store.moveTargetIds.length > 1
-        ? `移动 ${store.moveTargetIds.length} 项到文件夹`
-        : '移动到文件夹';
+        ? t('moveItemsToFolder', { count: store.moveTargetIds.length })
+        : t('moveToFolder');
   }
 
   const showEditFolderPicker =
@@ -867,17 +897,17 @@ export default observer(() => {
 
         <Sidebar>
           <SideHeader>
-            <SideTitle>书签</SideTitle>
-            <SideSubtitle>管理你的常用书签</SideSubtitle>
+            <SideTitle>{t('bookmarks')}</SideTitle>
+            <SideSubtitle>{t('bookmarksSubtitle')}</SideSubtitle>
           </SideHeader>
 
           <SearchBox>
             <IconSearch />
-            <SearchInput placeholder="搜索书签" onInput={onInput} />
+            <SearchInput placeholder={t('searchBookmarks')} onInput={onInput} />
           </SearchBox>
 
           <FolderSection>
-            <SectionLabel>文件夹</SectionLabel>
+            <SectionLabel>{t('folders')}</SectionLabel>
             <Tree />
           </FolderSection>
 
@@ -885,24 +915,24 @@ export default observer(() => {
             {!store.currentFolderReadOnly && (
               <ActionItem onClick={onNewFolderClick}>
                 <IconNewFolder />
-                新建文件夹
+                {t('newFolder')}
               </ActionItem>
             )}
             <ActionItem onClick={onImportClick}>
               <IconImport />
-              导入书签
+              {t('importBookmarks')}
             </ActionItem>
             <ActionItem onClick={onBrowserImportClick}>
               <IconBrowserImport />
-              从本机浏览器导入
+              {t('importFromBrowser')}
             </ActionItem>
             <ActionItem onClick={onExportClick}>
               <IconExport />
-              导出书签
+              {t('exportBookmarks')}
             </ActionItem>
             <ActionItem onClick={() => setToolboxVisible(true)}>
               <IconToolbox />
-              工具箱
+              {t('toolbox')}
             </ActionItem>
           </BottomActions>
         </Sidebar>
@@ -917,22 +947,22 @@ export default observer(() => {
         >
           {store.currentBookmark && !store.currentBookmark.isFolder && (
             <ContextMenuItem onClick={onEditClick} icon={ICON_EDIT}>
-              编辑
+              {t('edit')}
             </ContextMenuItem>
           )}
           {store.currentBookmark && store.currentBookmark.isFolder && (
             <ContextMenuItem onClick={onRenameClick} icon={ICON_EDIT}>
-              重命名
+              {t('rename')}
             </ContextMenuItem>
           )}
           <ContextMenuItem onClick={onMoveItemClick} icon={ICON_FOLDER}>
-            移动到…
+            {t('moveTo')}
           </ContextMenuItem>
           <ContextMenuItem
             onClick={onRemoveClick(store.currentBookmark)}
             icon={ICON_TRASH}
           >
-            删除
+            {t('deleteItem')}
           </ContextMenuItem>
         </ContextMenu>
 
@@ -946,17 +976,17 @@ export default observer(() => {
           visible={store.sortMenuVisible}
         >
           <ContextMenuItem onClick={onSortPick('title-asc')}>
-            按名称 A → Z
+            {t('sortTitleAsc')}
           </ContextMenuItem>
           <ContextMenuItem onClick={onSortPick('title-desc')}>
-            按名称 Z → A
+            {t('sortTitleDesc')}
           </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem onClick={onSortPick('url-asc')}>
-            按网址 A → Z
+            {t('sortUrlAsc')}
           </ContextMenuItem>
           <ContextMenuItem onClick={onSortPick('url-desc')}>
-            按网址 Z → A
+            {t('sortUrlDesc')}
           </ContextMenuItem>
         </ContextMenu>
 
@@ -967,17 +997,17 @@ export default observer(() => {
 
       {toolboxVisible && (
         <Dialog onMouseDown={onDialogMouseDown} wide visible>
-          <DialogTitle>书签工具箱</DialogTitle>
-          <ToolboxSummary>
-            按 URL 检测全部文件夹中的重复书签，每组保留最先出现的一个。
-          </ToolboxSummary>
+          <DialogTitle>{t('toolboxTitle')}</DialogTitle>
+          <ToolboxSummary>{t('toolboxDescription')}</ToolboxSummary>
           {duplicateGroups.length === 0 ? (
-            <ToolboxSummary>没有发现重复 URL，书签列表已经保持唯一。</ToolboxSummary>
+            <ToolboxSummary>{t('toolboxNoDuplicates')}</ToolboxSummary>
           ) : (
             <React.Fragment>
               <ToolboxSummary>
-                共发现 {duplicateGroups.length} 组重复 URL，可清理{' '}
-                {duplicateRemoveIds.length} 个书签。
+                {t('toolboxFound', {
+                  groups: duplicateGroups.length,
+                  count: duplicateRemoveIds.length,
+                })}
               </ToolboxSummary>
               <ToolboxList>
                 {duplicateGroups.map((group) => (
@@ -985,13 +1015,13 @@ export default observer(() => {
                     <ToolboxUrl title={group.url}>{group.url}</ToolboxUrl>
                     <ToolboxTitles
                       title={group.items
-                        .map((item) => item.title || '未命名')
-                        .join('、')}
+                        .map((item) => item.title || t('untitled'))
+                        .join(t('listSeparator'))}
                     >
-                      {group.items.length} 个书签：
+                      {t('bookmarksColon', { count: group.items.length })}
                       {group.items
-                        .map((item) => item.title || '未命名')
-                        .join('、')}
+                        .map((item) => item.title || t('untitled'))
+                        .join(t('listSeparator'))}
                     </ToolboxTitles>
                   </ToolboxRow>
                 ))}
@@ -1010,7 +1040,7 @@ export default observer(() => {
                 store.theme['dialog.lightForeground'] ? 'white' : 'black'
               }
             >
-              关闭
+              {t('close')}
             </Button>
             <Button
               onClick={removeDuplicateBookmarks}
@@ -1019,7 +1049,7 @@ export default observer(() => {
                 opacity: duplicateRemoveIds.length > 0 ? 1 : 0.5,
               }}
             >
-              清理重复书签
+              {t('cleanDuplicates')}
             </Button>
           </DialogButtons>
           <div style={{ clear: 'both' }}></div>
@@ -1034,7 +1064,7 @@ export default observer(() => {
         >
           <DialogTitle>{dialogTitle}</DialogTitle>
           <DialogField>
-            <DialogFieldLabel>名称</DialogFieldLabel>
+            <DialogFieldLabel>{t('nameField')}</DialogFieldLabel>
             <DialogInput
               ref={store.nameInputRef}
               defaultValue={
@@ -1047,7 +1077,7 @@ export default observer(() => {
 
           {store.dialogContent === 'edit' && (
             <DialogField>
-              <DialogFieldLabel>地址</DialogFieldLabel>
+              <DialogFieldLabel>{t('addressField')}</DialogFieldLabel>
               <DialogInput
                 ref={store.urlInputRef}
                 type="url"
@@ -1058,11 +1088,11 @@ export default observer(() => {
 
           {showEditFolderPicker && (
             <FolderField>
-              <FolderLabel>所属文件夹</FolderLabel>
+              <FolderLabel>{t('parentFolder')}</FolderLabel>
               {!store.editFolderPanelOpen ? (
                 <FolderTrigger
                   onClick={() => store.openEditFolderPanel()}
-                  title="选择文件夹"
+                  title={t('chooseFolder')}
                 >
                   <FolderTriggerText>
                     {folderPathLabel(store.editParentFolderId)}
@@ -1095,7 +1125,7 @@ export default observer(() => {
                           : 'black'
                       }
                     >
-                      收起
+                      {t('collapse')}
                     </Button>
                   </div>
                 </FolderPanel>
@@ -1115,10 +1145,10 @@ export default observer(() => {
                 store.theme['dialog.lightForeground'] ? 'white' : 'black'
               }
             >
-              取消
+              {t('cancel')}
             </Button>
             <Button onClick={onSaveClick} style={{ marginLeft: 8 }}>
-              保存
+              {t('save')}
             </Button>
           </DialogButtons>
           <div style={{ clear: 'both' }}></div>
@@ -1146,7 +1176,7 @@ export default observer(() => {
                 store.theme['dialog.lightForeground'] ? 'white' : 'black'
               }
             >
-              取消
+              {t('cancel')}
             </Button>
             <Button
               onClick={() => store.confirmMove()}
@@ -1155,7 +1185,7 @@ export default observer(() => {
                 opacity: store.moveTargetFolderId ? 1 : 0.5,
               }}
             >
-              移动
+              {t('moveAction')}
             </Button>
           </DialogButtons>
           <div style={{ clear: 'both' }}></div>
@@ -1166,16 +1196,20 @@ export default observer(() => {
         <Dialog onMouseDown={onDialogMouseDown} visible>
           {store.importPhase === 'confirm' ? (
             <React.Fragment>
-              <DialogTitle>确认导入书签</DialogTitle>
+              <DialogTitle>{t('confirmImportTitle')}</DialogTitle>
               <ImportNote>
-                从 <b>{store.pendingBrowserName}</b> 读取到{' '}
-                <b>{store.pendingCounts.bookmarks}</b> 个书签
-                {store.pendingCounts.folders > 0
-                  ? `（含 ${store.pendingCounts.folders} 个文件夹）`
-                  : ''}
-                ，是否确认导入？
+                {t('importConfirmBody', {
+                  browser: store.pendingBrowserName,
+                  count: store.pendingCounts.bookmarks,
+                  folders:
+                    store.pendingCounts.folders > 0
+                      ? t('importFoldersNote', {
+                          count: store.pendingCounts.folders,
+                        })
+                      : '',
+                })}
               </ImportNote>
-              {store.importBusy && <ImportNote>正在导入，请稍候…</ImportNote>}
+              {store.importBusy && <ImportNote>{t('importing')}</ImportNote>}
               {store.importError && (
                 <ImportNote error>{store.importError}</ImportNote>
               )}
@@ -1192,21 +1226,21 @@ export default observer(() => {
                     store.theme['dialog.lightForeground'] ? 'white' : 'black'
                   }
                 >
-                  返回
+                  {t('backAction')}
                 </Button>
                 <Button
                   onClick={onConfirmImport}
                   style={{ marginLeft: 8, opacity: store.importBusy ? 0.5 : 1 }}
                 >
-                  确认导入
+                  {t('confirmImportAction')}
                 </Button>
               </DialogButtons>
             </React.Fragment>
           ) : (
             <React.Fragment>
-              <DialogTitle>从本机浏览器导入书签</DialogTitle>
+              <DialogTitle>{t('importFromBrowserTitle')}</DialogTitle>
               {store.importBusy ? (
-                <ImportNote>正在读取书签，请稍候…</ImportNote>
+                <ImportNote>{t('readingBookmarks')}</ImportNote>
               ) : (
                 <React.Fragment>
                   {(['chrome', 'edge', 'firefox'] as const).map((b) => {
@@ -1222,7 +1256,9 @@ export default observer(() => {
                       >
                         <BrowserDot color={meta.color} />
                         <span>{meta.name}</span>
-                        {!detected && <BrowserBadge>未检测到</BrowserBadge>}
+                        {!detected && (
+                          <BrowserBadge>{t('notDetected')}</BrowserBadge>
+                        )}
                       </BrowserRow>
                     );
                   })}
@@ -1243,7 +1279,7 @@ export default observer(() => {
                     store.theme['dialog.lightForeground'] ? 'white' : 'black'
                   }
                 >
-                  关闭
+                  {t('close')}
                 </Button>
               </DialogButtons>
             </React.Fragment>

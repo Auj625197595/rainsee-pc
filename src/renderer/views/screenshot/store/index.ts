@@ -1,5 +1,6 @@
 import { ipcRenderer } from 'electron';
 import { makeObservable, observable } from 'mobx';
+import { createLocaleTranslator } from '~/common/i18n';
 import { DialogStore } from '~/models/dialog-store';
 
 // 浮层模式:idle=待框选, fullpage=长截图结果预览
@@ -50,12 +51,20 @@ export class Store extends DialogStore {
     ipcRenderer.on('screenshot-save-result', (e, data) => {
       console.warn('[ss-r] save-result', data);
       if (data && data.canceled) return;
-      this.setHint(data && data.ok ? '已保存' : '保存失败');
+      this.setHint(
+      data && data.ok
+        ? createLocaleTranslator(this.settings.language)('shotSaved')
+        : createLocaleTranslator(this.settings.language)('shotSaveFailed'),
+    );
     });
 
     ipcRenderer.on('screenshot-copy-result', (e, data) => {
       console.warn('[ss-r] copy-result', data);
-      this.setHint(data && data.ok ? '已复制到剪贴板' : '复制失败');
+      this.setHint(
+      data && data.ok
+        ? createLocaleTranslator(this.settings.language)('shotCopied')
+        : createLocaleTranslator(this.settings.language)('shotCopyFailed'),
+    );
     });
 
     ipcRenderer.on('screenshot-longshot-result', (e, data) => {
@@ -70,7 +79,7 @@ export class Store extends DialogStore {
         this.longshot = data.dataURL;
         this.mode = 'fullpage';
       } else {
-        this.setHint('长截图失败');
+        this.setHint(createLocaleTranslator(this.settings.language)('shotLongFailed'));
       }
     });
   }

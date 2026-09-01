@@ -1,5 +1,6 @@
 import { ipcRenderer } from 'electron';
 import { makeObservable, observable } from 'mobx';
+import { createLocaleTranslator } from '~/common/i18n';
 import { DialogStore } from '~/models/dialog-store';
 
 export class Store extends DialogStore {
@@ -45,7 +46,9 @@ export class Store extends DialogStore {
 
     ipcRenderer.on('update-error', (e, msg) => {
       this.status = 'error';
-      this.errorMsg = msg || '更新失败，请稍后重试';
+      this.errorMsg =
+        msg ||
+        createLocaleTranslator(this.settings.language)('updFailed');
     });
   }
 
@@ -65,7 +68,9 @@ export class Store extends DialogStore {
     const res = await ipcRenderer.invoke('start-update');
     if (res && !res.ok) {
       this.status = 'error';
-      this.errorMsg = res.error || '更新失败，请稍后重试';
+      this.errorMsg =
+        res.error ||
+        createLocaleTranslator(this.settings.language)('updFailed');
     }
   }
 

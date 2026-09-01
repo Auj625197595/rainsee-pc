@@ -2,6 +2,8 @@ import { BrowserWindow, dialog, ipcMain } from 'electron';
 import { existsSync, statSync } from 'fs';
 import { IDownloadPromptData, IDownloadPromptResult } from '~/interfaces';
 import { PersistentDialog } from './dialog';
+import { Application } from '../application';
+import { getMainTranslator } from '../i18n';
 
 const WIDTH = 430;
 const HEIGHT = 382;
@@ -18,6 +20,10 @@ const canceledResult = (): IDownloadPromptResult => ({
   directory: '',
   downloaderType: 'browser',
 });
+
+// 校验回执与原生目录选择标题按当前语言即时翻译。
+const promptTranslator = () =>
+  getMainTranslator(Application.instance.settings?.object?.language);
 
 // will-download 中暂停的任务由单个持久浮层串行处理，避免并发下载互相覆盖。
 export class DownloadPromptDialog extends PersistentDialog {
@@ -38,7 +44,7 @@ export class DownloadPromptDialog extends PersistentDialog {
       const current = this.current;
       if (!current || current.browserWindow.isDestroyed()) return '';
       const result = await dialog.showOpenDialog(current.browserWindow, {
-        title: '选择下载位置',
+        title: promptTranslator()('dlpChooseLocation'),
         defaultPath: current.data.directory,
         properties: ['openDirectory', 'createDirectory'],
       });
@@ -48,7 +54,7 @@ export class DownloadPromptDialog extends PersistentDialog {
     ipcMain.handle(
       submitChannel,
       async (_event, result: IDownloadPromptResult) => {
-        if (!this.current) return { ok: false, message: '下载任务已失效' };
+        if (!this.current) return { ok: false, message: promptTranslator()('dlpTaskExpired') };
 
         if (result?.action === 'cancel') {
           this.finishCurrent(canceledResult());
@@ -63,7 +69,7 @@ export class DownloadPromptDialog extends PersistentDialog {
           /[. ]$/.test(fileName) ||
           /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(fileName);
         if (invalidName) {
-          return { ok: false, message: '请输入有效的文件名' };
+          return { ok: false, message: promptTranslator()('dlpInvalidName') };
         }
 
         let validDirectory = false;
@@ -74,7 +80,7 @@ export class DownloadPromptDialog extends PersistentDialog {
           validDirectory = false;
         }
         if (!validDirectory) {
-          return { ok: false, message: '请选择有效的存储位置' };
+          return { ok: false, message: promptTranslator()('dlpInvalidLocation') };
         }
 
         const downloaderType = String(result?.downloaderType || 'browser');
@@ -83,7 +89,7 @@ export class DownloadPromptDialog extends PersistentDialog {
           ...this.current.data.downloaders.map((item) => item.type),
         ]);
         if (!allowedDownloaders.has(downloaderType)) {
-          return { ok: false, message: '所选下载器当前不可用' };
+          return { ok: false, message: promptTranslator()('dlpDownloaderUnavailable') };
         }
 
         this.finishCurrent({

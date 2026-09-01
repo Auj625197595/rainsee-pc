@@ -16,6 +16,8 @@ import {
 } from '../App/style';
 import store from '~/renderer/views/settings/store';
 import { getPalette } from '../../utils/palette';
+import { getSettingsTranslator } from '../../utils';
+import type { MessageKey } from '~/common/i18n';
 
 const APP_ICON = require('!!file-loader?esModule=false&outputPath=res!../../../../../../static/icons/icon.png');
 
@@ -96,9 +98,16 @@ const APP_LINKS = [
   },
 ];
 
-const PRODUCT_LINKS = [
+const PRODUCT_LINKS: Array<{
+  titleKey: MessageKey;
+  subtitle: string;
+  metaKey: MessageKey;
+  icon: JSX.Element;
+  messageKey?: MessageKey;
+  onClick?: () => void;
+}> = [
   {
-    title: '雨见浏览器安卓版',
+    titleKey: 'aboutAndroidTitle',
     subtitle: 'Android',
     meta: '首发推荐',
     actionLabel: '获取方式',
@@ -106,20 +115,18 @@ const PRODUCT_LINKS = [
     message: '开源版暂不提供安卓版下载渠道。',
   },
   {
-    title: '雨见浏览器鸿蒙版',
+    titleKey: 'aboutHarmonyTitle',
     subtitle: 'HarmonyOS',
-    meta: '应用市场',
-    actionLabel: '获取方式',
+    metaKey: 'aboutAppMarketMeta',
     icon: <IconHarmony />,
-    message: '请前往华为应用商店搜索“雨见”下载鸿蒙版。',
+    messageKey: 'aboutHarmonyMsg',
   },
   {
-    title: '雨见浏览器苹果端',
+    titleKey: 'aboutAppleTitle',
     subtitle: 'iPhone / iPad',
-    meta: 'App Store',
-    actionLabel: '获取方式',
+    metaKey: 'aboutAppMarketMeta',
     icon: <IconApple />,
-    message: '请前往 App Store 搜索“雨见”下载苹果端。',
+    messageKey: 'aboutAppleMsg',
   },
 ];
 
@@ -137,6 +144,7 @@ const detectChromeVersion = () => {
 };
 
 export const About = () => {
+  const t = getSettingsTranslator();
   const chromeVersion = detectChromeVersion();
   const [notice, setNotice] = React.useState('');
 
@@ -159,9 +167,12 @@ export const About = () => {
               <Browser size={19} weight="fill" />
             </SettingIcon>
             <SettingCopy>
-              <Title>雨见浏览器</Title>
+              <Title>{t('aboutTitle')}</Title>
               <SecondaryText>
-                RainPC · APP 版本 {store.appVersion} · Chromium {chromeVersion}
+                {t('aboutVersionLine', {
+                  app: store.appVersion,
+                  chrome: chromeVersion,
+                })}
               </SecondaryText>
             </SettingCopy>
           </Row>
@@ -169,14 +180,14 @@ export const About = () => {
       </SettingGroupBlock>
 
       <SettingGroupBlock>
-        <SettingGroupLabel>支持与反馈</SettingGroupLabel>
+        <SettingGroupLabel>{t('aboutSupportSection')}</SettingGroupLabel>
         <SettingGroup>
           {APP_LINKS.map((item) => (
-            <Row key={item.title} onClick={item.onClick}>
+            <Row key={item.titleKey} onClick={item.onClick}>
               <AboutItemIcon tone="blue">{item.icon}</AboutItemIcon>
               <SettingCopy>
-                <Title>{item.meta}</Title>
-                <SecondaryText>{item.title}</SecondaryText>
+                <Title>{t(item.metaKey)}</Title>
+                <SecondaryText>{t(item.titleKey)}</SecondaryText>
               </SettingCopy>
               <CaretRight size={17} color="#B0B0BA" />
             </Row>
@@ -185,11 +196,11 @@ export const About = () => {
       </SettingGroupBlock>
 
       <SettingGroupBlock>
-        <SettingGroupLabel>其他作品</SettingGroupLabel>
+        <SettingGroupLabel>{t('aboutWorksSection')}</SettingGroupLabel>
         <SettingGroup>
           {PRODUCT_LINKS.map((item) => (
             <Row
-              key={item.title}
+              key={item.titleKey}
               onClick={() => {
                 if (item.message) {
                   setNotice(item.message);
@@ -198,7 +209,7 @@ export const About = () => {
             >
               <AboutItemIcon tone="blue">{item.icon}</AboutItemIcon>
               <SettingCopy>
-                <Title>{item.title}</Title>
+                <Title>{t(item.titleKey)}</Title>
                 <SecondaryText>{item.subtitle}</SecondaryText>
               </SettingCopy>
               <CaretRight size={17} color="#B0B0BA" />
@@ -211,13 +222,13 @@ export const About = () => {
         <SettingGroup>
           <Row onClick={() => ipcRenderer.invoke('show-onboarding')}>
             <SettingCopy>
-              <Title>查看引导页</Title>
+              <Title>{t('aboutOnboarding')}</Title>
             </SettingCopy>
             <CaretRight size={17} color="#B0B0BA" />
           </Row>
           <Row onClick={() => ipcRenderer.invoke('open-log-dir')}>
             <SettingCopy>
-              <Title>打开日志目录</Title>
+              <Title>{t('aboutOpenLogs')}</Title>
             </SettingCopy>
             <CaretRight size={17} color="#B0B0BA" />
           </Row>

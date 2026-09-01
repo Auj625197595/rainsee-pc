@@ -10,6 +10,7 @@ import {
 } from './style';
 import store from '../../store';
 import { Clipboard } from '@phosphor-icons/react';
+import { useI18n } from '~/renderer/components/I18n';
 
 interface Props {
   visible: boolean;
@@ -34,6 +35,7 @@ const onLinkClick = (url: string) => (
 // 多链接助手:剪贴板是一段夹杂链接的文本时,替代原剪贴板置顶建议项。
 // 高亮文本中的链接,点击在当前标签页打开并关闭弹窗。
 export const MultiLink = observer(({ visible }: Props) => {
+  const t = useI18n();
   const ml = store.multiLink;
   const ref = React.useRef<HTMLDivElement>(null);
 
@@ -54,9 +56,9 @@ export const MultiLink = observer(({ visible }: Props) => {
 
   return (
     <StyledMultiLink ref={ref} onMouseDown={onMouseDown}>
-      <MultiLinkTag title="剪贴板中包含链接">
+      <MultiLinkTag title={t('svMultiLinkTagTitle')}>
         <Clipboard size={12} weight="regular" color="#fff" />
-        多链接
+        {t('svMultiLink')}
       </MultiLinkTag>
       <MultiLinkText>
         {ml.segments.map((seg, i) =>
@@ -74,7 +76,7 @@ export const MultiLink = observer(({ visible }: Props) => {
           ),
         )}
       </MultiLinkText>
-      <LinkCount>{ml.count} 个链接</LinkCount>
+      <LinkCount>{t('svLinkCount', { count: ml.count })}</LinkCount>
     </StyledMultiLink>
   );
 });

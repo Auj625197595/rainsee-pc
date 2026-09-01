@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { ipcRenderer } from 'electron';
+import { ipcRenderer } from '~/common/renderer-ipc';
 import { ThemeProvider } from 'styled-components';
 
 import type {
@@ -9,6 +9,7 @@ import type {
 } from '~/interfaces/memory';
 import type { ISettings } from '~/interfaces';
 import { DEFAULT_SETTINGS } from '~/constants';
+import {getWebUIContext} from '~/common/webui-context';
 import { getTheme } from '~/utils/themes';
 import { WebUIStyle } from '~/renderer/mixins/default-styles';
 import { Container } from '~/renderer/components/Pages';
@@ -59,6 +60,7 @@ import {
   EmptyState,
   ErrorState,
 } from './style';
+import { useI18n } from '~/renderer/components/I18n';
 
 type Filter = 'all' | 'tabs' | 'system';
 
@@ -66,12 +68,12 @@ const categoryMeta: Record<
   MemoryProcessCategory,
   { label: string; color: string }
 > = {
-  browser: { label: '浏览器', color: '#4968E8' },
-  tab: { label: '网页', color: '#24A77A' },
-  extension: { label: '扩展', color: '#9B61E8' },
-  gpu: { label: '图形', color: '#E98A3D' },
-  utility: { label: '服务', color: '#3F9EDB' },
-  other: { label: '其他', color: '#8B96AC' },
+  browser: { label: 'memvBrowser', color: '#4968E8' },
+  tab: { label: 'memvTab', color: '#24A77A' },
+  extension: { label: 'memvExtension', color: '#9B61E8' },
+  gpu: { label: 'memvGpu', color: '#E98A3D' },
+  utility: { label: 'memvUtility', color: '#3F9EDB' },
+  other: { label: 'memvOther', color: '#8B96AC' },
 };
 
 const formatBytes = (bytes: number) => {
@@ -183,6 +185,7 @@ const ProcessRow = ({
   process: IMemoryProcessItem;
   totalBytes: number;
 }) => {
+  const t = useI18n();
   const meta = categoryMeta[process.category];
   const percent = totalBytes
     ? Math.max(0.6, Math.min(100, (process.memoryBytes / totalBytes) * 100))
@@ -199,7 +202,7 @@ const ProcessRow = ({
             <ProcessName>{process.name}</ProcessName>
             <ProcessDescription>{process.description}</ProcessDescription>
             <ProcessBadges>
-              <Badge color={meta.color}>{meta.label}</Badge>
+              <Badge color={meta.color}>{meta.label && t(meta.label)}</Badge>
               <Badge>PID {process.pid}</Badge>
               {process.serviceName && <Badge>{process.serviceName}</Badge>}
             </ProcessBadges>
@@ -216,8 +219,8 @@ const ProcessRow = ({
           <TabChips>
             {process.tabs.map((tab) => (
               <TabChip key={tab.id} selected={tab.selected} title={tab.url}>
-                {tab.selected && <span>当前</span>}
-                {tab.title || '未命名标签页'}
+                {tab.selected && <span>{t('memvCurrent')}</span>}
+                {tab.title || t('memvUntitledTab')}
               </TabChip>
             ))}
           </TabChips>
@@ -235,11 +238,12 @@ const ProcessRow = ({
 };
 
 const App = () => {
+  const t = useI18n();
   // 用 lazy initializer 保证同步 IPC 只发生一次。此前函数体每次渲染都会
   // sendSync，自动刷新时会反复阻塞本页面和主进程。
   const [settings, setSettings] = React.useState<ISettings>(() => ({
     ...DEFAULT_SETTINGS,
-    ...ipcRenderer.sendSync('get-settings-sync'),
+    ...(getWebUIContext().settings as Partial<ISettings>),
   }));
   const [snapshot, setSnapshot] = React.useState<IMemorySnapshot | null>(null);
   const [filter, setFilter] = React.useState<Filter>('all');
@@ -261,7 +265,7 @@ const App = () => {
       setError('');
     } catch (reason) {
       if (!mountedRef.current) return;
-      setError('暂时无法读取运行内存，请稍后重试。');
+      setError(t('memvReadFailed'));
     } finally {
       refreshingRef.current = false;
       if (mountedRef.current) setLoading(false);
@@ -270,7 +274,7 @@ const App = () => {
 
   React.useEffect(() => {
     mountedRef.current = true;
-    document.title = '内存使用情况';
+    document.title = t('memvDocTitle');
     refresh();
 
     // 5 秒足以反映趋势，同时避免持续枚举进程；后台标签完全停止采集。
@@ -325,47 +329,47 @@ const App = () => {
             <Main>
               <Header>
                 <HeaderCopy>
-                  <Title>内存使用情况</Title>
-                  <Subtitle>查看浏览器和各进程当前占用的运行内存。</Subtitle>
+                  <Title>{t('memvDocTitle')}</Title>
+                  <Subtitle>{t('memvSubtitle')}</Subtitle>
                 </HeaderCopy>
                 <HeaderActions>
                   <LiveBadge>
                     <i />
-                    自动刷新 {updatedAt && `· ${updatedAt}`}
+                    {t('memvAutoRefresh')} {updatedAt && `· ${updatedAt}`}
                   </LiveBadge>
                   <RefreshButton onClick={refresh} disabled={loading}>
                     <RefreshGlyph />
-                    刷新
+                    {t('memvRefresh')}
                   </RefreshButton>
                 </HeaderActions>
               </Header>
 
               <Overview>
                 <OverviewMain>
-                  <OverviewLabel>当前应用运行内存</OverviewLabel>
+                  <OverviewLabel>{t('memvOverviewLabel')}</OverviewLabel>
                   <OverviewValue>
-                    {snapshot ? formatBytes(snapshot.totalBytes) : '读取中…'}
+                    {snapshot ? formatBytes(snapshot.totalBytes) : t('memvReading')}
                   </OverviewValue>
-                  <OverviewMeta>工作集内存，数值会随页面活动变化</OverviewMeta>
+                  <OverviewMeta>{t('memvOverviewMeta')}</OverviewMeta>
                 </OverviewMain>
                 <OverviewStat>
                   <OverviewStatValue>
                     {snapshot?.processCount || 0}
                   </OverviewStatValue>
-                  <OverviewStatLabel>进程</OverviewStatLabel>
+                  <OverviewStatLabel>{t('memvStatProcesses')}</OverviewStatLabel>
                 </OverviewStat>
                 <OverviewStat>
                   <OverviewStatValue>
                     {snapshot?.tabCount || 0}
                   </OverviewStatValue>
-                  <OverviewStatLabel>标签页</OverviewStatLabel>
+                  <OverviewStatLabel>{t('memvStatTabs')}</OverviewStatLabel>
                 </OverviewStat>
                 <OverviewStat>
                   <OverviewStatValue>
                     {largest ? formatBytes(largest.memoryBytes) : '0 MB'}
                   </OverviewStatValue>
                   <OverviewStatLabel title={largest?.name || ''}>
-                    最大进程
+                    {t('memvLargestProcess')}
                   </OverviewStatLabel>
                 </OverviewStat>
               </Overview>
@@ -373,9 +377,9 @@ const App = () => {
               <Section>
                 <SectionHeader>
                   <SectionTitleWrap>
-                    <SectionTitle>进程明细</SectionTitle>
+                    <SectionTitle>{t('memvProcessSection')}</SectionTitle>
                     <SectionHint>
-                      已按运行内存从高到低排列，共 {processes.length} 项
+                      {t('memvProcessSorted', { count: processes.length })}
                     </SectionHint>
                   </SectionTitleWrap>
                   <Filters>
@@ -383,28 +387,28 @@ const App = () => {
                       selected={filter === 'all'}
                       onClick={() => setFilter('all')}
                     >
-                      全部
+                      {t('memvFilterAll')}
                     </FilterButton>
                     <FilterButton
                       selected={filter === 'tabs'}
                       onClick={() => setFilter('tabs')}
                     >
-                      网页与扩展
+                      {t('memvFilterTabsExts')}
                     </FilterButton>
                     <FilterButton
                       selected={filter === 'system'}
                       onClick={() => setFilter('system')}
                     >
-                      浏览器服务
+                      {t('memvFilterServices')}
                     </FilterButton>
                   </Filters>
                 </SectionHeader>
 
                 {error ? (
                   <ErrorState>
-                    <strong>读取失败</strong>
+                    <strong>{t('memvErrorTitle')}</strong>
                     <span>{error}</span>
-                    <button onClick={refresh}>重新读取</button>
+                    <button onClick={refresh}>{t('memvRetry')}</button>
                   </ErrorState>
                 ) : processes.length > 0 ? (
                   <ProcessList>
@@ -418,7 +422,7 @@ const App = () => {
                   </ProcessList>
                 ) : (
                   <EmptyState>
-                    {loading ? '正在读取进程信息…' : '这个分类下暂无进程'}
+                    {loading ? t('memvLoadingProcesses') : t('memvNoProcesses')}
                   </EmptyState>
                 )}
               </Section>

@@ -507,7 +507,7 @@ const DETECT_CODE = `(function(){var r='';var h=document.documentElement;if(h){r
 const CONTEXT_CODE = `(function(){var t=document.title||'';var d='';var m=document.querySelector('meta[name="description" i]')||document.querySelector('meta[property="og:description" i]');if(m){d=m.getAttribute('content')||'';}return JSON.stringify({title:t.slice(0,200),description:d.slice(0,500)});})()`;
 
 // 检测页面语言,判断是否需要翻译(页面语言主语种子 ≠ App 语言主语种子)。
-// App 通过 --lang=zh-CN 强制 UI 语言(application.ts),app.getLocale() 取之。
+// App 在启动前通过 --lang 按用户语言偏好设置 UI 语言，app.getLocale() 取之。
 export const detectTranslateState = async (
   webContents: Electron.WebContents,
 ): Promise<{canTranslate: boolean; lang: string}> => {

@@ -5,6 +5,7 @@ import { ITab, ITabGroup } from '../../models';
 import { TAB_MIN_WIDTH, TAB_PINNED_WIDTH } from '../../constants';
 import store from '../../store';
 import { handleTabGroupContextMenu } from '../../utils/tab-context-menu';
+import { getShellTranslator } from '../../utils/i18n';
 import {
   StyledTabGroup,
   Chip,
@@ -76,12 +77,13 @@ const ChipFav = observer(({ tab, density }: { tab: ITab; density: number }) => {
 });
 
 export const TabGroup = observer(({ tabGroup }: { tabGroup: ITabGroup }) => {
+  const t = getShellTranslator();
   const openTimer = React.useRef<any>(null);
 
   const tabs = tabGroup.tabs;
   const containsActive = tabs.some((t) => t.isSelected);
   const activeTab = tabGroup.activeTab;
-  const fallbackSiteName = activeTab?.title || '新标签页';
+  const fallbackSiteName = activeTab?.title || t('newTab');
   const displayLabel = containsActive
     ? activeTab?.title || ''
     : tabGroup.name || fallbackSiteName;

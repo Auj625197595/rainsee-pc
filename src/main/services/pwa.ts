@@ -10,6 +10,14 @@ import {
 import { join } from 'path';
 
 import { getPwaAppUserModelId, openAppModeWindow } from '../windows/app-mode';
+import { Application } from '../application';
+import { getMainTranslator } from '../i18n';
+
+// 应用名兜底值("应用"/"App")按当前语言即时翻译,避免模块级缓存。
+const appFallbackName = () =>
+  getMainTranslator(Application.instance?.settings?.object?.language)(
+    'iaAppFallback',
+  );
 
 // PWA 安装性检测 + 安装执行。
 // 检测仿 translate.ts:detectTranslateState,在 did-finish-load 注入 IIFE,读取页面
@@ -263,7 +271,7 @@ const synthesizeManifest = (
   info: CollectedPageInfo,
   fallbackUrl: string,
 ): PwaManifest => {
-  const name = info.title || info.host || '应用';
+  const name = info.title || info.host || appFallbackName();
   return {
     name,
     shortName: name.slice(0, 12),
@@ -547,7 +555,9 @@ export interface InstallOptions {
 }
 
 const sanitizeFileName = (name: string): string => {
-  return (name || '应用').replace(/[\\/:*?"<>|]/g, '_').slice(0, 80) || '应用';
+  return (name || appFallbackName())
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .slice(0, 80) || appFallbackName();
 };
 
 // Windows 快捷方式(.lnk)。shell.writeShortcutLink 仅 Windows 可用,其它平台跳过。
@@ -673,7 +683,7 @@ export const performInstall = async (
   opts: InstallOptions,
 ): Promise<{ installed: boolean }> => {
   const origin = originOf(manifest.startUrl || pageUrl);
-  const name = manifest.name || manifest.shortName || '应用';
+  const name = manifest.name || manifest.shortName || appFallbackName();
   const startUrl = manifest.startUrl || pageUrl;
 
   const icon = await prepareIcon(

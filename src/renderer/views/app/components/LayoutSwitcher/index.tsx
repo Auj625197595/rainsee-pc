@@ -19,7 +19,9 @@ import store from '../../store';
 import { TabsLayout } from '~/interfaces';
 import { getCurrentWindow } from '../../utils/windows';
 import { useActionBubble } from '../../utils/action-bubble';
+import { getShellTranslator } from '../../utils/i18n';
 import { buildRecentlyClosedTabsMenu } from '../RecentlyClosedTabs';
+import type { MessageKey, Translator } from '~/common/i18n';
 import {
   deduplicateTabs,
   groupTabsByDomain,
@@ -38,10 +40,20 @@ const HOVER_OPEN_DELAY = 250;
 // 还停留在按钮上(或刚离开又回来),避免立刻又弹一次。
 const REPOP_COOLDOWN = 350;
 
-const resultMessage = (action: string, result: OrganizeResult) => {
-  if (result.tabs === 0) return `${action}：没有需要处理的标签`;
-  if (result.groups === 0) return `${action}：已处理 ${result.tabs} 个标签`;
-  return `${action}：已整理 ${result.tabs} 个标签，新建 ${result.groups} 个分组`;
+const resultMessage = (
+  action: MessageKey,
+  result: OrganizeResult,
+  t: Translator,
+) => {
+  if (result.tabs === 0)
+    return t('lsResultNone', { action: t(action) });
+  if (result.groups === 0)
+    return t('lsResultTabs', { action: t(action), count: result.tabs });
+  return t('lsResultGroups', {
+    action: t(action),
+    count: result.tabs,
+    groups: result.groups,
+  });
 };
 
 const menuIconCache = new Map<string, Promise<Electron.NativeImage>>();
@@ -97,7 +109,7 @@ const resolveOrganizeAccel = (id: string, defaults: string[]): string => {
 const buildMenu = (
   current: TabsLayout,
   run: (
-    action: string,
+    action: MessageKey,
     task: () => OrganizeResult | Promise<OrganizeResult>,
   ) => void,
   icons: {
@@ -111,8 +123,9 @@ const buildMenu = (
   },
   recentlyClosed: Electron.MenuItemConstructorOptions,
 ) => {
-  const item = (value: TabsLayout, label: string) => ({
-    label,
+  const t = getShellTranslator();
+  const item = (value: TabsLayout, labelKey: MessageKey) => ({
+    label: t(labelKey),
     type: 'radio' as const,
     checked: current === value,
     click: () => store.settings.setTabsLayout(value),
@@ -122,33 +135,33 @@ const buildMenu = (
     recentlyClosed,
     { type: 'separator' },
     {
-      label: '切换标签栏位置',
+      label: t('lsMoveTabs'),
       icon: icons.layout,
       submenu: [
-        { ...item('top', '上方'), icon: icons.top },
-        { ...item('left', '左侧'), icon: icons.left },
-        { ...item('right', '右侧'), icon: icons.right },
+        { ...item('top', 'lsTop'), icon: icons.top },
+        { ...item('left', 'lsLeft'), icon: icons.left },
+        { ...item('right', 'lsRight'), icon: icons.right },
       ],
     },
     {
-      label: '整理标签栏',
+      label: t('lsOrganize'),
       icon: icons.organize,
       submenu: [
         {
-          label: '去重',
+          label: t('lsDeduplicate'),
           icon: icons.deduplicate,
           accelerator: resolveOrganizeAccel('deduplicate-tabs', [
             'CmdOrCtrl+Shift+D',
           ]),
-          click: () => run('去重', deduplicateTabs),
+          click: () => run('lsDeduplicate', deduplicateTabs),
         },
         {
-          label: '按域名分组',
+          label: t('lsGroupByDomain'),
           icon: icons.domain,
           accelerator: resolveOrganizeAccel('group-tabs-by-domain', [
             'CmdOrCtrl+Shift+G',
           ]),
-          click: () => run('按域名分组', groupTabsByDomain),
+          click: () => run('lsGroupByDomain', groupTabsByDomain),
         },
       ],
     },
@@ -156,6 +169,7 @@ const buildMenu = (
 };
 
 export const LayoutSwitcher = observer(({ variant = 'bar' }: Props) => {
+  const t = getShellTranslator();
   const { show: showBubble, portal: bubblePortal } = useActionBubble(1800);
   const buttonRef = React.useRef<HTMLDivElement>(null);
 
@@ -165,16 +179,17 @@ export const LayoutSwitcher = observer(({ variant = 'bar' }: Props) => {
   const runWithAnchor = React.useCallback(
     async (
       anchor: Element | null,
-      action: string,
+      action: MessageKey,
       task: () => OrganizeResult | Promise<OrganizeResult>,
     ) => {
       if (!anchor) return;
-      if (action === 'AI智能分组') showBubble('正在智能整理标签...', anchor);
+      const t = getShellTranslator();
+      if (action === 'lsAiGroup') showBubble(t('lsAiWorking'), anchor);
       try {
         const result = await task();
-        showBubble(resultMessage(action, result), anchor);
+        showBubble(resultMessage(action, result, t), anchor);
       } catch {
-        showBubble(`${action}暂时不可用，请稍后重试`, anchor);
+        showBubble(t('lsUnavailable', { action: t(action) }), anchor);
       }
     },
     [showBubble],
@@ -185,9 +200,10 @@ export const LayoutSwitcher = observer(({ variant = 'bar' }: Props) => {
   React.useEffect(() => {
     const handler = (_e: unknown, action: string) => {
       if (action === 'deduplicate') {
-        runWithAnchor(buttonRef.current, '去重', deduplicateTabs);
+        runWithAnchor(buttonRef.current, 'lsDeduplicate', deduplicateTabs);
       } else if (action === 'domain') {
-        runWithAnchor(buttonRef.current, '按域名分组', groupTabsByDomain);
+        runWithAnchor(buttonRef.current, 'lsGroupByDomain', groupTabsByDomain);
+        runWithAnchor(buttonRef.current, 'lsAiGroup', groupTabsWithAi);
       }
     };
     ipcRenderer.on('organize-tabs', handler);
@@ -280,7 +296,7 @@ export const LayoutSwitcher = observer(({ variant = 'bar' }: Props) => {
         data-rainsee-part="toolbar-button"
         data-rainsee-action="tab-tools"
         variant={variant}
-        title="标签工具箱"
+        title={t('lsToolboxTitle')}
         onMouseDown={onMouseDown}
         onMouseEnter={onMouseEnter}
         onMouseLeave={onMouseLeave}

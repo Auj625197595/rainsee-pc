@@ -32,58 +32,78 @@ import {
   DetailInspectList,
   DetailInspectFeedback,
 } from './card';
+import { useI18n } from '~/renderer/components/I18n';
 
 const permissionLabels: Record<string, string> = {
-  activeTab: '在您点击此扩展时读取和更改当前网站上的数据',
-  bookmarks: '读取和修改您的书签',
-  clipboardRead: '读取您复制和粘贴的数据',
-  clipboardWrite: '修改您复制和粘贴的数据',
-  contentSettings: '更改用于控制网站功能访问权限的设置',
-  contextMenus: '在右键菜单中添加项目',
-  cookies: '读取和修改 Cookie 及网站数据',
-  declarativeNetRequest: '拦截网站上的内容',
-  downloads: '管理您的下载内容',
-  geolocation: '获取您的位置信息',
-  history: '读取和修改您的浏览历史记录',
-  idle: '检测您何时停止使用设备',
-  management: '管理您的应用、扩展程序和主题背景',
-  nativeMessaging: '与协作的原生应用通信',
-  notifications: '显示通知',
-  privacy: '更改与隐私相关的设置',
-  scripting: '在您访问的网站上运行脚本',
-  storage: '在您的设备上存储数据',
-  tabs: '读取您的浏览历史记录',
-  topSites: '读取您最常访问的网站列表',
-  unlimitedStorage: '存储无限量的客户端数据',
-  userScripts: '允许用户脚本',
-  webNavigation: '读取您的浏览活动',
-  webRequest: '读取和更改您在网站上收发的数据',
+  activeTab:  'permActiveTab',
+  bookmarks:  'permBookmarks',
+  clipboardRead:  'permClipboardRead',
+  clipboardWrite:  'permClipboardWrite',
+  contentSettings:  'permContentSettings',
+  contextMenus:  'permContextMenus',
+  cookies:  'permCookies',
+  declarativeNetRequest:  'permDnr',
+  downloads:  'permDownloads',
+  geolocation:  'xpermGeolocation',
+  history:  'permHistory',
+  idle:  'permIdle',
+  management:  'permManagement',
+  nativeMessaging:  'permNativeMessaging',
+  notifications:  'xpermNotifications',
+  privacy:  'permPrivacy',
+  scripting:  'permScripting',
+  storage:  'permStorage',
+  tabs:  'permTabs',
+  topSites:  'permTopSites',
+  unlimitedStorage:  'permUnlimitedStorage',
+  userScripts:  'permUserScripts',
+  webNavigation:  'permWebNavigation',
+  webRequest:  'permWebRequest',
 };
 
-const permissionLabel = (permission: string) =>
-  permissionLabels[permission] || permission;
+const permissionLabel = (
+  permission: string,
+  t: (key: string) => string,
+) => {
+  const key = permissionLabels[permission];
+  return key ? t(key) : permission;
+};
 
-const hostPermissionLabel = (permission: string) => {
+const hostPermissionLabel = (
+  permission: string,
+  t: (key: string) => string,
+) => {
   if (permission === '<all_urls>' || permission === '*://*/*') {
-    return '在所有网站上';
+    return t('extAllSites');
   }
   return permission;
 };
 
-const PermissionList = ({ items, host }: { items: string[]; host?: boolean }) =>
+const PermissionList = ({
+  items,
+  host,
+  t,
+}: {
+  items: string[];
+  host?: boolean;
+  t: (key: string, params?: any) => string;
+}) =>
   items?.length ? (
     <DetailPermissionList>
       {items.map((permission) => (
         <li key={permission}>
-          {host ? hostPermissionLabel(permission) : permissionLabel(permission)}
+          {host
+            ? hostPermissionLabel(permission, t)
+            : permissionLabel(permission, t)}
         </li>
       ))}
     </DetailPermissionList>
   ) : (
-    <DetailText>此扩展不需要额外权限</DetailText>
+    <DetailText>{t('extNoPermsNeeded')}</DetailText>
   );
 
 export const ExtDetail = observer(({ item }: { item: IExtItem }) => {
+  const t = useI18n();
   const [iconError, setIconError] = React.useState(false);
   const showIcon = item.icon && !iconError;
   const allowsUserScripts = item.permissions.includes('userScripts');
@@ -105,8 +125,8 @@ export const ExtDetail = observer(({ item }: { item: IExtItem }) => {
       <DetailPageHead>
         <DetailBack
           type="button"
-          aria-label="返回扩展列表"
-          title="返回"
+          aria-label={t('extBackToListAria')}
+          title={t('extBack')}
           onClick={() => store.select(null)}
         >
           <svg
@@ -123,7 +143,7 @@ export const ExtDetail = observer(({ item }: { item: IExtItem }) => {
           </svg>
         </DetailBack>
         <DetailPageTitle title={item.name}>
-          已安装的扩展 / {item.name}
+          {t('extInstalledOf', { name: item.name })}
         </DetailPageTitle>
       </DetailPageHead>
 
@@ -139,10 +159,10 @@ export const ExtDetail = observer(({ item }: { item: IExtItem }) => {
           <DetailIdentity>
             <DetailName title={item.name}>{item.name}</DetailName>
             <DetailMeta>
-              <span>版本 {item.version || '?'}</span>
+              <span>{t('extVersion', { version: item.version || '?' })}</span>
               <span>
                 {item.type === 'theme'
-                  ? 'Chrome 主题'
+                  ? t('extChromeTheme')
                   : `Manifest V${item.manifestVersion}`}
               </span>
             </DetailMeta>
@@ -155,46 +175,48 @@ export const ExtDetail = observer(({ item }: { item: IExtItem }) => {
         </DetailHero>
 
         <DetailSection>
-          <DetailSectionTitle>描述</DetailSectionTitle>
-          <DetailText>{item.description || '此扩展没有提供描述。'}</DetailText>
+          <DetailSectionTitle>{t('extDescSection')}</DetailSectionTitle>
+          <DetailText>
+            {item.description || t('extNoDescProvided')}
+          </DetailText>
         </DetailSection>
 
         {item.type !== 'theme' && (
           <DetailSection>
-            <DetailSectionTitle>权限</DetailSectionTitle>
-            <PermissionList items={item.permissions} />
+            <DetailSectionTitle>{t('extPermsSection')}</DetailSectionTitle>
+            <PermissionList items={item.permissions} t={t} />
           </DetailSection>
         )}
 
         {item.hostPermissions?.length > 0 && (
           <DetailSection>
-            <DetailSectionTitle>网站访问权限</DetailSectionTitle>
-            <DetailText>允许此扩展读取和更改您访问的网站上的数据：</DetailText>
-            <PermissionList host items={item.hostPermissions} />
+            <DetailSectionTitle>{t('extSiteAccessSection')}</DetailSectionTitle>
+            <DetailText>{t('extSiteAccessIntro')}</DetailText>
+            <PermissionList host items={item.hostPermissions} t={t} />
           </DetailSection>
         )}
 
         {item.optionalPermissions?.length > 0 && (
           <DetailSection>
-            <DetailSectionTitle>可选权限</DetailSectionTitle>
-            <PermissionList items={item.optionalPermissions} />
+            <DetailSectionTitle>{t('extOptionalPermsSection')}</DetailSectionTitle>
+            <PermissionList items={item.optionalPermissions} t={t} />
           </DetailSection>
         )}
 
         {allowsUserScripts && (
           <DetailSetting>
             <DetailSettingBody>
-              <DetailSettingTitle>允许用户脚本</DetailSettingTitle>
+              <DetailSettingTitle>{t('extUserScriptsTitle')}</DetailSettingTitle>
             </DetailSettingBody>
-            <DetailAllowed>已允许</DetailAllowed>
+            <DetailAllowed>{t('extAllowed')}</DetailAllowed>
           </DetailSetting>
         )}
 
         {item.type !== 'theme' && <DetailSetting>
           <DetailSettingBody>
-            <DetailSettingTitle>在无痕模式下启用</DetailSettingTitle>
+            <DetailSettingTitle>{t('extIncognitoTitle')}</DetailSettingTitle>
             <DetailSettingText>
-              允许此扩展读取和更改无痕窗口中的数据。雨见无法阻止扩展记录您的浏览活动。
+              {t('extIncognitoDesc')}
             </DetailSettingText>
           </DetailSettingBody>
           <Switch
@@ -207,15 +229,15 @@ export const ExtDetail = observer(({ item }: { item: IExtItem }) => {
         {item.optionsUrl && (
           <DetailSetting>
             <DetailSettingBody>
-              <DetailSettingTitle>扩展选项</DetailSettingTitle>
-              <DetailSettingText>打开此扩展提供的设置页面</DetailSettingText>
+              <DetailSettingTitle>{t('extOptionsTitle')}</DetailSettingTitle>
+              <DetailSettingText>{t('extOptionsDesc')}</DetailSettingText>
             </DetailSettingBody>
             <DetailButton
               type="button"
               disabled={!item.enabled}
               onClick={() => store.openOptions(item)}
             >
-              打开
+              {t('extOpen')}
             </DetailButton>
           </DetailSetting>
         )}
@@ -223,7 +245,7 @@ export const ExtDetail = observer(({ item }: { item: IExtItem }) => {
         {item.homepageUrl && (
           <DetailSetting>
             <DetailSettingBody>
-              <DetailSettingTitle>扩展程序主页</DetailSettingTitle>
+              <DetailSettingTitle>{t('extHomePageTitle')}</DetailSettingTitle>
               <DetailSettingText>
                 <DetailLink
                   type="button"
@@ -247,14 +269,14 @@ export const ExtDetail = observer(({ item }: { item: IExtItem }) => {
           <>
             <DetailSetting>
               <DetailSettingBody>
-                <DetailSettingTitle>安装路径</DetailSettingTitle>
+                <DetailSettingTitle>{t('extInstallPathTitle')}</DetailSettingTitle>
               </DetailSettingBody>
               <DetailValue>{item.path}</DetailValue>
             </DetailSetting>
             {item.enabled && store.inspectViews.length > 0 && (
               <DetailSetting>
                 <DetailSettingBody>
-                  <DetailSettingTitle>检查视图</DetailSettingTitle>
+                  <DetailSettingTitle>{t('extInspectViewsTitle')}</DetailSettingTitle>
                   <DetailInspectList>
                     {store.inspectViews.map((view) => (
                       <DetailLink
@@ -284,7 +306,7 @@ export const ExtDetail = observer(({ item }: { item: IExtItem }) => {
         <DetailActions>
           {store.devMode && (
             <DetailButton type="button" onClick={() => store.reload(item)}>
-              重新加载
+              {t('extReload')}
             </DetailButton>
           )}
           <DetailButton
@@ -292,7 +314,7 @@ export const ExtDetail = observer(({ item }: { item: IExtItem }) => {
             danger
             onClick={() => store.uninstall(item)}
           >
-            删除扩展程序
+            {t('extDelete')}
           </DetailButton>
         </DetailActions>
       </DetailCard>

@@ -59,6 +59,7 @@ import {
   ZipBarFill,
   ZipProgressText,
 } from './style';
+import { useI18n } from '~/renderer/components/I18n';
 
 const formatSize = (w: number, h: number): string => {
   if (w && h) return `${w} × ${h}`;
@@ -139,6 +140,7 @@ const GridItem = observer(({item, idx}: {item: ImageItem; idx: number}) => {
 
 // ── list 行 ──
 const ListLine = observer(({item, idx}: {item: ImageItem; idx: number}) => {
+  const t = useI18n();
   const [failed, setFailed] = React.useState(false);
   const selected = store.selected.has(item.url);
   return (
@@ -182,7 +184,7 @@ const ListLine = observer(({item, idx}: {item: ImageItem; idx: number}) => {
         )}
       </ListThumb>
       <ListInfo>
-        <ListAlt>{item.alt || item.type || '图片'}</ListAlt>
+        <ListAlt>{item.alt || item.type || t('ivImage')}</ListAlt>
         <ListUrl>{shortUrl(item.url)}</ListUrl>
       </ListInfo>
       <ListMeta>
@@ -193,7 +195,7 @@ const ListLine = observer(({item, idx}: {item: ImageItem; idx: number}) => {
           e.stopPropagation();
           store.downloadOne(item);
         }}
-        title="下载"
+        title={t('ivDownload')}
       >
         <DownloadSimpleIcon />
       </ToolbarBtn>
@@ -250,6 +252,7 @@ const StripLine = observer(({item, idx}: {item: ImageItem; idx: number}) => {
 
 // ── 大图预览 ──
 const LightboxView = observer(() => {
+  const t = useI18n();
   const item = store.previewItem;
   const [view, setView] = React.useState({scale: 1, x: 0, y: 0});
   const [dragging, setDragging] = React.useState(false);
@@ -333,7 +336,7 @@ const LightboxView = observer(() => {
           e.stopPropagation();
           store.closePreview();
         }}
-        title="关闭"
+        title={t('shotClose')}
       >
         <XIcon />
       </LightboxBtn>
@@ -380,6 +383,7 @@ const LightboxView = observer(() => {
 });
 
 export const App = observer(() => {
+  const t = useI18n();
   // lightbox 键盘:Esc 关闭、←/→ 切换。
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -400,8 +404,8 @@ export const App = observer(() => {
     <StyledApp>
       <Header>
         <HeaderLeft>
-          <Title>看图模式</Title>
-          <Count>共 {store.count} 张{store.selectedCount > 0 ? ` · 已选 ${store.selectedCount}` : ''}</Count>
+          <Title>{t('ivTitle')}</Title>
+          <Count>{t('ivCount', { count: store.count })}{store.selectedCount > 0 ? t('ivSelectedSuffix', { count: store.selectedCount }) : ''}</Count>
         </HeaderLeft>
 
         <Spacer />
@@ -410,21 +414,21 @@ export const App = observer(() => {
           <ViewBtn
             $active={store.viewMode === 'grid'}
             onClick={() => store.setView('grid')}
-            title="网格视图"
+            title={t('ivGridView')}
           >
             <SquaresFourIcon size={18} weight="fill" />
           </ViewBtn>
           <ViewBtn
             $active={store.viewMode === 'list'}
             onClick={() => store.setView('list')}
-            title="列表视图"
+            title={t('ivListView')}
           >
             <ListIcon size={18} weight="fill" />
           </ViewBtn>
           <ViewBtn
             $active={store.viewMode === 'strip'}
             onClick={() => store.setView('strip')}
-            title="平铺模式(漫画)"
+            title={t('ivMosaicView')}
           >
             <BookOpenIcon size={18} weight="fill" />
           </ViewBtn>
@@ -438,26 +442,26 @@ export const App = observer(() => {
               <MinusIcon weight="bold" />
             ) : null}
           </Checkbox>
-          全选
+          {t('ivSelectAll')}
         </SelectAllLabel>
 
         <ToolbarRight>
           <ToolbarBtn
             $disabled={none}
             onClick={() => !none && store.downloadSelected()}
-            title="逐张下载到下载面板"
+            title={t('ivDownloadEachTitle')}
           >
             <DownloadSimpleIcon />
-            下载选中{store.selectedCount > 0 ? ` (${store.selectedCount})` : ''}
+            {t('ivDownloadSelected')}{store.selectedCount > 0 ? ` (${store.selectedCount})` : ''}
           </ToolbarBtn>
           <ToolbarBtn
             $primary
             $disabled={none}
             onClick={() => !none && store.downloadZip()}
-            title="打包为 ZIP"
+            title={t('ivZipTitle')}
           >
             <PackageIcon />
-            打包 ZIP{store.selectedCount > 0 ? ` (${store.selectedCount})` : ''}
+            {t('ivZipSelected')}{store.selectedCount > 0 ? ` (${store.selectedCount})` : ''}
           </ToolbarBtn>
         </ToolbarRight>
       </Header>
@@ -493,7 +497,7 @@ export const App = observer(() => {
           <ZipDialog>
             <ZipTitle>
               <PackageIcon />
-              正在打包下载
+              {t('ivZipping')}
             </ZipTitle>
             <ZipBarTrack>
               <ZipBarFill $pct={zipPct()} />
@@ -508,14 +512,14 @@ export const App = observer(() => {
       {store.loading && (
         <CenterState>
           <Spinner />
-          <div>正在收集图片…</div>
+          <div>{t('ivCollecting')}</div>
         </CenterState>
       )}
 
       {!store.loading && store.error && (
         <CenterState>
           <ImageIcon size={56} />
-          <div>未找到图片</div>
+          <div>{t('ivNoImages')}</div>
         </CenterState>
       )}
     </StyledApp>

@@ -27,6 +27,7 @@ import { callViewMethod } from '~/utils/view';
 import { getWebUIURL } from '~/common/webui';
 import { Clipboard, X } from '@phosphor-icons/react';
 import { ipcRenderer } from 'electron';
+import { useI18n } from '~/renderer/components/I18n';
 
 interface Props {
   suggestion: ISuggestion;
@@ -109,6 +110,7 @@ const getCategoryIcon = (suggestion: ISuggestion): string => {
 };
 
 export const Suggestion = observer(({ suggestion }: Props) => {
+  const t = useI18n();
   const { hovered } = suggestion;
   const { primaryText, secondaryText, displayUrl, url } = suggestion;
 
@@ -119,7 +121,9 @@ export const Suggestion = observer(({ suggestion }: Props) => {
   // 剪贴板置顶项:单行渲染「前往/搜索 <内容>」。数据层 url/primaryText 保持纯值,
   // 前缀只在渲染层拼接,故 onClick/回车拿到的仍是纯剪贴板内容。
   const isClipboard = suggestion.type === 'clipboard';
-  const clipboardPrefix = suggestion.isSearch ? '搜索' : '前往';
+  const clipboardPrefix = suggestion.isSearch
+    ? t('svSearchPrefix')
+    : t('svGoPrefix');
   const clipboardValue = suggestion.isSearch ? primaryText : url || '';
 
   return (
@@ -152,15 +156,18 @@ export const Suggestion = observer(({ suggestion }: Props) => {
       )}
       {isClipboard ? (
         <>
-          <ClipboardTag title="搜索设置" onClick={onClipboardTagClick}>
-            剪贴板
+          <ClipboardTag
+            title={t('searchSettings')}
+            onClick={onClipboardTagClick}
+          >
+            {t('svClipboard')}
           </ClipboardTag>
           <PrimaryText style={{ flex: 1, minWidth: 0 }}>
             {clipboardPrefix} {clipboardValue}
           </PrimaryText>
           {suggestion.isJsonClipboard && (
             <BejsonTag
-              title="在 bejson 中格式化 JSON"
+              title={t('svBejsonTitle')}
               onClick={onBejsonTagClick(suggestion)}
             >
               BeJson
@@ -179,7 +186,9 @@ export const Suggestion = observer(({ suggestion }: Props) => {
         </>
       )}
       {suggestion.type === 'tab' && (
-        <JumpButton onClick={onJumpClick(suggestion)}>跳转</JumpButton>
+        <JumpButton onClick={onJumpClick(suggestion)}>
+          {t('svJump')}
+        </JumpButton>
       )}
       {(suggestion.type === 'history' ||
         suggestion.type === 'searchTerm') && (
@@ -187,13 +196,13 @@ export const Suggestion = observer(({ suggestion }: Props) => {
           type="button"
           title={
             suggestion.type === 'searchTerm'
-              ? '删除此条搜索历史'
-              : '删除此条历史记录'
+              ? t('svDeleteSearchHistory')
+              : t('svDeleteHistory')
           }
           aria-label={
             suggestion.type === 'searchTerm'
-              ? '删除此条搜索历史'
-              : '删除此条历史记录'
+              ? t('svDeleteSearchHistory')
+              : t('svDeleteHistory')
           }
           onClick={onRemoveClick(suggestion)}
         >

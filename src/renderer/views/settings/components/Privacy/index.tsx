@@ -13,13 +13,14 @@ import {
 } from '../App/style';
 import store from '../../store';
 import { observer } from 'mobx-react-lite';
-import { onSwitchChange } from '../../utils';
+import { onSwitchChange, getSettingsTranslator } from '../../utils';
 import { Switch } from '~/renderer/components/Switch';
 import AdblockManager from '~/renderer/views/settings/components/Privacy/AdblockManager';
 import WhitelistManager from '~/renderer/views/settings/components/Privacy/WhitelistManager';
 import AdRulesEditor from '~/renderer/views/settings/components/Privacy/AdRulesEditor';
 
 export const Privacy = observer(() => {
+  const t = getSettingsTranslator();
   const adblockEnabled = store.settings.shield;
 
   return (
@@ -31,10 +32,8 @@ export const Privacy = observer(() => {
               <ShieldCheck size={19} weight="fill" />
             </SettingIcon>
             <SettingCopy>
-              <Title>广告拦截</Title>
-              <SecondaryText>
-                自动过滤网页广告，支持 uBlock、Adblock Plus 与 AdGuard 规则。
-              </SecondaryText>
+              <Title>{t('pvAdblock')}</Title>
+              <SecondaryText>{t('pvAdblockDesc')}</SecondaryText>
             </SettingCopy>
             <Control>
               <Switch

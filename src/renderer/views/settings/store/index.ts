@@ -6,6 +6,11 @@ import { StartupTabsStore } from './startup-tabs';
 import { getTheme } from '~/utils/themes';
 import { DEFAULT_SETTINGS } from '~/constants';
 import { normalizeBookmarkBarDisplay } from '~/common/bookmark-bar';
+import { normalizeAppLanguage } from '~/common/i18n';
+import {ipcRenderer} from '~/common/renderer-ipc';
+import {getWebUIContext} from '~/common/webui-context';
+
+const webUIContext = getWebUIContext();
 
 const normalizeSettings = (settings?: Partial<ISettings>): ISettings => {
   const bookmarksBarDisplay = normalizeBookmarkBarDisplay(
@@ -16,6 +21,7 @@ const normalizeSettings = (settings?: Partial<ISettings>): ISettings => {
   return {
     ...DEFAULT_SETTINGS,
     ...settings,
+    language: normalizeAppLanguage(settings?.language),
     bookmarksBarDisplay,
     bookmarksBar: bookmarksBarDisplay !== 'never',
     startupBehavior: {
@@ -96,10 +102,12 @@ export class Store {
   public selectedSection: SettingsSection = 'appearance';
 
   @observable
-  public settings: ISettings = normalizeSettings((window as any).settings);
+  public settings: ISettings = normalizeSettings(
+    webUIContext.settings as Partial<ISettings>,
+  );
 
   @observable
-  public appVersion: string = (window as any)['supervideo-app-version'];
+  public appVersion: string = webUIContext.appVersion || '';
 
   @observable
   public editedSearchEngine: ISearchEngine = null;
@@ -133,9 +141,10 @@ export class Store {
   constructor() {
     makeObservable(this);
 
-    (window as any).updateSettings = (settings: ISettings) => {
+    const onSettingsUpdate = (_event: unknown, settings: ISettings) => {
       this.settings = normalizeSettings({ ...this.settings, ...settings });
     };
+    ipcRenderer.on('update-settings', onSettingsUpdate);
 
     window.onmousedown = () => {
       this.autoFill.menuVisible = false;
@@ -146,13 +155,9 @@ export class Store {
     delete this.settings.darkContents;
     delete this.settings.multrin;
 
-    window.postMessage(
-      {
-        type: 'save-settings',
-        data: JSON.stringify(this.settings),
-      },
-      '*',
-    );
+    ipcRenderer.send('save-settings', {
+      settings: JSON.stringify(this.settings),
+    });
   }
 }
 

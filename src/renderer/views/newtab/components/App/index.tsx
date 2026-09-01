@@ -5,6 +5,7 @@ import { WebUIStyle } from '~/renderer/mixins/default-styles';
 import { getTheme } from '~/utils/themes';
 import { getChromeThemeNtpStyle } from '~/common/chrome-theme';
 import { ipcRenderer } from '~/common/renderer-ipc';
+import { getWebUIContext } from '~/common/webui-context';
 import { ICON_INCOGNITO } from '~/renderer/constants/icons';
 import { getLightweightIconUrl } from '~/utils/favicon';
 import { IBookmark, ISettings } from '~/interfaces';
@@ -34,13 +35,10 @@ import {
 
 const URL_PATTERN = /^(https?:\/\/|file:\/\/)/i;
 
-const resolveSettings = (): Partial<ISettings> => {
-  try {
-    return ipcRenderer.sendSync('get-settings-sync') || {};
-  } catch {
-    return (window as any).settings || {};
-  }
-};
+const webUIContext = getWebUIContext();
+
+const resolveSettings = (): Partial<ISettings> =>
+  (webUIContext.settings as Partial<ISettings>) || {};
 
 const resolveDarkTheme = (settings: Partial<ISettings>) => {
   if (settings.themeAuto === false) return settings.theme === 'wexond-dark';
@@ -90,6 +88,7 @@ const loadShortcuts = async (): Promise<IBookmark[]> => {
 };
 
 const IncognitoNewTab = () => {
+  const t = useI18n();
   const [q, setQ] = React.useState('');
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -97,21 +96,19 @@ const IncognitoNewTab = () => {
     if (query) ipcRenderer.send('newtab-search', query);
   };
   return (
-    <ThemeProvider theme={{ ...getTheme((window as any).settings?.theme) }}>
+    <ThemeProvider theme={{ ...getTheme((webUIContext.settings as Partial<ISettings>)?.theme) }}>
       <IncognitoPage>
         <WebUIStyle />
         <IncognitoLogo>
           <img src={ICON_INCOGNITO} alt="" />
-          <span>无痕模式</span>
+          <span>{t('shellIncognito')}</span>
         </IncognitoLogo>
-        <IncognitoHint>
-          关闭所有无痕窗口后，雨见不会保留浏览记录、Cookie、站点数据及表单信息。下载的文件与新增书签仍会保留。您的活动仍可能对访问的网站、所在单位或网络服务提供商可见。
-        </IncognitoHint>
+        <IncognitoHint>{t('ntIncognitoHint')}</IncognitoHint>
         <IncognitoSearch onSubmit={onSubmit}>
           <input
             value={q}
             onChange={(e) => setQ((e.target as HTMLInputElement).value)}
-            placeholder="在网络上搜索"
+            placeholder={t('ntSearchPlaceholder')}
             autoFocus
           />
         </IncognitoSearch>
@@ -121,13 +118,8 @@ const IncognitoNewTab = () => {
 };
 
 export default () => {
-  // 无痕 newtab:渲染本地无痕页。
-  let isIncognito = false;
-  try {
-    isIncognito = !!ipcRenderer.sendSync('is-newtab-incognito');
-  } catch {
-    isIncognito = false;
-  }
+  // 无痕 newtab:渲染本地无痕页。无痕标记由 preload 经 bridge 上下文提供。
+  const isIncognito = !!webUIContext.isIncognito;
 
   const [settings, setSettings] = React.useState<Partial<ISettings>>(
     resolveSettings,

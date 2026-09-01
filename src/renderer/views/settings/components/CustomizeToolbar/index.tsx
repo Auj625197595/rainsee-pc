@@ -8,6 +8,7 @@ import { Header, SecondaryText } from '../App/style';
 import { NormalButton } from '../App';
 import { Switch } from '~/renderer/components/Switch';
 import { getPalette } from '../../utils/palette';
+import { getSettingsTranslator } from '../../utils';
 import { ITheme } from '~/interfaces';
 import {
   CLUSTER_BUTTONS,
@@ -213,6 +214,8 @@ export const CustomizeToolbar = observer(
     embedded?: boolean;
     mode?: 'all' | 'toolbar' | 'address-icons';
   }) => {
+    const t = getSettingsTranslator();
+
     // 归一化后的布局(每次渲染重算;依赖 store.settings.toolbarLayout observable)。
     const layout: ToolbarLayout = resolveToolbarLayout(
       store.settings.toolbarLayout,
@@ -300,7 +303,7 @@ export const CustomizeToolbar = observer(
               >
                 <Grip
                   draggable
-                  title="拖动排序"
+                  title={t('dragToSort')}
                   onDragStart={(e) => {
                     e.dataTransfer.effectAllowed = 'move';
                     setDraggedId(id);
@@ -312,10 +315,10 @@ export const CustomizeToolbar = observer(
                 <IconBox>
                   <MetaIcon icon={meta.Icon} />
                 </IconBox>
-                <RowLabel>{meta.label}</RowLabel>
+                <RowLabel>{t(meta.labelKey)}</RowLabel>
                 {isDownloads ? (
                   <VisibilitySelect
-                    aria-label="下载按钮显示方式"
+                    aria-label={t('downloadVisibilityLabel')}
                     value={layout.downloadVisibility}
                     onChange={(e) =>
                       commit({
@@ -325,13 +328,15 @@ export const CustomizeToolbar = observer(
                       })
                     }
                   >
-                    <option value="always">始终显示</option>
-                    <option value="on-download">触发下载时显示</option>
-                    <option value="hidden">隐藏</option>
+                    <option value="always">{t('downloadShowAlways')}</option>
+                    <option value="on-download">
+                      {t('downloadShowOnDownload')}
+                    </option>
+                    <option value="hidden">{t('downloadShowHidden')}</option>
                   </VisibilitySelect>
                 ) : (
                   <EyeBtn
-                    title={dim ? '显示' : '隐藏'}
+                    title={dim ? t('show') : t('hide')}
                     onClick={() => toggleHidden(id)}
                   >
                     {dim ? <EyeSlash size={18} /> : <Eye size={18} />}
@@ -346,28 +351,26 @@ export const CustomizeToolbar = observer(
 
     return (
       <>
-        {!embedded && <Header>自定义工具栏</Header>}
+        {!embedded && <Header>{t('customizeToolbar')}</Header>}
         {mode !== 'address-icons' && (
           <>
             <TopRow>
-              <SecondaryText>
-                后退、前进、刷新与菜单固定显示，其余按钮仅能在所属区域内排序。
-              </SecondaryText>
+              <SecondaryText>{t('toolbarLayoutHint')}</SecondaryText>
               {isCustom && (
                 <NormalButton variant="soft" onClick={resetAll}>
-                  恢复默认
+                  {t('resetToDefault')}
                 </NormalButton>
               )}
             </TopRow>
-            <GroupTitle>地址栏左侧</GroupTitle>
+            <GroupTitle>{t('addressBarLeftGroup')}</GroupTitle>
             {renderArea('left')}
-            <GroupTitle>地址栏右侧</GroupTitle>
+            <GroupTitle>{t('addressBarRightGroup')}</GroupTitle>
             {renderArea('right')}
           </>
         )}
         {mode !== 'toolbar' && (
           <>
-            <GroupTitle>可显示图标</GroupTitle>
+            <GroupTitle>{t('showableIconsGroup')}</GroupTitle>
             <Card>
               {SITE_BUTTONS.map((meta) => {
                 const hidden = layout.hidden.includes(meta.id);
@@ -376,7 +379,7 @@ export const CustomizeToolbar = observer(
                     <IconBox>
                       <MetaIcon icon={meta.Icon} />
                     </IconBox>
-                    <RowLabel>{meta.label}</RowLabel>
+                    <RowLabel>{t(meta.labelKey)}</RowLabel>
                     <Switch
                       clickable
                       value={!hidden}

@@ -3,6 +3,7 @@ import { observer } from 'mobx-react-lite';
 
 import { DownloadRow } from '../DownloadRow';
 import { IDownloadGroup } from '../../store';
+import store from '../../store';
 import {
   Section,
   SectionHeader,
@@ -11,9 +12,11 @@ import {
   CountPill,
   ListCard,
 } from './style';
+import { useI18n } from '~/renderer/components/I18n';
 
 export const DownloadSection = observer(
   ({ data }: { data: IDownloadGroup }) => {
+    const t = useI18n();
     const isActive = data.key === 'active';
 
     return (
@@ -23,7 +26,7 @@ export const DownloadSection = observer(
             {isActive && <PulseDot />}
             {data.title}
           </SectionTitle>
-          <CountPill>{data.items.length} 项</CountPill>
+          <CountPill>{t('dlvCountPill', { count: data.items.length })}</CountPill>
         </SectionHeader>
         <ListCard>
           {data.items.map((item) => (

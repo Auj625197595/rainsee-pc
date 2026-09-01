@@ -3,6 +3,7 @@ import { observer } from 'mobx-react-lite';
 import { ThemeProvider } from 'styled-components';
 
 import store from '../../store';
+import { useI18n } from '~/renderer/components/I18n';
 import { UIStyle } from '~/renderer/mixins/default-styles';
 import { getIconByUrlNet } from '~/utils/url';
 import { IBookmark } from '~/interfaces';
@@ -202,6 +203,7 @@ const MenuColumn = observer(
     onPointerDown,
     consumeDragClick,
   }: MenuColumnProps) => {
+    const t = useI18n();
     const colRef = React.useRef<HTMLDivElement>(null);
     const rafRef = React.useRef<number | null>(null);
 
@@ -232,7 +234,9 @@ const MenuColumn = observer(
         data-bookmark-column
         data-parent-id={parentId}
       >
-        {items.length === 0 && showEmpty && <EmptyHint>(空)</EmptyHint>}
+        {items.length === 0 && showEmpty && (
+          <EmptyHint>{t('boEmpty')}</EmptyHint>
+        )}
         {items.map((b) => (
           <RowItem
             key={b._id || `${rowLevel}-${b.title}-${b.url}`}

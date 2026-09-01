@@ -3,6 +3,8 @@ import {
   createPrintPreviewUrl,
   releasePrintPreviewUrl,
 } from './models/protocol';
+import { Application } from './application';
+import { getMainTranslator } from './i18n';
 
 /**
  * 使用 Chromium 内置 PDF 阅读器展示打印结果。Electron 没有 Chrome 的打印设置
@@ -12,13 +14,16 @@ import {
 export const showPrintPreview = (source: WebContents, pdf: Buffer) => {
   const url = createPrintPreviewUrl(pdf);
   const parent = BrowserWindow.fromWebContents(source) || undefined;
+  const t = getMainTranslator(
+    Application.instance.settings?.object?.language,
+  );
   const preview = new BrowserWindow({
     parent,
     width: 1120,
     height: 820,
     minWidth: 760,
     minHeight: 540,
-    title: '打印预览',
+    title: t('ppWindowTitle'),
     autoHideMenuBar: true,
     backgroundColor: '#525659',
     webPreferences: {

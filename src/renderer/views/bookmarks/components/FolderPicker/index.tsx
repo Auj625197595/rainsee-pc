@@ -20,6 +20,7 @@ import {
   TreeCheck,
   EmptyState,
 } from './style';
+import { useI18n } from '~/renderer/components/I18n';
 
 interface Props {
   selectedId: string | null;
@@ -98,6 +99,7 @@ const FolderTreeItem = observer(
     excludeIds: Set<string>;
     onSelect: (folder: IBookmark) => void;
   }) => {
+    const t = useI18n();
     const children = store.getFolderChildren(folder._id);
     const visibleChildren = children.filter((child) =>
       matchesFolder(child, query),
@@ -124,7 +126,11 @@ const FolderTreeItem = observer(
                 e.stopPropagation();
                 store.toggleFolderExpanded(folder._id);
               }}
-              aria-label={expanded ? '收起文件夹' : '展开文件夹'}
+              aria-label={
+                expanded
+                  ? t('bmFolderCollapseAria')
+                  : t('bmFolderExpandAria')
+              }
             >
               <ChevronGlyph />
             </TreeToggle>
@@ -138,7 +144,9 @@ const FolderTreeItem = observer(
             {getBookmarkTitle(folder)}
           </TreeLabel>
           <TreeMeta>
-            {children.length > 0 ? `${children.length} 个子级` : '空文件夹'}
+            {children.length > 0
+              ? t('bmChildCount', { count: children.length })
+              : t('bmEmptyFolder')}
           </TreeMeta>
           <TreeCheck selected={selected}>{selected && <CheckGlyph />}</TreeCheck>
         </TreeItemRow>
@@ -161,6 +169,7 @@ const FolderTreeItem = observer(
 
 export const FolderPicker = observer(
   ({ selectedId, onSelect, excludeIds = [] }: Props) => {
+    const t = useI18n();
     const query = store.folderPickerSearch.trim().toLowerCase();
     const excludeSet = React.useMemo(
       () => new Set(excludeIds),
@@ -180,7 +189,7 @@ export const FolderPicker = observer(
           <SearchBox>
             <SearchGlyph />
             <SearchInput
-              placeholder="搜索文件夹"
+              placeholder={t('bmSearchFolder')}
               value={store.folderPickerSearch}
               onChange={(e) => store.setFolderPickerSearch(e.target.value)}
             />
@@ -195,7 +204,11 @@ export const FolderPicker = observer(
                   : () => store.expandAllFolders()
             }
           >
-            {query !== '' ? '清空' : allExpanded ? '收起全部' : '展开全部'}
+            {query !== ''
+              ? t('bmClear')
+              : allExpanded
+                ? t('bmCollapseAll')
+                : t('bmExpandAll')}
           </ToolbarBtn>
         </PickerToolbar>
 
@@ -215,8 +228,8 @@ export const FolderPicker = observer(
           ) : (
             <EmptyState>
               {allFolders.length === 0 && query === ''
-                ? '暂无文件夹'
-                : '没有找到匹配的文件夹'}
+                ? t('bmNoFolders')
+                : t('bmNoMatchingFolders')}
             </EmptyState>
           )}
         </TreeViewport>

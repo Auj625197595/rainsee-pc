@@ -12,17 +12,20 @@ import {
 } from './style';
 import { getSectionTitle, getSectionSubtitle } from '../../utils';
 import { observer } from 'mobx-react-lite';
+import store from '../../store';
+import { useI18n } from '~/renderer/components/I18n';
 
 export const HistorySection = observer(
   ({ data }: { data: IHistorySection }) => {
+    const t = useI18n();
     return (
       <Section>
         <DateHeader>
           <div>
-            <DateTitle>{getSectionTitle(data.date)}</DateTitle>
-            <DateSub>{getSectionSubtitle(data.date)}</DateSub>
+            <DateTitle>{getSectionTitle(data.date, store.settings.language)}</DateTitle>
+            <DateSub>{getSectionSubtitle(data.date, store.settings.language)}</DateSub>
           </div>
-          <CountPill>{data.items.length} 条记录</CountPill>
+          <CountPill>{t('histCountPill', { count: data.items.length })}</CountPill>
         </DateHeader>
         <ListCard>
           {data.items.map((item) => (

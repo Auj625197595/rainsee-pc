@@ -3,6 +3,7 @@ import {existsSync, promises as fsp} from 'fs';
 import {dirname, join, resolve, parse as parsePath} from 'path';
 import {fileURLToPath, pathToFileURL} from 'url';
 import {Application} from '../application';
+import {getMainTranslator} from '../i18n';
 import {getWebUIURL} from '~/common/webui-main';
 import {showPageToast} from '../menus/common-actions';
 import {IMAGE_FILE_EXTS} from '~/constants/files';
@@ -279,16 +280,17 @@ const fetchToBuffer = (
 
 // 右键「看图模式」入口:在原网页收集图片 + 取防盗链头 → 暂存 → 开新标签页。
 export const enterImageViewer = async (webContents: Electron.WebContents) => {
+  const t = getMainTranslator(Application.instance.settings?.object?.language);
   let raw: {images: ImageItem[]; pageUrl: string; referrer: string} | null = null;
   try {
     raw = await webContents.executeJavaScript(`(${collectImages.toString()})()`, true);
   } catch (e) {
     console.error('[image-viewer] collect failed:', e);
-    showPageToast(webContents, '收集图片失败');
+    showPageToast(webContents, t('ivCollectFailed'));
     return;
   }
   if (!raw || !Array.isArray(raw.images) || raw.images.length === 0) {
-    showPageToast(webContents, '未找到图片');
+    showPageToast(webContents, t('ivNoImages'));
     return;
   }
 
@@ -320,10 +322,10 @@ export const enterImageViewer = async (webContents: Electron.WebContents) => {
     openImageViewerSession(data);
   } catch (e) {
     console.error('[image-viewer] create tab failed:', e);
-    showPageToast(webContents, '打开失败');
+    showPageToast(webContents, t('ivOpenFailed'));
     return;
   }
-  showPageToast(webContents, `已收集 ${raw.images.length} 张图片`);
+  showPageToast(webContents, t('ivCollectedN', {count: raw.images.length}));
 };
 
 // 地址栏拖入本地图片：读取该图片所在目录的同类文件，并复用看图模式列表页。

@@ -22,7 +22,7 @@ import {
   SettingIcon,
 } from '../App/style';
 import store from '../../store';
-import { onSwitchChange } from '../../utils';
+import { onSwitchChange, getSettingsTranslator } from '../../utils';
 import { ipcRenderer } from '~/common/renderer-ipc';
 import { observer } from 'mobx-react-lite';
 import { NormalButton } from '../App';
@@ -34,6 +34,7 @@ import {
 } from '~/constants';
 
 const AskToggle = observer(() => {
+  const t = getSettingsTranslator();
   const { downloadsDialog } = store.settings;
 
   return (
@@ -42,10 +43,8 @@ const AskToggle = observer(() => {
         <Question size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>下载前询问</Title>
-        <SecondaryText>
-          下载开始前确认文件名、存储位置和下载方式。
-        </SecondaryText>
+        <Title>{t('searchAskBeforeDownload')}</Title>
+        <SecondaryText>{t('dlAskDesc')}</SecondaryText>
       </SettingCopy>
       <Control>
         <Switch value={downloadsDialog} />
@@ -59,19 +58,20 @@ const onChangeClick = () => {
 };
 
 const Location = observer(() => {
+  const t = getSettingsTranslator();
   return (
     <Row>
       <SettingIcon tone="orange">
         <FolderSimple size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>下载位置</Title>
+        <Title>{t('searchDownloadLocation')}</Title>
         <SecondaryText>{store.settings.downloadsPath}</SecondaryText>
       </SettingCopy>
 
       <Control>
         <NormalButton variant="soft" onClick={onChangeClick}>
-          修改
+          {t('modify')}
         </NormalButton>
       </Control>
     </Row>
@@ -189,6 +189,7 @@ const Stepper = styled.div`
 `;
 
 const M3u8DownloadThreads = observer(() => {
+  const t = getSettingsTranslator();
   const configured = store.settings.m3u8DownloadThreads;
   const [value, setValue] = React.useState(String(configured));
 
@@ -229,16 +230,16 @@ const M3u8DownloadThreads = observer(() => {
         <FilmStrip size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>M3U8 下载线程数</Title>
-        <SecondaryText>同时下载的分片数量（1-32）</SecondaryText>
+        <Title>{t('dlM3u8Threads')}</Title>
+        <SecondaryText>{t('dlM3u8ThreadsDesc')}</SecondaryText>
       </SettingCopy>
       <Control>
         <Stepper>
-          <button type="button" title="减少线程" onClick={() => step(-1)}>
+          <button type="button" title={t('dlThreadsDecrease')} onClick={() => step(-1)}>
             <Minus size={15} />
           </button>
           <ThreadsInput
-            aria-label="M3U8 下载线程数"
+            aria-label={t('dlM3u8Threads')}
             type="number"
             min={MIN_M3U8_DOWNLOAD_THREADS}
             max={MAX_M3U8_DOWNLOAD_THREADS}
@@ -250,7 +251,7 @@ const M3u8DownloadThreads = observer(() => {
               if (e.key === 'Enter') e.currentTarget.blur();
             }}
           />
-          <button type="button" title="增加线程" onClick={() => step(1)}>
+          <button type="button" title={t('dlThreadsIncrease')} onClick={() => step(1)}>
             <Plus size={15} />
           </button>
         </Stepper>
@@ -260,10 +261,11 @@ const M3u8DownloadThreads = observer(() => {
 });
 
 const DownloaderType = observer(() => {
+  const t = getSettingsTranslator();
   const { downloaderType } = store.settings;
   return (
     <PlainRow>
-      <Title>下载器类型</Title>
+      <Title>{t('searchDownloaderType')}</Title>
       <Control>
         <Select
           value={downloaderType}
@@ -273,9 +275,9 @@ const DownloaderType = observer(() => {
           }}
         >
           <option value="idm">IDM</option>
-          <option value="thunder">迅雷</option>
+          <option value="thunder">{t('dlThunder')}</option>
           <option value="aria2">aria2</option>
-          <option value="custom">自定义</option>
+          <option value="custom">{t('dlCustom')}</option>
         </Select>
       </Control>
     </PlainRow>
@@ -283,6 +285,7 @@ const DownloaderType = observer(() => {
 });
 
 const DownloaderPath = observer(() => {
+  const t = getSettingsTranslator();
   const { downloaderType, downloaderPath } = store.settings;
   // 迅雷走 thunder:// 协议,无需可执行文件路径。
   if (downloaderType === 'thunder') return null;
@@ -291,21 +294,21 @@ const DownloaderPath = observer(() => {
   return (
     <PlainRow>
       <div>
-        <Title>可执行文件路径</Title>
-        <SecondaryText>{downloaderPath || '未设置'}</SecondaryText>
+        <Title>{t('dlExecutablePath')}</Title>
+        <SecondaryText>{downloaderPath || t('dlNotSet')}</SecondaryText>
       </div>
       <Control>
         <NormalButton
           variant="soft"
           onClick={() => ipcRenderer.send('downloader-path-autodetect')}
         >
-          自动检测
+          {t('dlAutodetect')}
         </NormalButton>
         <div style={{ width: 8 }} />
         <NormalButton
           onClick={() => ipcRenderer.send('downloader-path-change')}
         >
-          修改
+          {t('modify')}
         </NormalButton>
       </Control>
     </PlainRow>
@@ -313,17 +316,16 @@ const DownloaderPath = observer(() => {
 });
 
 const DownloaderArgs = observer(() => {
+  const t = getSettingsTranslator();
   const { downloaderType, downloaderArgs } = store.settings;
   // 仅自定义类型需要参数模板;预置类型内置命令行。
   if (downloaderType !== 'custom') return null;
   return (
     <PlainRow>
       <div>
-        <Title>启动参数</Title>
-        <SecondaryText>
-          占位符:{'{url}'} {'{path}'} {'{filename}'},空白分隔。例:-d {'{path}'}{' '}
-          -o {'{filename}'} {'{url}'}
-        </SecondaryText>
+        <Title>{t('dlLaunchArgs')}</Title>
+        {/* 提示里的 {url} 等是字面占位符,不传 params 即原样输出。 */}
+        <SecondaryText>{t('dlArgsHint')}</SecondaryText>
       </div>
       <Control>
         <ArgsInput
@@ -340,14 +342,13 @@ const DownloaderArgs = observer(() => {
 });
 
 const AutoIntercept = observer(() => {
+  const t = getSettingsTranslator();
   const { downloaderAutoIntercept } = store.settings;
   return (
     <Row onClick={onSwitchChange('downloaderAutoIntercept')}>
       <div>
-        <Title>自动接管所有下载</Title>
-        <SecondaryText>
-          开启后浏览器不再下载文件,全部交给外部下载器(迅雷需已安装)。
-        </SecondaryText>
+        <Title>{t('searchAutoInterceptDownloads')}</Title>
+        <SecondaryText>{t('dlAutoInterceptDesc')}</SecondaryText>
       </div>
       <Control>
         <Switch value={downloaderAutoIntercept} />
@@ -357,6 +358,7 @@ const AutoIntercept = observer(() => {
 });
 
 const DownloaderSection = observer(() => {
+  const t = getSettingsTranslator();
   const enabled = store.settings.downloaderEnabled;
   return (
     <>
@@ -365,10 +367,8 @@ const DownloaderSection = observer(() => {
           <ArrowSquareOut size={19} weight="fill" />
         </SettingIcon>
         <SettingCopy>
-          <Title>使用外部下载器</Title>
-          <SecondaryText>
-            开启后右键链接可"使用 IDM/迅雷 下载";可附加自动接管。
-          </SecondaryText>
+          <Title>{t('searchExternalDownloader')}</Title>
+          <SecondaryText>{t('dlExternalDesc')}</SecondaryText>
         </SettingCopy>
         <Control>
           <Switch value={enabled} />
@@ -386,7 +386,8 @@ const DownloaderSection = observer(() => {
   );
 });
 
-export const Downloads = () => {
+export const Downloads = observer(() => {
+  const t = getSettingsTranslator();
   return (
     <>
       <SettingGroupBlock>
@@ -395,18 +396,18 @@ export const Downloads = () => {
         </SettingGroup>
       </SettingGroupBlock>
       <SettingGroupBlock>
-        <SettingGroupLabel>下载行为</SettingGroupLabel>
+        <SettingGroupLabel>{t('dlBehaviorSection')}</SettingGroupLabel>
         <SettingGroup>
           <AskToggle />
           <DownloaderSection />
         </SettingGroup>
       </SettingGroupBlock>
       <SettingGroupBlock>
-        <SettingGroupLabel>流媒体下载</SettingGroupLabel>
+        <SettingGroupLabel>{t('dlStreamingSection')}</SettingGroupLabel>
         <SettingGroup>
           <M3u8DownloadThreads />
         </SettingGroup>
       </SettingGroupBlock>
     </>
   );
-};
+});

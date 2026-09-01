@@ -13,6 +13,7 @@ import {
 } from '~/interfaces';
 import {promises} from 'fs';
 import {Application} from '../application';
+import {getMainTranslator} from '../i18n';
 import {requestURL} from '../network/request';
 import {filterCount, getAdLists, updateAdLists, isSiteWhitelisted, toggleSiteWhitelist, getSubscriptions, addSubscription, removeSubscription, toggleSubscription, updateSubscription, updateAllSubscriptions, setAutoUpdateHours, getUserWhitelist, addWhitelistDomain, removeWhitelistDomain, getUserRulesText, saveUserRulesText} from "~/main/services/adblock";
 import {bookmarkNodeById} from "./extension-bookmarks-history";
@@ -205,8 +206,9 @@ export class StorageService {
     });
 
     ipcMain.handle('import-bookmarks', async () => {
+      const t = getMainTranslator(Application.instance.settings?.object?.language);
       const dialogRes = await dialog.showOpenDialog({
-        filters: [{name: '选择要导入的书签文件', extensions: ['html']}],
+        filters: [{name: t('bmioImportFilterName'), extensions: ['html']}],
       });
 
       try {
@@ -861,6 +863,7 @@ export class StorageService {
   private async importBrowserBookmarks(items: any[]) {
     await this.ensureBookmarksLoaded();
 
+    const t = getMainTranslator(Application.instance.settings?.object?.language);
     let bookmarks = 0;
     let folders = 0;
     const pendingDocs: IBookmark[] = [];
@@ -903,7 +906,7 @@ export class StorageService {
           const folder: IBookmark = {
             _id: folderId,
             isFolder: true,
-            title: String(item.title || '文件夹'),
+            title: String(item.title || t('bmioUntitledFolderName')),
             parent: parent._id,
             children: [],
             order: nextOrder++,
@@ -1424,8 +1427,9 @@ export class StorageService {
   };
 
   public exportBookmarks = async () => {
+    const t = getMainTranslator(Application.instance.settings?.object?.language);
     const {filePath, canceled} = await dialog.showSaveDialog({
-      filters: [{name: '选择导出书签文件路径', extensions: ['html']}],
+      filters: [{name: t('bmioExportFilterName'), extensions: ['html']}],
     });
 
     if (canceled) return;

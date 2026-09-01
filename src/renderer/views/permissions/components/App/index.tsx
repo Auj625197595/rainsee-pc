@@ -39,6 +39,7 @@ import store, {
 } from '../../store';
 import { UIStyle } from '~/renderer/mixins/default-styles';
 import { getPermissionText } from '~/utils';
+import { useI18n } from '~/renderer/components/I18n';
 
 const CheckIcon = () => (
   <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -53,6 +54,7 @@ const CheckIcon = () => (
 );
 
 export const App = observer(() => {
+  const t = useI18n();
   const rootRef = React.useRef<HTMLDivElement>(null);
   const externalNavigation = isExternalNavigationRequest();
 
@@ -90,23 +92,23 @@ export const App = observer(() => {
           </ExternalIcon>
           <ExternalMain>
             <ExternalTitle title={store.targetDomain}>
-              {store.targetDomain || '外部网站'} 请求跳转
+              {t('ppExternalRequest', { site: store.targetDomain || t('credCurrentSite') })}
             </ExternalTitle>
             <ExternalSource title={store.domain}>
-              来自 {store.domain || '当前网站'}
+              {t('ppFromSite', { site: store.domain || t('credCurrentSite') })}
             </ExternalSource>
           </ExternalMain>
           <ExternalActions>
             <ExternalSettingsButton
               type="button"
-              title="打开此网站的权限设置"
-              aria-label="打开此网站的权限设置"
+              title={t('ppOpenPermSettings')}
+              aria-label={t('ppOpenPermSettings')}
               onClick={openSettings}
             >
               <GearIcon size={18} weight="bold" />
             </ExternalSettingsButton>
             <ExternalOpenButton type="button" onClick={() => sendResult(true)}>
-              打开
+              {t('extOpen')}
             </ExternalOpenButton>
           </ExternalActions>
           <ExternalProgress />
@@ -121,11 +123,11 @@ export const App = observer(() => {
         <UIStyle />
         <Header>
           <HeaderMain>
-            <Eyebrow>权限请求</Eyebrow>
-            <Title>网站想访问以下能力</Title>
+            <Eyebrow>{t('ppEyebrow')}</Eyebrow>
+            <Title>{t('ppWantsAccess')}</Title>
             <Domain>{store.domain}</Domain>
           </HeaderMain>
-          <HeaderIconButton title="设置-权限管理" onClick={openSettings}>
+          <HeaderIconButton title={t('ppSettingsTitle')} onClick={openSettings}>
             <GearIcon size={18} weight="bold" />
           </HeaderIconButton>
         </Header>
@@ -141,15 +143,15 @@ export const App = observer(() => {
             <RememberBox checked={store.remember}>
               <CheckIcon />
             </RememberBox>
-            记住此选择
+            {t('ppRemember')}
           </RememberLabel>
 
           <Buttons>
             <ActionButton variant="primary" onClick={() => sendResult(true)}>
-              允许
+              {t('ppAllow')}
             </ActionButton>
             <ActionButton variant="secondary" onClick={() => sendResult(false)}>
-              拒绝
+              {t('ppDeny')}
             </ActionButton>
           </Buttons>
         </Footer>

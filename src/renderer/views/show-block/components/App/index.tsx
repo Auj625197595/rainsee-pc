@@ -35,6 +35,7 @@ import {
 import store from '../../store';
 import {UIStyle} from '~/renderer/mixins/default-styles';
 import {getWebUIURL} from '~/common/webui';
+import { useI18n } from '~/renderer/components/I18n';
 
 const onClose = () => {
   store.hide();
@@ -61,6 +62,7 @@ const onMarkAd = () => {
 
 
 export const App = observer(() => {
+  const t = useI18n();
   const rootRef = React.useRef<HTMLDivElement>(null);
 
   // 内容高度自适应：测量后上报给主进程重排弹窗
@@ -84,13 +86,13 @@ export const App = observer(() => {
         <UIStyle/>
         <Header>
           <div>
-            <Title>广告过滤</Title>
-            <Domain>{store.domain || '当前页面'}</Domain>
+            <Title>{t('sbTitle')}</Title>
+            <Domain>{store.domain || t('sbCurrentPage')}</Domain>
           </div>
           <HeaderActions>
             <HeaderIconButton
               onClick={onOpenSettings}
-              title="设置-拦截保护"
+              title={t('sbSettingsTitle')}
             >
               <GearSixIcon size={18} weight="bold" />
             </HeaderIconButton>
@@ -100,47 +102,47 @@ export const App = observer(() => {
 
         <StatRow>
           <StatCard>
-            <StatLabel>本页拦截</StatLabel>
+            <StatLabel>{t('sbBlockedHere')}</StatLabel>
             <StatValue>{store.list.length}</StatValue>
           </StatCard>
           <StatCard>
-            <StatLabel>规则总数</StatLabel>
+            <StatLabel>{t('sbRulesTotal')}</StatLabel>
             <StatValue>{store.filterCount}</StatValue>
           </StatCard>
         </StatRow>
 
         <StatusCard>
           <StatusRow>
-            <StatusText>{enabled ? '已开启' : '已暂停（本站）'}</StatusText>
-            <Badge paused={!enabled}>{enabled ? '拦截中' : '已暂停'}</Badge>
+            <StatusText>{enabled ? t('sbOn') : t('sbPausedSite')}</StatusText>
+            <Badge paused={!enabled}>{enabled ? t('sbBlocking') : t('sbPaused')}</Badge>
           </StatusRow>
           <ActionButtons>
             <PillButton onClick={onToggleSite}>
-              {enabled ? '暂停此站拦截' : '恢复此站拦截'}
+              {enabled ? t('sbToggleOff') : t('sbToggleOn')}
             </PillButton>
             <PillButton onClick={onMarkAd}>
-              标记广告
+              {t('sbMarkAds')}
             </PillButton>
           </ActionButtons>
         </StatusCard>
 
         <ListCard>
           <ListHeader>
-            <ListTitle>最近命中</ListTitle>
-            <ListMeta>{`共 ${store.list.length} 条`}</ListMeta>
+            <ListTitle>{t('sbRecentHits')}</ListTitle>
+            <ListMeta>{t('sbTotalCount', { count: store.list.length })}</ListMeta>
           </ListHeader>
           {store.list.length > 0 ? (
             <ListScroll>
               {store.list.map((item, i) => (
                 <RequestItem key={i}>
                   <RequestHost>{item.url}</RequestHost>
-                  <RequestFilter>{'被 ' + item.filter + ' 拦截'}</RequestFilter>
+                  <RequestFilter>{t('sbBlockedBy', { filter: item.filter })}</RequestFilter>
                 </RequestItem>
               ))}
             </ListScroll>
           ) : (
             <ListScroll>
-              <EmptyState>{enabled ? '本页暂无命中' : '本站已暂停拦截'}</EmptyState>
+              <EmptyState>{enabled ? t('sbNoHits') : t('sbSitePaused')}</EmptyState>
             </ListScroll>
           )}
         </ListCard>

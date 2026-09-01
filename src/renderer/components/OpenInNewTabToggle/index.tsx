@@ -1,5 +1,6 @@
 import * as React from 'react';
 
+import { useI18n } from '~/renderer/components/I18n';
 import { Wrapper, Box, Label } from './style';
 
 // 勾选标记(白色对勾)。
@@ -29,6 +30,7 @@ export const OpenInNewTabToggle = ({
   onChange: (value: boolean) => void;
   title?: string;
 }) => {
+  const t = useI18n();
   const toggle = (e: React.MouseEvent) => {
     e.stopPropagation();
     onChange(!checked);
@@ -36,14 +38,14 @@ export const OpenInNewTabToggle = ({
 
   return (
     <Wrapper
-      title={title || '勾选后,单击/点标题在新标签页打开'}
+      title={title || t('ontOpenNewTabHint')}
       onClick={toggle}
       onMouseDown={(e) => e.stopPropagation()}
     >
       <Box checked={checked} aria-hidden>
         {checked && <Check />}
       </Box>
-      <Label>在新页面打开</Label>
+      <Label>{t('ontOpenNewPage')}</Label>
     </Wrapper>
   );
 };

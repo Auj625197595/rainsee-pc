@@ -2,11 +2,15 @@
 // 面板值存放在 settings.chromeStylePanel(扁平键值对象),由 buildChromePanelCss
 // 编译为一段 CSS,复用 customChromeCss 的 @scope 注入管道(topbar/sidebar),
 // 并渲染在 data-rainsee-user-css 之前 —— 手写 CSS 的规则靠源顺序覆盖面板产物。
+// 字段文案只存 i18n 消息 key(labelKey),由渲染端 ChromeStylePanel 翻译;
+// 本模块同时被主进程引用,仅引入 i18n 的类型(emit 后省略,零运行时依赖)。
+
+import type {MessageKey} from './i18n';
 
 export interface IChromePanelField {
   key: string;
-  label: string;
-  type: 'slider' | 'color';
+  labelKey: MessageKey;
+  type: 'slider' | 'color' | 'toggle';
   /** slider:数值范围与单位(px 等)。 */
   min?: number;
   max?: number;
@@ -16,7 +20,7 @@ export interface IChromePanelField {
 
 export interface IChromePanelSection {
   id: string;
-  label: string;
+  labelKey: MessageKey;
   fields: IChromePanelField[];
 }
 
@@ -26,31 +30,68 @@ export type IChromePanelValues = Record<string, string | number | boolean>;
 export const CHROME_PANEL_SECTIONS: IChromePanelSection[] = [
   {
     id: 'topbar',
-    label: '顶部栏',
+    labelKey: 'chromePanelSectionTopbar',
     fields: [
-      { key: 'topbarBackground', label: '背景颜色', type: 'color' },
+      { key: 'topbarBackground', labelKey: 'chromePanelTopbarBackground', type: 'color' },
       {
         key: 'topbarHeight',
-        label: '工具栏高度',
+        labelKey: 'chromePanelTopbarHeight',
         type: 'slider',
         min: 44,
         max: 68,
         step: 1,
         unit: 'px',
       },
-      { key: 'topbarText', label: '文字颜色', type: 'color' },
-      { key: 'topbarBorder', label: '底部分隔线', type: 'color' },
+      { key: 'topbarText', labelKey: 'chromePanelTopbarText', type: 'color' },
+      { key: 'topbarBorder', labelKey: 'chromePanelTopbarBorder', type: 'color' },
+    ],
+  },
+  {
+    id: 'brand',
+    labelKey: 'chromePanelSectionBrand',
+    fields: [
+      {
+        key: 'logoSize',
+        labelKey: 'chromePanelLogoSize',
+        type: 'slider',
+        min: 20,
+        max: 44,
+        step: 1,
+        unit: 'px',
+      },
+      {
+        key: 'logoRadius',
+        labelKey: 'chromePanelLogoRadius',
+        type: 'slider',
+        min: 0,
+        max: 16,
+        step: 1,
+        unit: 'px',
+      },
+      { key: 'logoBackground', labelKey: 'chromePanelLogoBackground', type: 'color' },
+      {
+        key: 'brandFont',
+        labelKey: 'chromePanelBrandFont',
+        type: 'slider',
+        min: 11,
+        max: 20,
+        step: 0.5,
+        unit: 'px',
+      },
+      { key: 'brandText', labelKey: 'chromePanelBrandText', type: 'color' },
+      { key: 'brandSubText', labelKey: 'chromePanelBrandSubText', type: 'color' },
+      { key: 'showBrandText', labelKey: 'chromePanelShowBrandText', type: 'toggle' },
     ],
   },
   {
     id: 'address',
-    label: '地址栏',
+    labelKey: 'chromePanelSectionAddress',
     fields: [
-      { key: 'addressBackground', label: '背景颜色', type: 'color' },
-      { key: 'addressText', label: '文字颜色', type: 'color' },
+      { key: 'addressBackground', labelKey: 'chromePanelAddressBackground', type: 'color' },
+      { key: 'addressText', labelKey: 'chromePanelAddressText', type: 'color' },
       {
         key: 'addressRadius',
-        label: '圆角',
+        labelKey: 'chromePanelAddressRadius',
         type: 'slider',
         min: 0,
         max: 22,
@@ -59,7 +100,7 @@ export const CHROME_PANEL_SECTIONS: IChromePanelSection[] = [
       },
       {
         key: 'addressHeight',
-        label: '高度',
+        labelKey: 'chromePanelAddressHeight',
         type: 'slider',
         min: 28,
         max: 46,
@@ -68,25 +109,25 @@ export const CHROME_PANEL_SECTIONS: IChromePanelSection[] = [
       },
       {
         key: 'addressFont',
-        label: '字体大小',
+        labelKey: 'chromePanelAddressFont',
         type: 'slider',
         min: 11,
         max: 18,
         step: 0.5,
         unit: 'px',
       },
-      { key: 'addressBorder', label: '边框颜色', type: 'color' },
-      { key: 'addressFocusBorder', label: '聚焦边框颜色', type: 'color' },
-      { key: 'addressFocusGlow', label: '聚焦光晕颜色', type: 'color' },
+      { key: 'addressBorder', labelKey: 'chromePanelAddressBorder', type: 'color' },
+      { key: 'addressFocusBorder', labelKey: 'chromePanelAddressFocusBorder', type: 'color' },
+      { key: 'addressFocusGlow', labelKey: 'chromePanelAddressFocusGlow', type: 'color' },
     ],
   },
   {
     id: 'buttons',
-    label: '工具栏按钮',
+    labelKey: 'chromePanelSectionButtons',
     fields: [
       {
         key: 'buttonSize',
-        label: '按钮大小',
+        labelKey: 'chromePanelButtonSize',
         type: 'slider',
         min: 13,
         max: 44,
@@ -95,30 +136,30 @@ export const CHROME_PANEL_SECTIONS: IChromePanelSection[] = [
       },
       {
         key: 'buttonRadius',
-        label: '按钮圆角',
+        labelKey: 'chromePanelButtonRadius',
         type: 'slider',
         min: 0,
         max: 18,
         step: 1,
         unit: 'px',
       },
-      { key: 'buttonColor', label: '图标颜色', type: 'color' },
-      { key: 'buttonHover', label: '悬停背景色', type: 'color' },
-      { key: 'buttonActive', label: '按下背景色', type: 'color' },
+      { key: 'buttonColor', labelKey: 'chromePanelButtonColor', type: 'color' },
+      { key: 'buttonHover', labelKey: 'chromePanelButtonHover', type: 'color' },
+      { key: 'buttonActive', labelKey: 'chromePanelButtonActive', type: 'color' },
     ],
   },
   {
     id: 'tabs',
-    label: '标签页',
+    labelKey: 'chromePanelSectionTabs',
     fields: [
-      { key: 'tabBackground', label: '标签背景颜色', type: 'color' },
-      { key: 'tabSelectedBackground', label: '选中标签背景', type: 'color' },
-      { key: 'tabText', label: '标签文字颜色', type: 'color' },
-      { key: 'tabSelectedText', label: '选中标签文字', type: 'color' },
-      { key: 'tabHoverBackground', label: '悬停标签背景', type: 'color' },
+      { key: 'tabBackground', labelKey: 'chromePanelTabBackground', type: 'color' },
+      { key: 'tabSelectedBackground', labelKey: 'chromePanelTabSelectedBackground', type: 'color' },
+      { key: 'tabText', labelKey: 'chromePanelTabText', type: 'color' },
+      { key: 'tabSelectedText', labelKey: 'chromePanelTabSelectedText', type: 'color' },
+      { key: 'tabHoverBackground', labelKey: 'chromePanelTabHoverBackground', type: 'color' },
       {
         key: 'tabRadius',
-        label: '标签圆角',
+        labelKey: 'chromePanelTabRadius',
         type: 'slider',
         min: 0,
         max: 20,
@@ -127,7 +168,7 @@ export const CHROME_PANEL_SECTIONS: IChromePanelSection[] = [
       },
       {
         key: 'tabFont',
-        label: '标签字体大小',
+        labelKey: 'chromePanelTabFont',
         type: 'slider',
         min: 10,
         max: 15,
@@ -138,44 +179,44 @@ export const CHROME_PANEL_SECTIONS: IChromePanelSection[] = [
   },
   {
     id: 'bookmarks',
-    label: '书签栏',
+    labelKey: 'chromePanelSectionBookmarks',
     fields: [
-      { key: 'bookmarkBackground', label: '背景颜色', type: 'color' },
-      { key: 'bookmarkText', label: '书签文字颜色', type: 'color' },
+      { key: 'bookmarkBackground', labelKey: 'chromePanelBookmarkBackground', type: 'color' },
+      { key: 'bookmarkText', labelKey: 'chromePanelBookmarkText', type: 'color' },
       {
         key: 'bookmarkFont',
-        label: '字体大小',
+        labelKey: 'chromePanelBookmarkFont',
         type: 'slider',
         min: 10,
         max: 15,
         step: 0.5,
         unit: 'px',
       },
-      { key: 'bookmarkItemHover', label: '悬停背景色', type: 'color' },
+      { key: 'bookmarkItemHover', labelKey: 'chromePanelBookmarkItemHover', type: 'color' },
     ],
   },
   {
     id: 'sidebar',
-    label: '侧边栏',
+    labelKey: 'chromePanelSectionSidebar',
     fields: [
-      { key: 'sidebarBackground', label: '背景颜色', type: 'color' },
-      { key: 'sidebarText', label: '文字颜色', type: 'color' },
-      { key: 'sidebarNewTabBackground', label: '新建标签按钮背景', type: 'color' },
-      { key: 'sidebarNewTabText', label: '新建标签按钮文字', type: 'color' },
+      { key: 'sidebarBackground', labelKey: 'chromePanelSidebarBackground', type: 'color' },
+      { key: 'sidebarText', labelKey: 'chromePanelSidebarText', type: 'color' },
+      { key: 'sidebarNewTabBackground', labelKey: 'chromePanelSidebarNewTabBackground', type: 'color' },
+      { key: 'sidebarNewTabText', labelKey: 'chromePanelSidebarNewTabText', type: 'color' },
       {
         key: 'sidebarNewTabRadius',
-        label: '新建标签按钮圆角',
+        labelKey: 'chromePanelSidebarNewTabRadius',
         type: 'slider',
         min: 0,
         max: 16,
         step: 1,
         unit: 'px',
       },
-      { key: 'sidebarTabBackground', label: '侧栏标签背景', type: 'color' },
-      { key: 'sidebarTabSelected', label: '侧栏选中标签背景', type: 'color' },
+      { key: 'sidebarTabBackground', labelKey: 'chromePanelSidebarTabBackground', type: 'color' },
+      { key: 'sidebarTabSelected', labelKey: 'chromePanelSidebarTabSelected', type: 'color' },
       {
         key: 'sidebarTabRadius',
-        label: '侧栏标签圆角',
+        labelKey: 'chromePanelSidebarTabRadius',
         type: 'slider',
         min: 0,
         max: 16,
@@ -184,7 +225,7 @@ export const CHROME_PANEL_SECTIONS: IChromePanelSection[] = [
       },
       {
         key: 'sidebarTabFont',
-        label: '侧栏标签字体',
+        labelKey: 'chromePanelSidebarTabFont',
         type: 'slider',
         min: 10,
         max: 15,
@@ -203,6 +244,9 @@ const FIELD_BY_KEY = new Map(CHROME_PANEL_FIELDS.map((f) => [f.key, f]));
 // slider 的默认值(应用原生样式值)。键缺省/等于默认 → 不输出 CSS。
 export const CHROME_PANEL_DEFAULTS: Record<string, number> = {
   topbarHeight: 54,
+  logoSize: 32,
+  logoRadius: 11,
+  brandFont: 14,
   addressRadius: 14,
   addressHeight: 38,
   addressFont: 15,
@@ -216,8 +260,10 @@ export const CHROME_PANEL_DEFAULTS: Record<string, number> = {
   sidebarTabFont: 12.5,
 };
 
-export const getChromePanelFieldDefault = (key: string): number => {
+// toggle 的默认态恒为 true(原生显示);返回 NaN/true 之外的值仅对 slider 有意义。
+export const getChromePanelFieldDefault = (key: string): number | boolean => {
   const field = FIELD_BY_KEY.get(key);
+  if (field?.type === 'toggle') return true;
   if (field?.type === 'slider') {
     const def = CHROME_PANEL_DEFAULTS[key];
     if (typeof def === 'number') return def;
@@ -249,6 +295,8 @@ export const sanitizeChromePanelValues = (
       if (typeof v === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(v.trim())) {
         out[field.key] = v.trim().toLowerCase();
       }
+    } else if (field.type === 'toggle') {
+      if (typeof v === 'boolean') out[field.key] = v;
     }
   }
   return out;
@@ -477,6 +525,52 @@ export const buildChromePanelCss = (values: Vals): string => {
     bookmarkHover && imp('background-color', bookmarkHover),
   ]);
 
+  // ===== LOGO 区域(顶部品牌区与侧边栏品牌行共用同一 Logo 组件)=====
+  const logoSize = num(values, 'logoSize');
+  const logoRadius = num(values, 'logoRadius');
+  const logoBg = color(values, 'logoBackground');
+  const brandFont = num(values, 'brandFont');
+  const brandTextColor = color(values, 'brandText');
+  const brandSubText = color(values, 'brandSubText');
+  const hideBrandText = values.showBrandText === false;
+
+  for (const rs of [topbar, sidebar]) {
+    rs.add('[data-rainsee-part="brand-logo"]', [
+      logoSize !== null && imp('width', px(logoSize)),
+      logoSize !== null && imp('height', px(logoSize)),
+      logoRadius !== null && imp('border-radius', px(logoRadius)),
+      logoBg && imp('background-color', logoBg),
+    ]);
+  }
+  if (logoSize !== null) {
+    // 默认应用图标是 22/32 比例的内联尺寸,随框架等比缩放,
+    // 须 !important 压过内联样式;小号图(100% 填充)随框架自然缩放。
+    const iconSize = Math.round((logoSize * 22) / 32);
+    for (const rs of [topbar, sidebar]) {
+      rs.add('[data-rainsee-part="brand-logo-icon"]', [
+        imp('width', px(iconSize)),
+        imp('height', px(iconSize)),
+      ]);
+    }
+  }
+  topbar.add('[data-rainsee-part="brand-title"]', [
+    brandTextColor && imp('color', brandTextColor),
+    brandFont !== null && imp('font-size', px(brandFont)),
+  ]);
+  sidebar.add('[data-rainsee-part="sidebar-brand-title"]', [
+    brandTextColor && imp('color', brandTextColor),
+    brandFont !== null && imp('font-size', px(brandFont)),
+  ]);
+  topbar.add('[data-rainsee-part="brand-sub"]', [
+    brandSubText && imp('color', brandSubText),
+  ]);
+  if (hideBrandText) {
+    topbar.add('[data-rainsee-part="brand-text"]', [imp('display', 'none')]);
+    sidebar.add('[data-rainsee-part="sidebar-brand-title"]', [
+      imp('display', 'none'),
+    ]);
+  }
+
   // ===== 侧边栏(sidebar 组)=====
   const sidebarBg = color(values, 'sidebarBackground');
   const sidebarText = color(values, 'sidebarText');
@@ -550,5 +644,6 @@ export const countChromePanelCustomized = (values: Vals) =>
   CHROME_PANEL_FIELDS.filter((field) => {
     const v = values[field.key];
     if (field.type === 'color') return typeof v === 'string' && !!v;
+    if (field.type === 'toggle') return v === false;
     return num(values, field.key) !== null;
   }).length;

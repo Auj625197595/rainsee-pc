@@ -29,6 +29,9 @@ import {
 } from '@phosphor-icons/react';
 
 import { ipcRenderer } from '~/common/renderer-ipc';
+import {getWebUIContext} from '~/common/webui-context';
+
+const webUIContext = getWebUIContext();
 import { Dropdown } from '~/renderer/components/Dropdown';
 import { Switch } from '~/renderer/components/Switch';
 import {
@@ -43,7 +46,7 @@ import {
   SettingIcon,
 } from '../App/style';
 import store from '../../store';
-import { onSwitchChange } from '../../utils';
+import { onSwitchChange, getSettingsTranslator } from '../../utils';
 import { observer } from 'mobx-react-lite';
 import {
   TopBarVariant,
@@ -55,6 +58,7 @@ import {
   BookmarkBarDisplay,
   IBookmark,
 } from '~/interfaces';
+import type { MessageKey, Translator } from '~/common/i18n';
 import { NormalButton } from '../App';
 import { CustomizeToolbar } from '../CustomizeToolbar';
 import ChromeStylePanel from './ChromeStylePanel';
@@ -671,6 +675,21 @@ const CUSTOM_CSS_EXAMPLE = `/*
   /* border-bottom-color: #dfe3ee !important; */
 }
 
+/* LOGO 区域（标题栏最左侧的品牌图标与文字） */
+[data-rainsee-part="brand"] { }
+[data-rainsee-part="brand-logo"] {
+  /* width: 36px !important; */
+  /* height: 36px !important; */
+  /* border-radius: 12px !important; */
+  /* background-color: #ffffff !important; */
+}
+[data-rainsee-part="brand-logo-icon"] { }
+[data-rainsee-part="brand-text"] {
+  /* display: none !important; */
+}
+[data-rainsee-part="brand-title"] { }
+[data-rainsee-part="brand-sub"] { }
+
 [data-rainsee-part="address-bar"] {
   /* background-color: #ffffff !important; */
   /* border: 1px solid #d8deeb !important; */
@@ -958,18 +977,6 @@ ${CUSTOM_CSS_EXAMPLE}
 收到用户的风格描述后，直接生成一份完整 CSS。若用户没有明确暗色或浅色，应根据风格语义自行选择，并确保即使应用基础主题与生成主题明暗相反，关键组件仍然清晰可读。`;
 
 const writeClipboardText = async (text: string) => {
-  try {
-    const electron =
-      (globalThis as any).electron ?? (globalThis as any).require?.('electron');
-
-    if (typeof electron?.clipboard?.writeText === 'function') {
-      electron.clipboard.writeText(text);
-      return;
-    }
-  } catch {
-    // Fall through to browser clipboard APIs when the preload bridge is absent.
-  }
-
   if (typeof navigator.clipboard?.writeText === 'function') {
     await navigator.clipboard.writeText(text);
     return;
@@ -1003,6 +1010,7 @@ const onThemeChange = (value: string) => {
 };
 
 const ThemeVariant = observer(() => {
+  const t = getSettingsTranslator();
   const defaultValue = store.settings.theme;
 
   return (
@@ -1011,16 +1019,16 @@ const ThemeVariant = observer(() => {
         <Palette size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>主题颜色</Title>
+        <Title>{t('themeColor')}</Title>
       </SettingCopy>
       <Control>
         <Dropdown
           defaultValue={store.settings.themeAuto ? 'auto' : defaultValue}
           onChange={onThemeChange}
         >
-          <Dropdown.Item value="auto">自动</Dropdown.Item>
-          <Dropdown.Item value="wexond-light">浅色</Dropdown.Item>
-          <Dropdown.Item value="wexond-dark">深色</Dropdown.Item>
+          <Dropdown.Item value="auto">{t('themeAuto')}</Dropdown.Item>
+          <Dropdown.Item value="wexond-light">{t('themeLight')}</Dropdown.Item>
+          <Dropdown.Item value="wexond-dark">{t('themeDark')}</Dropdown.Item>
         </Dropdown>
       </Control>
     </Row>
@@ -1034,6 +1042,7 @@ const onWebDarkModeChange = (value: string) => {
 
 // 网页暗色模式实现方式(仅在暗色生效主题下作用于普通网页内容)。
 const WebDarkModeVariant = observer(() => {
+  const t = getSettingsTranslator();
   const value = store.settings.webDarkMode || 'browser';
 
   return (
@@ -1042,13 +1051,15 @@ const WebDarkModeVariant = observer(() => {
         <Moon size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>网页暗色模式</Title>
+        <Title>{t('webDarkMode')}</Title>
       </SettingCopy>
       <Control>
         <Dropdown defaultValue={value} onChange={onWebDarkModeChange}>
-          <Dropdown.Item value="extension">Darknight拓展</Dropdown.Item>
-          <Dropdown.Item value="browser">浏览器实现</Dropdown.Item>
-          <Dropdown.Item value="off">不变色</Dropdown.Item>
+          <Dropdown.Item value="extension">
+            {t('webDarkModeExtension')}
+          </Dropdown.Item>
+          <Dropdown.Item value="browser">{t('webDarkModeBrowser')}</Dropdown.Item>
+          <Dropdown.Item value="off">{t('webDarkModeOff')}</Dropdown.Item>
         </Dropdown>
       </Control>
     </Row>
@@ -1061,21 +1072,23 @@ const onTopBarChange = (value: TopBarVariant) => {
 };
 
 const TopBarVariant = observer(() => {
+  const t = getSettingsTranslator();
+
   return (
     <Row>
       <SettingIcon tone="green">
         <SidebarSimple size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>顶部标题栏</Title>
+        <Title>{t('topTitleBar')}</Title>
       </SettingCopy>
       <Control>
         <Dropdown
           defaultValue={store.settings.topBarVariant}
           onChange={onTopBarChange}
         >
-          <Dropdown.Item value="default">分离显示</Dropdown.Item>
-          <Dropdown.Item value="compact">融合显示</Dropdown.Item>
+          <Dropdown.Item value="default">{t('topBarSeparated')}</Dropdown.Item>
+          <Dropdown.Item value="compact">{t('topBarCompact')}</Dropdown.Item>
         </Dropdown>
       </Control>
     </Row>
@@ -1088,22 +1101,24 @@ const onTabsLayoutChange = (value: TabsLayout) => {
 };
 
 const TabsLayoutVariant = observer(() => {
+  const t = getSettingsTranslator();
+
   return (
     <Row>
       <SettingIcon tone="cyan">
         <Columns size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>标签栏位置</Title>
+        <Title>{t('tabsPosition')}</Title>
       </SettingCopy>
       <Control>
         <Dropdown
           defaultValue={store.settings.tabsLayout || 'top'}
           onChange={onTabsLayoutChange}
         >
-          <Dropdown.Item value="top">顶部</Dropdown.Item>
-          <Dropdown.Item value="left">左侧边栏</Dropdown.Item>
-          <Dropdown.Item value="right">右侧边栏</Dropdown.Item>
+          <Dropdown.Item value="top">{t('tabsPositionTop')}</Dropdown.Item>
+          <Dropdown.Item value="left">{t('tabsPositionLeft')}</Dropdown.Item>
+          <Dropdown.Item value="right">{t('tabsPositionRight')}</Dropdown.Item>
         </Dropdown>
       </Control>
     </Row>
@@ -1111,14 +1126,16 @@ const TabsLayoutVariant = observer(() => {
 });
 
 const TabOverflowVariant = observer(() => {
+  const t = getSettingsTranslator();
+
   return (
     <Row>
       <SettingIcon tone="blue">
         <ArrowsOutSimple size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>标签过多时</Title>
-        <SecondaryText>仅作用于顶部标签栏。</SecondaryText>
+        <Title>{t('tabOverflowTitle')}</Title>
+        <SecondaryText>{t('tabOverflowHint')}</SecondaryText>
       </SettingCopy>
       <Control>
         <Dropdown
@@ -1129,8 +1146,8 @@ const TabOverflowVariant = observer(() => {
             store.save();
           }}
         >
-          <Dropdown.Item value="shrink">持续缩小</Dropdown.Item>
-          <Dropdown.Item value="scroll">滚动标签栏</Dropdown.Item>
+          <Dropdown.Item value="shrink">{t('tabOverflowShrink')}</Dropdown.Item>
+          <Dropdown.Item value="scroll">{t('tabOverflowScroll')}</Dropdown.Item>
         </Dropdown>
       </Control>
     </Row>
@@ -1138,14 +1155,16 @@ const TabOverflowVariant = observer(() => {
 });
 
 const TabHoverActivationBehaviorSetting = observer(() => {
+  const t = getSettingsTranslator();
+
   return (
     <Row>
       <SettingIcon tone="green">
         <MouseSimple size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>鼠标悬停在标签上</Title>
-        <SecondaryText>仅作用于被回收的标签。</SecondaryText>
+        <Title>{t('tabHoverTitle')}</Title>
+        <SecondaryText>{t('tabHoverHint')}</SecondaryText>
       </SettingCopy>
       <Control>
         <Dropdown
@@ -1158,10 +1177,10 @@ const TabHoverActivationBehaviorSetting = observer(() => {
             store.save();
           }}
         >
-          <Dropdown.Item value="off">关闭</Dropdown.Item>
-          <Dropdown.Item value="activate">激活</Dropdown.Item>
+          <Dropdown.Item value="off">{t('tabHoverOff')}</Dropdown.Item>
+          <Dropdown.Item value="activate">{t('tabHoverActivate')}</Dropdown.Item>
           <Dropdown.Item value="activate-and-switch">
-            激活并切换到标签页
+            {t('tabHoverActivateAndSwitch')}
           </Dropdown.Item>
         </Dropdown>
       </Control>
@@ -1170,6 +1189,7 @@ const TabHoverActivationBehaviorSetting = observer(() => {
 });
 
 const TabHoverActivationDelay = observer(() => {
+  const t = getSettingsTranslator();
   const configured = normalizeTabHoverActivationDelay(
     store.settings.tabHoverActivationDelay,
   );
@@ -1195,14 +1215,14 @@ const TabHoverActivationDelay = observer(() => {
         <Timer size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>悬停激活延迟</Title>
-        <SecondaryText>达到此时长后执行所选操作。</SecondaryText>
+        <Title>{t('tabHoverDelayTitle')}</Title>
+        <SecondaryText>{t('tabHoverDelayHint')}</SecondaryText>
       </SettingCopy>
       <Control>
         <DelayInput
           value={value}
           inputMode="numeric"
-          aria-label="悬停激活延迟（毫秒）"
+          aria-label={t('tabHoverDelayAria')}
           disabled={store.settings.tabHoverActivationBehavior === 'off'}
           onClick={(event) => event.stopPropagation()}
           onChange={(event) => {
@@ -1214,15 +1234,16 @@ const TabHoverActivationDelay = observer(() => {
           onKeyDown={(event) => {
             if (event.key === 'Enter') event.currentTarget.blur();
           }}
-          title={`${MIN_TAB_HOVER_ACTIVATION_DELAY}–${MAX_TAB_HOVER_ACTIVATION_DELAY} 毫秒`}
+          title={`${MIN_TAB_HOVER_ACTIVATION_DELAY}–${MAX_TAB_HOVER_ACTIVATION_DELAY} ${t('millisecondsUnit')}`}
         />
-        <DelayUnit>毫秒</DelayUnit>
+        <DelayUnit>{t('millisecondsUnit')}</DelayUnit>
       </Control>
     </Row>
   );
 });
 
 const WarnQuit = observer(() => {
+  const t = getSettingsTranslator();
   const { warnOnQuit } = store.settings;
 
   return (
@@ -1231,7 +1252,7 @@ const WarnQuit = observer(() => {
         <Warning size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>当关闭多个标签时显示警告弹窗</Title>
+        <Title>{t('warnOnQuitTitle')}</Title>
       </SettingCopy>
       <Control>
         <Switch value={warnOnQuit} />
@@ -1241,6 +1262,7 @@ const WarnQuit = observer(() => {
 });
 
 const CloseTabOnDoubleClick = observer(() => {
+  const t = getSettingsTranslator();
   const { closeTabOnDoubleClick } = store.settings;
 
   return (
@@ -1249,7 +1271,7 @@ const CloseTabOnDoubleClick = observer(() => {
         <XSquare size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>双击关闭标签页</Title>
+        <Title>{t('closeTabOnDoubleClick')}</Title>
       </SettingCopy>
       <Control>
         <Switch value={closeTabOnDoubleClick} />
@@ -1259,6 +1281,7 @@ const CloseTabOnDoubleClick = observer(() => {
 });
 
 const CloseTabOnRightClick = observer(() => {
+  const t = getSettingsTranslator();
   const { closeTabOnRightClick } = store.settings;
 
   return (
@@ -1267,8 +1290,8 @@ const CloseTabOnRightClick = observer(() => {
         <MouseSimple size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>右键关闭标签页和标签组</Title>
-        <SecondaryText>按住 Shift 右键可打开原菜单。</SecondaryText>
+        <Title>{t('closeTabOnRightClick')}</Title>
+        <SecondaryText>{t('closeTabOnRightClickHint')}</SecondaryText>
       </SettingCopy>
       <Control>
         <Switch value={closeTabOnRightClick} />
@@ -1278,6 +1301,7 @@ const CloseTabOnRightClick = observer(() => {
 });
 
 const TabCloseSelection = observer(() => {
+  const t = getSettingsTranslator();
   const { tabCloseSelectionBehavior } = store.settings;
 
   return (
@@ -1286,8 +1310,8 @@ const TabCloseSelection = observer(() => {
         <ArrowsLeftRight size={19} weight="bold" />
       </SettingIcon>
       <SettingCopy>
-        <Title>关闭没有来源页的标签后</Title>
-        <SecondaryText>有来源页时将始终返回打开此标签的来源页。</SecondaryText>
+        <Title>{t('tabCloseSelectionTitle')}</Title>
+        <SecondaryText>{t('tabCloseSelectionHint')}</SecondaryText>
       </SettingCopy>
       <Control>
         <Dropdown
@@ -1298,9 +1322,9 @@ const TabCloseSelection = observer(() => {
             store.save();
           }}
         >
-          <Dropdown.Item value="left">切换到左侧或上方标签</Dropdown.Item>
-          <Dropdown.Item value="right">切换到右侧或下方标签</Dropdown.Item>
-          <Dropdown.Item value="recent">切换到最近浏览的标签</Dropdown.Item>
+          <Dropdown.Item value="left">{t('tabCloseSelectLeft')}</Dropdown.Item>
+          <Dropdown.Item value="right">{t('tabCloseSelectRight')}</Dropdown.Item>
+          <Dropdown.Item value="recent">{t('tabCloseSelectRecent')}</Dropdown.Item>
         </Dropdown>
       </Control>
     </Row>
@@ -1308,6 +1332,7 @@ const TabCloseSelection = observer(() => {
 });
 
 const TabCloseButtonDisplay = observer(() => {
+  const t = getSettingsTranslator();
   const { tabCloseButtonDisplay } = store.settings;
 
   return (
@@ -1316,7 +1341,7 @@ const TabCloseButtonDisplay = observer(() => {
         <EyeSlash size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>标签栏关闭按钮</Title>
+        <Title>{t('tabCloseButtonTitle')}</Title>
       </SettingCopy>
       <Control>
         <Dropdown
@@ -1329,9 +1354,9 @@ const TabCloseButtonDisplay = observer(() => {
             store.save();
           }}
         >
-          <Dropdown.Item value="always">显示</Dropdown.Item>
-          <Dropdown.Item value="hover">鼠标移动上去才显示</Dropdown.Item>
-          <Dropdown.Item value="never">不显示</Dropdown.Item>
+          <Dropdown.Item value="always">{t('tabCloseButtonAlways')}</Dropdown.Item>
+          <Dropdown.Item value="hover">{t('tabCloseButtonHover')}</Dropdown.Item>
+          <Dropdown.Item value="never">{t('tabCloseButtonNever')}</Dropdown.Item>
         </Dropdown>
       </Control>
     </Row>
@@ -1339,12 +1364,14 @@ const TabCloseButtonDisplay = observer(() => {
 });
 
 const CustomChromeCss = observer(() => {
+  const t = getSettingsTranslator();
   const savedCss =
     typeof store.settings.customChromeCss === 'string'
       ? store.settings.customChromeCss
       : '';
   const [draft, setDraft] = React.useState(savedCss);
-  const [copyNotice, setCopyNotice] = React.useState('');
+  // 存消息 key 而非文案:6 秒提示期内切换语言也能随 render 重译。
+  const [noticeKey, setNoticeKey] = React.useState<MessageKey | null>(null);
   const copyNoticeTimer = React.useRef<number | null>(null);
 
   React.useEffect(() => {
@@ -1374,10 +1401,7 @@ const CustomChromeCss = observer(() => {
   };
 
   const loadExample = () => {
-    if (
-      draft.trim() &&
-      !window.confirm('载入示例会替换编辑器中的当前内容，是否继续？')
-    ) {
+    if (draft.trim() && !window.confirm(t('loadCssExampleConfirm'))) {
       return;
     }
     setDraft(CUSTOM_CSS_EXAMPLE);
@@ -1385,7 +1409,7 @@ const CustomChromeCss = observer(() => {
 
   const openCommunity = () => {
     const url = 'https://www.zhso.org/t/t-493c6d6c6e?node=11,1184';
-    const wid = (window as any).windowId;
+    const wid = webUIContext.windowId;
     // 设置页是 webui(nodeIntegration:false),走 add-tab-${windowId} 在浏览器新标签打开;
     // 取不到 windowId 时退回当前页跳转(view-preload 仅对受信任内置页暴露 windowId)。
     if (typeof wid === 'number' && wid >= 0) {
@@ -1398,18 +1422,16 @@ const CustomChromeCss = observer(() => {
   const copyCreationPrompt = async () => {
     try {
       await writeClipboardText(CUSTOM_CSS_CREATION_PROMPT);
-      setCopyNotice(
-        '创作技能已复制。请先把创作技能发给大模型，再告诉大模型你想要的风格。',
-      );
+      setNoticeKey('cssPromptCopiedNotice');
     } catch {
-      setCopyNotice('复制失败，请稍后重试。');
+      setNoticeKey('cssCopyFailedNotice');
     }
 
     if (copyNoticeTimer.current !== null) {
       window.clearTimeout(copyNoticeTimer.current);
     }
     copyNoticeTimer.current = window.setTimeout(() => {
-      setCopyNotice('');
+      setNoticeKey(null);
       copyNoticeTimer.current = null;
     }, 6000);
   };
@@ -1418,10 +1440,8 @@ const CustomChromeCss = observer(() => {
     <CustomCssPanel>
       <CustomCssHeader>
         <div>
-          <Title>浏览器框架 CSS</Title>
-          <SecondaryText>
-            作用于顶部栏和垂直侧边栏，不注入网页内容。
-          </SecondaryText>
+          <Title>{t('browserFrameCss')}</Title>
+          <SecondaryText>{t('browserCssScopeHint')}</SecondaryText>
         </div>
         <CustomCssLimit>
           {draft.length.toLocaleString()} /{' '}
@@ -1438,43 +1458,44 @@ const CustomChromeCss = observer(() => {
       <CustomCssActions>
         <NormalButton variant="soft" onClick={openCommunity}>
           <ChatCircle size={16} weight="bold" aria-hidden />
-          社区
+          {t('community')}
         </NormalButton>
         <NormalButton variant="soft" onClick={copyCreationPrompt}>
           <CopySimple size={16} weight="bold" aria-hidden />
-          复制 CSS 创作技能
+          {t('copyCssCreationPrompt')}
         </NormalButton>
         <NormalButton variant="soft" onClick={loadExample}>
-          载入选择器示例
+          {t('loadCssExample')}
         </NormalButton>
         <NormalButton
           variant="soft"
           disabled={!savedCss && !draft}
           onClick={reset}
         >
-          恢复默认
+          {t('resetToDefault')}
         </NormalButton>
         <NormalButton disabled={draft === savedCss} onClick={apply}>
-          应用
+          {t('apply')}
         </NormalButton>
       </CustomCssActions>
       <CustomCssCopyNotice
-        visible={Boolean(copyNotice)}
+        visible={Boolean(noticeKey)}
         role="status"
         aria-live="polite"
       >
-        {copyNotice || '\u00a0'}
+        {noticeKey ? t(noticeKey) : '\u00a0'}
       </CustomCssCopyNotice>
     </CustomCssPanel>
   );
 });
 
 const MenuAnimations = observer(() => {
+  const t = getSettingsTranslator();
   const { animations } = store.settings;
 
   return (
     <Row onClick={onSwitchChange('animations')}>
-      <Title>菜单动画</Title>
+      <Title>{t('menuAnimations')}</Title>
       <Control>
         <Switch value={animations} />
       </Control>
@@ -1483,6 +1504,7 @@ const MenuAnimations = observer(() => {
 });
 
 const BookmarksBar = observer(() => {
+  const t = getSettingsTranslator();
   const bookmarksBarDisplay = normalizeBookmarkBarDisplay(
     store.settings.bookmarksBarDisplay,
     store.settings.bookmarksBar,
@@ -1500,37 +1522,41 @@ const BookmarksBar = observer(() => {
         <BookmarkSimple size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>显示书签栏</Title>
+        <Title>{t('showBookmarksBar')}</Title>
       </SettingCopy>
       <Control>
         <Dropdown
           defaultValue={bookmarksBarDisplay}
           onChange={onBookmarksBarDisplayChange}
         >
-          <Dropdown.Item value="always">始终显示</Dropdown.Item>
-          <Dropdown.Item value="newtab">只在新标签页</Dropdown.Item>
-          <Dropdown.Item value="never">永不显示</Dropdown.Item>
+          <Dropdown.Item value="always">{t('bookmarksBarAlways')}</Dropdown.Item>
+          <Dropdown.Item value="newtab">{t('bookmarksBarNewTab')}</Dropdown.Item>
+          <Dropdown.Item value="never">{t('bookmarksBarNever')}</Dropdown.Item>
         </Dropdown>
       </Control>
     </Row>
   );
 });
 
-const getBookmarkFolderName = (folder: IBookmark) => {
-  if (folder.static === 'main') return '书签栏';
-  if (folder.static === 'mobile') return '移动设备书签';
-  if (folder.static === 'other') return '其它文件夹';
-  return folder.title || '未命名文件夹';
+const getBookmarkFolderName = (folder: IBookmark, t: Translator) => {
+  if (folder.static === 'main') return t('bookmarkBar');
+  if (folder.static === 'mobile') return t('mobileDeviceBookmarks');
+  if (folder.static === 'other') return t('bookmarksOtherFolder');
+  return folder.title || t('untitledFolder');
 };
 
-const getBookmarkFolderPath = (folder: IBookmark, folders: IBookmark[]) => {
+const getBookmarkFolderPath = (
+  folder: IBookmark,
+  folders: IBookmark[],
+  t: Translator,
+) => {
   const parts: string[] = [];
   const visited = new Set<string>();
   let current: IBookmark | undefined = folder;
 
   while (current?._id && !visited.has(current._id)) {
     visited.add(current._id);
-    parts.unshift(getBookmarkFolderName(current));
+    parts.unshift(getBookmarkFolderName(current, t));
     current = current.parent
       ? folders.find((item) => item._id === current?.parent)
       : undefined;
@@ -1551,11 +1577,12 @@ const matchesBookmarkFolder = (
   folder: IBookmark,
   folders: IBookmark[],
   query: string,
+  t: Translator,
 ): boolean => {
   if (query === '') return true;
-  if (getBookmarkFolderName(folder).toLowerCase().includes(query)) return true;
+  if (getBookmarkFolderName(folder, t).toLowerCase().includes(query)) return true;
   return getBookmarkFolderChildren(folders, folder._id).some((child) =>
-    matchesBookmarkFolder(child, folders, query),
+    matchesBookmarkFolder(child, folders, query, t),
   );
 };
 
@@ -1566,6 +1593,7 @@ type BookmarksBarFolderTreeItemProps = {
   expandedFolderIds: string[];
   depth: number;
   query: string;
+  t: Translator;
   onToggle: (folderId: string) => void;
   onSelect: (folder: IBookmark) => void;
 };
@@ -1577,18 +1605,19 @@ const BookmarksBarFolderTreeItem = ({
   expandedFolderIds,
   depth,
   query,
+  t,
   onToggle,
   onSelect,
 }: BookmarksBarFolderTreeItemProps) => {
   const children = getBookmarkFolderChildren(folders, folder._id);
   const visibleChildren = children.filter((child) =>
-    matchesBookmarkFolder(child, folders, query),
+    matchesBookmarkFolder(child, folders, query, t),
   );
   const folderId = folder._id || '';
   const selected = selectedFolderId === folderId;
   const expanded = query !== '' || expandedFolderIds.includes(folderId);
 
-  if (!matchesBookmarkFolder(folder, folders, query)) return null;
+  if (!matchesBookmarkFolder(folder, folders, query, t)) return null;
 
   return (
     <>
@@ -1601,7 +1630,7 @@ const BookmarksBarFolderTreeItem = ({
           <FolderPickerToggle
             type="button"
             $expanded={expanded}
-            aria-label={expanded ? '收起文件夹' : '展开文件夹'}
+            aria-label={expanded ? t('collapseFolder') : t('expandFolder')}
             onClick={(event) => {
               event.stopPropagation();
               onToggle(folderId);
@@ -1613,9 +1642,11 @@ const BookmarksBarFolderTreeItem = ({
           <FolderPickerToggleSpacer />
         )}
         <FolderSimple size={17} weight={selected ? 'fill' : 'regular'} />
-        <FolderPickerLabel>{getBookmarkFolderName(folder)}</FolderPickerLabel>
+        <FolderPickerLabel>{getBookmarkFolderName(folder, t)}</FolderPickerLabel>
         <FolderPickerCount>
-          {children.length > 0 ? `${children.length} 个子级` : ''}
+          {children.length > 0
+            ? t('folderChildCount', { count: children.length })
+            : ''}
         </FolderPickerCount>
         {selected && <Check size={15} weight="bold" />}
       </FolderPickerTreeRow>
@@ -1629,6 +1660,7 @@ const BookmarksBarFolderTreeItem = ({
             expandedFolderIds={expandedFolderIds}
             depth={depth + 1}
             query={query}
+            t={t}
             onToggle={onToggle}
             onSelect={onSelect}
           />
@@ -1638,6 +1670,7 @@ const BookmarksBarFolderTreeItem = ({
 };
 
 const BookmarksBarFolder = observer(() => {
+  const t = getSettingsTranslator();
   const [folders, setFolders] = React.useState<IBookmark[]>([]);
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState('');
@@ -1672,11 +1705,13 @@ const BookmarksBarFolder = observer(() => {
   const selectedFolderId = selectedFolder?._id || '';
   const normalizedQuery = query.trim().toLowerCase();
   const rootFolders = getBookmarkFolderChildren(folders).filter((folder) =>
-    matchesBookmarkFolder(folder, folders, normalizedQuery),
+    matchesBookmarkFolder(folder, folders, normalizedQuery, t),
   );
   const matchCount = normalizedQuery
     ? folders.filter((folder) =>
-        getBookmarkFolderName(folder).toLowerCase().includes(normalizedQuery),
+        getBookmarkFolderName(folder, t)
+          .toLowerCase()
+          .includes(normalizedQuery),
       ).length
     : folders.length;
   const allExpanded =
@@ -1733,14 +1768,14 @@ const BookmarksBarFolder = observer(() => {
         <FolderSimple size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>选择展示目录</Title>
+        <Title>{t('bookmarksBarFolder')}</Title>
       </SettingCopy>
       <Control>
         <FolderPickerTrigger type="button" onClick={openPicker}>
           <FolderPickerTriggerText>
             {selectedFolder
-              ? getBookmarkFolderPath(selectedFolder, folders)
-              : '书签栏'}
+              ? getBookmarkFolderPath(selectedFolder, folders, t)
+              : t('bookmarkBar')}
           </FolderPickerTriggerText>
           <CaretRight size={15} />
         </FolderPickerTrigger>
@@ -1760,12 +1795,12 @@ const BookmarksBarFolder = observer(() => {
             >
               <FolderPickerHead>
                 <FolderPickerTitle id="bookmarks-bar-folder-picker-title">
-                  选择书签栏展示目录
+                  {t('bookmarksBarFolderPickerTitle')}
                 </FolderPickerTitle>
                 <ModalClose
                   type="button"
-                  title="关闭"
-                  aria-label="关闭"
+                  title={t('close')}
+                  aria-label={t('close')}
                   onClick={() => setOpen(false)}
                 >
                   <X size={18} />
@@ -1780,14 +1815,14 @@ const BookmarksBarFolder = observer(() => {
                     autoFocus
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
-                    placeholder="搜索文件夹"
+                    placeholder={t('searchFolders')}
                   />
                 </FolderPickerSearch>
                 <FolderPickerToolbar>
                   <FolderPickerMeta>
                     {normalizedQuery
-                      ? `${matchCount} 个匹配`
-                      : '选择一个目录以展示其直属书签'}
+                      ? t('folderMatchCount', { count: matchCount })
+                      : t('folderPickerHint')}
                   </FolderPickerMeta>
                   <FolderPickerTextButton
                     type="button"
@@ -1801,7 +1836,7 @@ const BookmarksBarFolder = observer(() => {
                       )
                     }
                   >
-                    {allExpanded ? '收起全部' : '展开全部'}
+                    {allExpanded ? t('collapseAll') : t('expandAll')}
                   </FolderPickerTextButton>
                 </FolderPickerToolbar>
                 <FolderPickerTree>
@@ -1815,6 +1850,7 @@ const BookmarksBarFolder = observer(() => {
                         expandedFolderIds={expandedFolderIds}
                         depth={0}
                         query={normalizedQuery}
+                        t={t}
                         onToggle={toggleFolder}
                         onSelect={onFolderSelect}
                       />
@@ -1822,8 +1858,8 @@ const BookmarksBarFolder = observer(() => {
                   ) : (
                     <FolderPickerEmpty>
                       {folders.length === 0 && normalizedQuery === ''
-                        ? '正在加载文件夹...'
-                        : '没有找到匹配的文件夹'}
+                        ? t('loadingFolders')
+                        : t('noMatchingFolders')}
                     </FolderPickerEmpty>
                   )}
                 </FolderPickerTree>
@@ -1837,6 +1873,7 @@ const BookmarksBarFolder = observer(() => {
 });
 
 const BookmarksBarIconsOnly = observer(() => {
+  const t = getSettingsTranslator();
   const { bookmarksBarIconsOnly } = store.settings;
 
   return (
@@ -1845,7 +1882,7 @@ const BookmarksBarIconsOnly = observer(() => {
         <EyeSlash size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>只显示图标</Title>
+        <Title>{t('bookmarksBarIconsOnly')}</Title>
       </SettingCopy>
       <Control>
         <Switch value={bookmarksBarIconsOnly} />
@@ -1860,6 +1897,7 @@ const onBookmarksBarRowsChange = (value: string) => {
 };
 
 const BookmarksBarRows = observer(() => {
+  const t = getSettingsTranslator();
   const { bookmarksBarRows } = store.settings;
 
   return (
@@ -1868,16 +1906,22 @@ const BookmarksBarRows = observer(() => {
         <ListNumbers size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>书签栏行数</Title>
+        <Title>{t('bookmarksBarRowCountTitle')}</Title>
       </SettingCopy>
       <Control>
         <Dropdown
           defaultValue={String(bookmarksBarRows ?? 1)}
           onChange={onBookmarksBarRowsChange}
         >
-          <Dropdown.Item value="1">1 行</Dropdown.Item>
-          <Dropdown.Item value="2">2 行</Dropdown.Item>
-          <Dropdown.Item value="3">3 行</Dropdown.Item>
+          <Dropdown.Item value="1">
+            {t('bookmarksBarRowCount', { count: 1 })}
+          </Dropdown.Item>
+          <Dropdown.Item value="2">
+            {t('bookmarksBarRowCount', { count: 2 })}
+          </Dropdown.Item>
+          <Dropdown.Item value="3">
+            {t('bookmarksBarRowCount', { count: 3 })}
+          </Dropdown.Item>
         </Dropdown>
       </Control>
     </Row>
@@ -1885,6 +1929,7 @@ const BookmarksBarRows = observer(() => {
 });
 
 const ImmersiveBrowsing = observer(() => {
+  const t = getSettingsTranslator();
   const { immersiveBrowsing } = store.settings;
 
   const onImmersiveBrowsingChange = () => {
@@ -1892,7 +1937,7 @@ const ImmersiveBrowsing = observer(() => {
     const verticalTabs = (store.settings.tabsLayout || 'top') !== 'top';
 
     if (enabling && verticalTabs) {
-      alert('沉浸模式暂时不支持垂直标签页，请先关闭垂直标签页；');
+      alert(t('immersiveNoVerticalTabsAlert'));
       return;
     }
 
@@ -1906,10 +1951,8 @@ const ImmersiveBrowsing = observer(() => {
         <ArrowsOutSimple size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>沉浸浏览</Title>
-        <SecondaryText>
-          网页尽量铺满窗口，鼠标移到顶部边缘时再显示头部；当前主要用于顶部标签布局。
-        </SecondaryText>
+        <Title>{t('immersiveBrowsing')}</Title>
+        <SecondaryText>{t('immersiveBrowsingHint')}</SecondaryText>
       </SettingCopy>
       <Control>
         <Switch value={immersiveBrowsing} />
@@ -1919,6 +1962,7 @@ const ImmersiveBrowsing = observer(() => {
 });
 
 const ImmersivePageIndicator = observer(() => {
+  const t = getSettingsTranslator();
   const { immersivePageIndicator } = store.settings;
 
   return (
@@ -1927,7 +1971,7 @@ const ImmersivePageIndicator = observer(() => {
         <Minus size={19} weight="bold" />
       </SettingIcon>
       <SettingCopy>
-        <Title>显示顶部指示条</Title>
+        <Title>{t('immersivePageIndicator')}</Title>
       </SettingCopy>
       <Control>
         <Switch value={immersivePageIndicator} />
@@ -1940,6 +1984,7 @@ type AppearanceModal = 'toolbar' | 'address-icons' | 'browser-css' | null;
 type CssModalTab = 'visual' | 'code';
 
 export const Appearance = observer(() => {
+  const t = getSettingsTranslator();
   const [modal, setModal] = React.useState<AppearanceModal>(null);
   const [cssTab, setCssTab] = React.useState<CssModalTab>('visual');
   const lastTrigger = React.useRef<HTMLButtonElement | null>(null);
@@ -1969,17 +2014,17 @@ export const Appearance = observer(() => {
 
   const modalTitle =
     modal === 'toolbar'
-      ? '自定义工具栏'
+      ? t('customizeToolbar')
       : modal === 'address-icons'
-      ? '地址栏内图标'
-      : '浏览器框架 CSS';
+      ? t('addressBarIcons')
+      : t('browserFrameCss');
 
   const modalHost = document.querySelector<HTMLElement>('[data-settings-main]');
 
   return (
     <>
       <SettingGroupBlock>
-        <SettingGroupLabel>浏览器外观</SettingGroupLabel>
+        <SettingGroupLabel>{t('browserAppearance')}</SettingGroupLabel>
         <SettingGroup>
           {/* <MenuAnimations /> */}
           <ImmersiveBrowsing />
@@ -1990,7 +2035,7 @@ export const Appearance = observer(() => {
         </SettingGroup>
       </SettingGroupBlock>
       <SettingGroupBlock>
-        <SettingGroupLabel>标签栏</SettingGroupLabel>
+        <SettingGroupLabel>{t('tabBarSectionLabel')}</SettingGroupLabel>
         <SettingGroup>
           <TopBarVariant />
           <TabsLayoutVariant />
@@ -2004,7 +2049,7 @@ export const Appearance = observer(() => {
         </SettingGroup>
       </SettingGroupBlock>
       <SettingGroupBlock>
-        <SettingGroupLabel>书签栏</SettingGroupLabel>
+        <SettingGroupLabel>{t('bookmarkBar')}</SettingGroupLabel>
         <SettingGroup>
           <BookmarksBar />
           {normalizeBookmarkBarDisplay(
@@ -2020,7 +2065,7 @@ export const Appearance = observer(() => {
         </SettingGroup>
       </SettingGroupBlock>
       <SettingGroupBlock>
-        <SettingGroupLabel>高级外观</SettingGroupLabel>
+        <SettingGroupLabel>{t('advancedAppearance')}</SettingGroupLabel>
         <AdvancedEntries>
           <AdvancedEntry
             type="button"
@@ -2030,9 +2075,9 @@ export const Appearance = observer(() => {
               <SlidersHorizontal size={19} weight="fill" />
             </SettingIcon>
             <AdvancedEntryCopy>
-              <AdvancedEntryTitle>自定义工具栏</AdvancedEntryTitle>
+              <AdvancedEntryTitle>{t('customizeToolbar')}</AdvancedEntryTitle>
               <AdvancedEntryDesc>
-                地址栏左右两侧共 10 个可配置按钮
+                {t('customizeToolbarEntryDesc')}
               </AdvancedEntryDesc>
             </AdvancedEntryCopy>
             <CaretRight size={17} color="#B0B0BA" />
@@ -2045,8 +2090,10 @@ export const Appearance = observer(() => {
               <Star size={19} weight="fill" />
             </SettingIcon>
             <AdvancedEntryCopy>
-              <AdvancedEntryTitle>地址栏内图标</AdvancedEntryTitle>
-              <AdvancedEntryDesc>书签、广告拦截、翻译和视频</AdvancedEntryDesc>
+              <AdvancedEntryTitle>{t('addressBarIcons')}</AdvancedEntryTitle>
+              <AdvancedEntryDesc>
+                {t('addressBarIconsEntryDesc')}
+              </AdvancedEntryDesc>
             </AdvancedEntryCopy>
             <CaretRight size={17} color="#B0B0BA" />
           </AdvancedEntry>
@@ -2058,10 +2105,8 @@ export const Appearance = observer(() => {
               <CodeBlock size={19} weight="fill" />
             </SettingIcon>
             <AdvancedEntryCopy>
-              <AdvancedEntryTitle>浏览器框架 CSS</AdvancedEntryTitle>
-              <AdvancedEntryDesc>
-                可视化调节外观或手写 CSS，仅影响顶部栏与垂直侧边栏
-              </AdvancedEntryDesc>
+              <AdvancedEntryTitle>{t('browserFrameCss')}</AdvancedEntryTitle>
+              <AdvancedEntryDesc>{t('browserCssEntryDesc')}</AdvancedEntryDesc>
             </AdvancedEntryCopy>
             <CaretRight size={17} color="#B0B0BA" />
           </AdvancedEntry>
@@ -2087,8 +2132,8 @@ export const Appearance = observer(() => {
                 </ModalTitle>
                 <ModalClose
                   type="button"
-                  title="关闭"
-                  aria-label="关闭"
+                  title={t('close')}
+                  aria-label={t('close')}
                   onClick={closeModal}
                 >
                   <X size={18} />
@@ -2110,7 +2155,7 @@ export const Appearance = observer(() => {
                         $active={cssTab === 'visual'}
                         onClick={() => setCssTab('visual')}
                       >
-                        可视化调节
+                        {t('visualTuning')}
                       </CssModalTab>
                       <CssModalTab
                         role="tab"
@@ -2118,7 +2163,7 @@ export const Appearance = observer(() => {
                         $active={cssTab === 'code'}
                         onClick={() => setCssTab('code')}
                       >
-                        自定义 CSS
+                        {t('customCssTab')}
                       </CssModalTab>
                     </CssModalTabs>
                     {cssTab === 'visual' ? (

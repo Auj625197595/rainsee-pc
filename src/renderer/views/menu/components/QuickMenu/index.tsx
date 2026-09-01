@@ -61,6 +61,8 @@ import {
 } from './style';
 import store from '../../store';
 import { getWebUIURL } from '~/common/webui';
+import type { MessageKey } from '~/common/i18n';
+import { useI18n } from '~/renderer/components/I18n';
 import { Switch } from '~/renderer/components/Switch';
 import {
   IconUser,
@@ -128,12 +130,12 @@ const EMPTY_CLONE_DATA: Record<CloneDataKey, boolean> = {
   settings: false,
 };
 
-const CLONE_DATA_OPTIONS: Array<{key: CloneDataKey; label: string}> = [
-  {key: 'bookmarks', label: '书签'},
-  {key: 'passwords', label: '密码'},
-  {key: 'history', label: '历史'},
-  {key: 'extensions', label: '扩展'},
-  {key: 'settings', label: '设置'},
+const CLONE_DATA_OPTIONS: Array<{key: CloneDataKey; labelKey: MessageKey}> = [
+  {key: 'bookmarks', labelKey: 'abSuggestBookmarks'},
+  {key: 'passwords', labelKey: 'sysPasswords'},
+  {key: 'history', labelKey: 'wbHistoryLabel'},
+  {key: 'extensions', labelKey: 'qmExtensions'},
+  {key: 'settings', labelKey: 'settings'},
 ];
 
 const addNewTab = (url: string, incognito = false) => {
@@ -219,28 +221,28 @@ const openGithubRepo = () =>
 // 顶部四宫格
 const TILES = [
   {
-    label: '拓展',
+    labelKey: 'qmTilesExtensions' as MessageKey,
     icon: <IconExtension />,
     bg: '#1a1a1a',
     darkBg: '#2b3348',
     onClick: goToWebUIPage('extensions'),
   },
   {
-    label: '书签',
+    labelKey: 'abSuggestBookmarks' as MessageKey,
     icon: <IconBookmark />,
     bg: '#eef2ff',
     darkBg: '#25304c',
     onClick: goToWebUIPage('bookmarks'),
   },
   {
-    label: '下载',
+    labelKey: 'downloads' as MessageKey,
     icon: <IconDownload />,
     bg: '#eef0ff',
     darkBg: '#233148',
     onClick: goToWebUIPage('downloads'),
   },
   {
-    label: '历史',
+    labelKey: 'wbHistoryLabel' as MessageKey,
     icon: <IconHistory />,
     bg: '#f6eefe',
     darkBg: '#312644',
@@ -251,7 +253,7 @@ const TILES = [
 // 列表区：新建相关
 const NEW_ITEMS = [
   {
-    label: '新建标签页',
+    labelKey: 'shellNewTab' as MessageKey,
     icon: <IconPlusSquare />,
     bg: '#eef2ff',
     darkBg: '#202b46',
@@ -260,7 +262,7 @@ const NEW_ITEMS = [
     onClick: newTab,
   },
   {
-    label: '新建窗口',
+    labelKey: 'qmNewWindow' as MessageKey,
     icon: <IconBrowser />,
     bg: '#eaf9f3',
     darkBg: '#1d332c',
@@ -269,7 +271,7 @@ const NEW_ITEMS = [
     onClick: newWindow,
   },
   {
-    label: '新建无痕窗口',
+    labelKey: 'qmNewIncognito' as MessageKey,
     icon: <IconWindows />,
     bg: '#f3eeff',
     darkBg: '#2f2741',
@@ -282,7 +284,7 @@ const NEW_ITEMS = [
 // 二宫格快捷动作
 const ACTIONS = [
   {
-    label: '打印',
+    labelKey: 'qmPrint' as MessageKey,
     icon: <IconPrinter />,
     bg: '#fff7f4',
     darkBg: '#392720',
@@ -291,7 +293,7 @@ const ACTIONS = [
     onClick: printPage,
   },
   {
-    label: '翻译',
+    labelKey: 'qmTranslate' as MessageKey,
     icon: <IconTranslate />,
     bg: '#f3f7ff',
     darkBg: '#202d49',
@@ -300,7 +302,7 @@ const ACTIONS = [
     onClick: translatePage,
   },
   {
-    label: '截图',
+    labelKey: 'shellScreenshot' as MessageKey,
     icon: <IconCamera />,
     bg: '#effaf8',
     darkBg: '#1c322e',
@@ -309,7 +311,7 @@ const ACTIONS = [
     onClick: openScreenshot,
   },
   {
-    label: '密码',
+    labelKey: 'sysPasswords' as MessageKey,
     icon: <IconPassword />,
     bg: '#fff8e8',
     darkBg: '#392f1d',
@@ -366,6 +368,7 @@ const useSelectedUrl = () => {
 };
 
 export const QuickMenu = observer(() => {
+  const t = useI18n();
   const { zoom, zoomIn, zoomOut } = useZoom();
   const selectedUrl = useSelectedUrl();
   // 仅 http(s)/file 页面可安装为 PWA;其余页面(内部页、扩展页等)禁用并置灰。
@@ -402,13 +405,13 @@ export const QuickMenu = observer(() => {
         // 整个列表隐藏。保留上次成功结果，待下次打开面板自动重试。
         setProfileListError(
           payload.error
-            ? `读取小号列表失败：${payload.error}`
-            : '读取小号列表失败',
+            ? t('qmProfileListFailed', {error: payload.error})
+            : t('qmProfileListFailedPlain'),
         );
         return;
       }
       if (!payload || !Array.isArray(payload.profiles)) {
-        setProfileListError('读取小号列表失败：返回数据格式异常');
+        setProfileListError(t('qmProfileListFailedFormat'));
         return;
       }
       setProfileData(payload);
@@ -417,8 +420,8 @@ export const QuickMenu = observer(() => {
       const message = error instanceof Error ? error.message : String(error);
       setProfileListError(
         message
-          ? `读取小号列表失败：${message}`
-          : '读取小号列表失败',
+          ? t('qmProfileListFailed', {error: message})
+          : t('qmProfileListFailedPlain'),
       );
     }
   }, []);
@@ -492,7 +495,7 @@ export const QuickMenu = observer(() => {
   const submitCookie = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!cookieText.trim() || cookieBusy) {
-      if (!cookieText.trim()) setCookieError('请输入 Cookie 文本');
+      if (!cookieText.trim()) setCookieError(t('qmCookieRequired'));
       return;
     }
     setCookieBusy(true);
@@ -503,13 +506,13 @@ export const QuickMenu = observer(() => {
         cookieText,
       )) as IProfileResult;
       if (!result?.ok) {
-        setCookieError(result?.message || 'Cookie 文本格式无效');
+        setCookieError(result?.message || t('qmCookieInvalid'));
         return;
       }
       setCookieOpen(false);
       store.hide();
     } catch {
-      setCookieError('Cookie 设置失败');
+      setCookieError(t('qmCookieSetFailed'));
     } finally {
       setCookieBusy(false);
     }
@@ -535,14 +538,14 @@ export const QuickMenu = observer(() => {
         { cloneData },
       )) as IProfileResult;
       if (!result?.ok) {
-        setProfileError(result?.message || '创建小号失败');
+        setProfileError(result?.message || t('qmCreateFailed'));
         return;
       }
       setCreateOpen(false);
       await refreshProfiles();
       store.hide();
     } catch {
-      setProfileError('创建小号失败');
+      setProfileError(t('qmCreateFailed'));
     } finally {
       setProfileBusy(false);
     }
@@ -556,10 +559,10 @@ export const QuickMenu = observer(() => {
         'profiles-open',
         profile.name,
       )) as IProfileResult;
-      if (!result?.ok) setNotice(result?.message || '小号窗口启动失败');
+      if (!result?.ok) setNotice(result?.message || t('qmOpenFailed'));
       else store.hide();
     } catch {
-      setNotice('小号窗口启动失败');
+      setNotice(t('qmOpenFailed'));
     }
   };
 
@@ -571,17 +574,17 @@ export const QuickMenu = observer(() => {
         profile.name,
       )) as IProfileResult;
       if (!result?.ok) {
-        setNotice(result?.message || '无法打开快捷方式设置');
+        setNotice(result?.message || t('qmShortcutFailed'));
       }
     } catch {
-      setNotice('无法打开快捷方式设置');
+      setNotice(t('qmShortcutFailed'));
     }
   };
 
   const requestDelete = (profile: IProfileInfo) => {
     setMoreProfile(null);
     if (profile.running) {
-      setNotice('该小号仍在运行，请关闭窗口后再删除');
+      setNotice(t('qmDeleteRunning'));
       return;
     }
     setDeleteProfile(profile);
@@ -596,14 +599,15 @@ export const QuickMenu = observer(() => {
         deleteProfile.name,
       )) as IProfileResult;
       setNotice(
-        result?.message || (result?.ok ? '小号已删除' : '删除小号失败'),
+        result?.message ||
+          (result?.ok ? t('qmDeleted') : t('qmDeleteFailed')),
       );
       if (result?.ok) {
         setDeleteProfile(null);
         await refreshProfiles();
       }
     } catch {
-      setNotice('删除小号失败');
+      setNotice(t('qmDeleteFailed'));
     } finally {
       setProfileBusy(false);
     }
@@ -633,7 +637,7 @@ export const QuickMenu = observer(() => {
           </div>
         </HeaderInfo>
         <HeaderActions>
-          <RoundButton onClick={openShareDialog} title="分享网页">
+          <RoundButton onClick={openShareDialog} title={t('qmSharePage')}>
             <IconShare />
           </RoundButton>
           <RoundButton onClick={goToWebUIPage('settings')}>
@@ -643,12 +647,12 @@ export const QuickMenu = observer(() => {
       </Header>
 
       <TileGrid>
-        {TILES.map((t) => (
-          <Tile key={t.label} onClick={t.onClick || undefined}>
-            <TileIcon className="tile-icon" bg={t.bg} darkBg={t.darkBg}>
-              {t.icon}
+        {TILES.map((tile) => (
+          <Tile key={tile.labelKey} onClick={tile.onClick || undefined}>
+            <TileIcon className="tile-icon" bg={tile.bg} darkBg={tile.darkBg}>
+              {tile.icon}
             </TileIcon>
-            <TileLabel>{t.label}</TileLabel>
+            <TileLabel>{t(tile.labelKey)}</TileLabel>
           </Tile>
         ))}
       </TileGrid>
@@ -656,7 +660,7 @@ export const QuickMenu = observer(() => {
       <ListPanel>
         <ListGroup>
           {NEW_ITEMS.map((it) => (
-            <Row key={it.label} onClick={it.onClick}>
+            <Row key={it.labelKey} onClick={it.onClick}>
               <RowIcon
                 bg={it.bg}
                 darkBg={it.darkBg}
@@ -665,7 +669,7 @@ export const QuickMenu = observer(() => {
               >
                 {it.icon}
               </RowIcon>
-              <RowLabel>{it.label}</RowLabel>
+              <RowLabel>{t(it.labelKey)}</RowLabel>
               <RowCaret>
                 <IconCaretRight />
               </RowCaret>
@@ -681,7 +685,7 @@ export const QuickMenu = observer(() => {
             >
               <IconUserPlus />
             </RowIcon>
-            <RowLabel>新建小号</RowLabel>
+            <RowLabel>{t('qmNewAlt')}</RowLabel>
             <RowCaret>
               <IconCaretRight />
             </RowCaret>
@@ -696,7 +700,7 @@ export const QuickMenu = observer(() => {
           {profileData.profiles.length > 0 && (
             <>
               <SectionTitle>
-                <span>小号</span>
+                <span>{t('qmAltSection')}</span>
                 <span>{profileData.profiles.length}</span>
               </SectionTitle>
               {profileData.profiles.map((profile) => (
@@ -725,14 +729,14 @@ export const QuickMenu = observer(() => {
                         {profile.name}
                       </ProfileName>
                       {profile.current ? (
-                        <StatusBadge>当前</StatusBadge>
+                        <StatusBadge>{t('qmCurrent')}</StatusBadge>
                       ) : profile.running ? (
-                        <StatusBadge>运行中</StatusBadge>
+                        <StatusBadge>{t('qmRunning')}</StatusBadge>
                       ) : null}
                     </ProfileMeta>
                     <MoreButton
-                      aria-label={`${profile.name}的更多操作`}
-                      title="更多"
+                      aria-label={t('qmMoreAria', {name: profile.name})}
+                      title={t('qmMore')}
                       onClick={(event) => {
                         event.stopPropagation();
                         setMoreProfile(
@@ -747,14 +751,14 @@ export const QuickMenu = observer(() => {
                     <MoreMenu onClick={(event) => event.stopPropagation()}>
                       <MoreMenuItem onClick={() => createShortcut(profile)}>
                         <IconDesktop />
-                        添加到桌面
+                        {t('qmAddToDesktop')}
                       </MoreMenuItem>
                       <MoreMenuItem
                         data-danger="true"
                         onClick={() => requestDelete(profile)}
                       >
                         <IconTrash />
-                        删除
+                        {t('delete')}
                       </MoreMenuItem>
                     </MoreMenu>
                   )}
@@ -772,13 +776,13 @@ export const QuickMenu = observer(() => {
             <ZoomIcon>
               <IconZoom />
             </ZoomIcon>
-            <ZoomLabel>缩放</ZoomLabel>
+            <ZoomLabel>{t('qmZoom')}</ZoomLabel>
             <ZoomControls>
-              <ZoomButton aria-label="缩小" onClick={zoomOut}>
+              <ZoomButton aria-label={t('qmZoomOut')} onClick={zoomOut}>
                 <IconMinus />
               </ZoomButton>
               <ZoomValue>{(zoom * 100).toFixed(0)}%</ZoomValue>
-              <ZoomButton aria-label="放大" onClick={zoomIn}>
+              <ZoomButton aria-label={t('qmZoomIn')} onClick={zoomIn}>
                 <IconPlus size={12} />
               </ZoomButton>
             </ZoomControls>
@@ -787,7 +791,7 @@ export const QuickMenu = observer(() => {
           <ActionGrid>
             {ACTIONS.map((a) => (
               <ActionTile
-                key={a.label}
+                key={a.labelKey}
                 bg={a.bg}
                 darkBg={a.darkBg}
                 onClick={a.onClick || undefined}
@@ -796,7 +800,7 @@ export const QuickMenu = observer(() => {
                 <ActionIcon color={a.color} darkColor={a.darkColor}>
                   {a.icon}
                 </ActionIcon>
-                <ActionLabel>{a.label}</ActionLabel>
+                <ActionLabel>{t(a.labelKey)}</ActionLabel>
               </ActionTile>
             ))}
           </ActionGrid>
@@ -810,7 +814,7 @@ export const QuickMenu = observer(() => {
             >
               <IconFind />
             </RowIcon>
-            <RowLabel>查找</RowLabel>
+            <RowLabel>{t('qmFind')}</RowLabel>
             <RowCaret>
               <IconCaretRight />
             </RowCaret>
@@ -820,7 +824,11 @@ export const QuickMenu = observer(() => {
             style={{ marginTop: 10 }}
             disabled={!canInstallPwa}
             onClick={installPwa}
-            title={canInstallPwa ? '安装为 PWA' : '当前页面不支持安装为应用'}
+            title={
+              canInstallPwa
+                ? t('qmInstallPwa')
+                : t('qmInstallPwaDisabled')
+            }
           >
             <RowIcon
               bg="#eef2ff"
@@ -830,7 +838,7 @@ export const QuickMenu = observer(() => {
             >
               <IconAppWindow />
             </RowIcon>
-            <RowLabel>安装为 PWA</RowLabel>
+            <RowLabel>{t('qmInstallPwa')}</RowLabel>
             <RowCaret>
               <IconCaretRight />
             </RowCaret>
@@ -845,7 +853,7 @@ export const QuickMenu = observer(() => {
             >
               <IconMoon />
             </RowIcon>
-            <RowLabel>暗色模式</RowLabel>
+            <RowLabel>{t('qmDarkMode')}</RowLabel>
             <Switch value={store.settings.theme === 'wexond-dark'} />
           </Row>
 
@@ -858,7 +866,7 @@ export const QuickMenu = observer(() => {
             >
               <IconQuestion />
             </RowIcon>
-            <RowLabel>帮助与反馈</RowLabel>
+            <RowLabel>{t('qmHelpFeedback')}</RowLabel>
             <RowCaret>
               <IconCaretRight />
             </RowCaret>
@@ -871,10 +879,10 @@ export const QuickMenu = observer(() => {
           <Modal onMouseDown={(event) => event.stopPropagation()}>
             <form onSubmit={createProfile}>
               <ModalHeader>
-                <span>新建小号</span>
+                <span>{t('qmNewAlt')}</span>
                 <ModalClose
                   type="button"
-                  aria-label="关闭"
+                  aria-label={t('close')}
                   onClick={() => !profileBusy && setCreateOpen(false)}
                 >
                   <IconClose />
@@ -883,19 +891,16 @@ export const QuickMenu = observer(() => {
               <ProfileInput
                 autoFocus
                 value={profileName}
-                placeholder="窗口名"
+                placeholder={t('qmWindowNamePlaceholder')}
                 disabled={profileBusy}
                 onChange={(event) => {
                   setProfileName(event.target.value);
                   setProfileError('');
                 }}
               />
-              <ProfileHint>
-                每个小号均使用独立浏览器指纹，可单独配置。若仅需在不同标签页中打开窗口，请将鼠标移至左上角
-                LOGO，开启工作区。
-              </ProfileHint>
+              <ProfileHint>{t('qmAltHint')}</ProfileHint>
               <CloneSection>
-                <CloneSectionTitle>克隆主程序数据</CloneSectionTitle>
+                <CloneSectionTitle>{t('qmCloneData')}</CloneSectionTitle>
                 <CloneOptionsGrid>
                   {CLONE_DATA_OPTIONS.map((option) => (
                     <CloneOption key={option.key}>
@@ -910,7 +915,7 @@ export const QuickMenu = observer(() => {
                           }))
                         }
                       />
-                      <CloneOptionLabel>{option.label}</CloneOptionLabel>
+                      <CloneOptionLabel>{t(option.labelKey)}</CloneOptionLabel>
                     </CloneOption>
                   ))}
                 </CloneOptionsGrid>
@@ -922,14 +927,14 @@ export const QuickMenu = observer(() => {
                   disabled={profileBusy}
                   onClick={() => setCreateOpen(false)}
                 >
-                  取消
+                  {t('cancel')}
                 </ModalButton>
                 <ModalButton
                   type="submit"
                   data-primary="true"
                   disabled={profileBusy}
                 >
-                  {profileBusy ? '创建中' : '创建'}
+                  {profileBusy ? t('qmCreating') : t('qmCreate')}
                 </ModalButton>
               </ModalActions>
             </form>
@@ -942,10 +947,10 @@ export const QuickMenu = observer(() => {
           <Modal onMouseDown={(event) => event.stopPropagation()}>
             <form onSubmit={submitCookie}>
               <ModalHeader>
-                <span>设置 Cookie</span>
+                <span>{t('qmSetCookie')}</span>
                 <ModalClose
                   type="button"
-                  aria-label="关闭"
+                  aria-label={t('close')}
                   onClick={() => !cookieBusy && setCookieOpen(false)}
                 >
                   <IconClose />
@@ -968,14 +973,14 @@ export const QuickMenu = observer(() => {
                   disabled={cookieBusy}
                   onClick={() => setCookieOpen(false)}
                 >
-                  取消
+                  {t('cancel')}
                 </ModalButton>
                 <ModalButton
                   type="submit"
                   data-primary="true"
                   disabled={cookieBusy}
                 >
-                  {cookieBusy ? '设置中' : '设置'}
+                  {cookieBusy ? t('qmSetting') : t('settings')}
                 </ModalButton>
               </ModalActions>
             </form>
@@ -989,17 +994,17 @@ export const QuickMenu = observer(() => {
         >
           <Modal onMouseDown={(event) => event.stopPropagation()}>
             <ModalHeader>
-              <span>删除小号</span>
+              <span>{t('qmDeleteTitle')}</span>
               <ModalClose
                 type="button"
-                aria-label="关闭"
+                aria-label={t('close')}
                 onClick={() => !profileBusy && setDeleteProfile(null)}
               >
                 <IconClose />
               </ModalClose>
             </ModalHeader>
             <ConfirmText>
-              确定删除“{deleteProfile.name}”吗？该小号的设置、书签、历史、扩展和登录数据都会永久删除。
+              {t('qmDeleteConfirm', {name: deleteProfile.name})}
             </ConfirmText>
             <ModalActions>
               <ModalButton
@@ -1007,7 +1012,7 @@ export const QuickMenu = observer(() => {
                 disabled={profileBusy}
                 onClick={() => setDeleteProfile(null)}
               >
-                取消
+                {t('cancel')}
               </ModalButton>
               <ModalButton
                 type="button"
@@ -1015,7 +1020,7 @@ export const QuickMenu = observer(() => {
                 disabled={profileBusy}
                 onClick={confirmDelete}
               >
-                {profileBusy ? '删除中' : '删除'}
+                {profileBusy ? t('qmDeleting') : t('delete')}
               </ModalButton>
             </ModalActions>
           </Modal>

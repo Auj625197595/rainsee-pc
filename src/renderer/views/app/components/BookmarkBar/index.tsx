@@ -1,6 +1,7 @@
 import { ipcRenderer } from 'electron';
 import * as React from 'react';
 import store from '../../store';
+import { getShellTranslator } from '../../utils/i18n';
 import { observer } from 'mobx-react-lite';
 import {
   BookmarkButton,
@@ -727,7 +728,9 @@ export const BookmarkBar = observer(() => {
         }
         data-rainsee-action="open-bookmarks"
         aria-label={
-          store.settings.object.bookmarksBarIconsOnly ? '全部书签' : undefined
+          store.settings.object.bookmarksBarIconsOnly
+            ? getShellTranslator()('shellAllBookmarks')
+            : undefined
         }
         onClick={() => {
           ipcRenderer.send(`add-tab-${store.windowId}`, {
@@ -737,7 +740,7 @@ export const BookmarkBar = observer(() => {
         }}
       >
         <MobileBookmarkIcon src={ICON_ALL} alt="" draggable={false} />
-        <div>全部</div>
+        <div>{getShellTranslator()('mgFilterAll')}</div>
       </MibileBookmarkSection>
     </StyledBookmarkBar>
   ) : null;

@@ -4,10 +4,15 @@ import {resolve, join} from 'path';
 import type {BlockingResponse, ElectronBlocker, Request} from '@cliqz/adblocker-electron';
 import {getPath} from '~/utils';
 import {Application} from '../application';
+import {getMainTranslator} from '../i18n';
 import {ipcMain, webContents} from 'electron';
 import {getDomain} from 'tldts';
 import {deletePath, isExpire, readFileAsText, writeFileText} from "~/utils/files";
-import {filterVideo, stripEdgeCspHeaders} from '~/main/services/supervideo-video';
+import {
+  filterVideo,
+  recordUrlRequest,
+  stripEdgeCspHeaders,
+} from '~/main/services/supervideo-video';
 import {resolveChromeExtensionResourceUrl} from './chrome-extension-resources';
 
 // @cliqz/adblocker-electron 是主进程最重的依赖之一(完整过滤引擎,顶层求值拖慢
@@ -444,7 +449,7 @@ const adsLists: string[] = [
 ];
 export let filterCount = 0;
 
-// 原生 fetch + 超时。替代 cross-fetch: cross-fetch 在 Node 下走 node-fetch, 对 api.yjllq.com 的
+// 原生 fetch + 超时。替代 cross-fetch: cross-fetch 在 Node 下走 node-fetch, 对远程源
 // gzip 响应做 Gunzip 解压时会抛 ERR_STREAM_PREMATURE_CLOSE, 导致订阅永远拉不到(规则归零)。
 const fetchWithTimeout = (url: string, timeout = 15000, options: RequestInit = {}): Promise<Response> => {
   const controller = new AbortController();
@@ -695,13 +700,14 @@ export const addSubscription = async (
   url: string,
   ses: Electron.Session[],
 ): Promise<ISubStore & {error?: string}> => {
+  const t = getMainTranslator(Application.instance.settings?.object?.language);
   url = normalizeUrl(url);
   const store = readSubStore();
-  if (!url) return {...store, error: '地址不能为空'};
-  if (!/^https?:\/\//i.test(url)) return {...store, error: '地址需以 http(s):// 开头'};
-  if (store.items.some((i) => i.url === url)) return {...store, error: '该订阅已存在'};
+  if (!url) return {...store, error: t('adSubEmpty')};
+  if (!/^https?:\/\//i.test(url)) return {...store, error: t('adSubInvalidUrl')};
+  if (store.items.some((i) => i.url === url)) return {...store, error: t('adSubExists')};
   const meta = await fetchListMeta(url);
-  if (!meta) return {...store, error: '无法拉取该订阅地址'};
+  if (!meta) return {...store, error: t('adSubFetchFailed')};
   store.items.push({
     url,
     name: meta.name,
@@ -1060,18 +1066,9 @@ const hookEngine = () => {
       callback(resp);
     };
     try {
-      if (details.referrer) {
-        for (let s of whiteList) {
-          if (s && details.referrer.includes(s)) {
-            dbgWhitelistSkip++;
-            safeCallback({});
-            return;
-          }
-        }
-      }
-      // DNR 独立执行路径: 屏蔽开启时 cliqz 占据唯一监听器, vendor 回调不跑,
-      // 这里在委托给 cliqz 之前同步咨询 DNR。block/redirect/upgradeScheme
-      // 直接执行；allow 只解决扩展 DNR 规则之间的冲突，不能关闭用户启用的宿主拦截器。
+      // Extension DNR is independent of the host adblocker's referrer
+      // whitelist. Evaluate it first so a whitelisted site cannot bypass an
+      // extension's explicit block or redirect rule.
       const dnr = dnrEnforcers.get(requestSession(details));
       if (dnr && isNetworkUrl(details.url)) {
         try {
@@ -1083,11 +1080,20 @@ const hookEngine = () => {
           }
           if (verdict.redirectUrl) {
             dbgRedirected++;
-            safeCallback({redirectUrl: verdict.redirectUrl});
+            safeCallback({redirectURL: verdict.redirectUrl});
             return;
           }
         } catch (err) {
           console.error('[adblock] DNR decideBeforeRequest error', err);
+        }
+      }
+      if (details.referrer) {
+        for (let s of whiteList) {
+          if (s && details.referrer.includes(s)) {
+            dbgWhitelistSkip++;
+            safeCallback({});
+            return;
+          }
         }
       }
       onBeforeRequest(details, safeCallback);
@@ -1203,6 +1209,15 @@ const hookEngine = () => {
     const origOnBeforeSendHeaders = (engine as any).onBeforeSendHeaders.bind(engine);
     (engine as any).onBeforeSendHeaders = (details: any, callback: any) => {
       if (!details.url?.startsWith('chrome-extension://')) {
+        // When the shield is enabled, this wrapper owns the request-header
+        // path instead of settings.ts. Keep the media sniffer's request
+        // header cache populated so playback/download can reuse anti-hotlink
+        // headers such as Cookie and User-Agent.
+        try {
+          recordUrlRequest(details);
+        } catch (err) {
+          console.error('[adblock] record media request headers error:', err);
+        }
         dispatchWebReqToExtensions('onBeforeSendHeaders', details);
       }
       const next = (resp: any) => {
@@ -1337,10 +1352,11 @@ export const addWhitelistDomain = async (
   domain: string,
   ses: Electron.Session[],
 ): Promise<{list: string[]; error?: string}> => {
+  const t = getMainTranslator(Application.instance.settings?.object?.language);
   const d = normalizeDomain(domain);
-  if (!d) return {list: getUserWhitelist(), error: '域名不能为空'};
+  if (!d) return {list: getUserWhitelist(), error: t('adWhitelistEmpty')};
   if (whiteList.some((s) => s && s.trim().toLowerCase() === d)) {
-    return {list: getUserWhitelist(), error: '该域名已在白名单'};
+    return {list: getUserWhitelist(), error: t('adWhitelistExists')};
   }
   whiteList.push(d);
   persistWhiteList();

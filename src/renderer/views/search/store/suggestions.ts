@@ -18,6 +18,7 @@ import {
 } from '~/interfaces';
 import { Store } from '.';
 import { ICON_SEARCH, ICON_PAGE } from '~/renderer/constants';
+import { createLocaleTranslator } from '~/common/i18n';
 
 const MAX_SUGGESTIONS_COUNT = 50;
 
@@ -270,7 +271,9 @@ export class SuggestionsStore {
     if (!editingUrl) {
       head.push({
         primaryText: filter,
-        secondaryText: `${context.searchEngine.name} 搜索`,
+        secondaryText: createLocaleTranslator(
+          context.settings.language,
+        )('svEngineSearchSuffix', { name: context.searchEngine.name }),
         favicon: ICON_SEARCH,
         isSearch: true,
         type: 'search',

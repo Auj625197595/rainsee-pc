@@ -18,6 +18,7 @@ import store from '../../store';
 import { ITabGroup } from '../../models';
 import { getDraggedLinkURL, isLinkDragEvent } from '../../utils/link-drop';
 import { handleTabGroupContextMenu } from '../../utils/tab-context-menu';
+import { getShellTranslator } from '../../utils/i18n';
 import { SidebarDropLine } from '../SidebarTab/style';
 
 const ChevronIcon = (
@@ -61,11 +62,12 @@ interface Props {
 // 与标签组悬停弹窗(tabgroup-preview)行为一致。
 export const SidebarGroupHeaderRow = observer(
   ({ group, collapsed, railCollapsed, onToggle }: Props) => {
+    const t = getShellTranslator();
     const gid = group.id;
     const [paletteOpen, setPaletteOpen] = React.useState(false);
     const [editing, setEditing] = React.useState(false);
     const [name, setName] = React.useState(group.name || '');
-    const displayName = group.name || `${group.tabs.length} 个标签页`;
+    const displayName = group.name || t('sghTabCount', { count: group.tabs.length });
     const compactName = Array.from(displayName.trim())[0] || '#';
 
     React.useEffect(() => {
@@ -191,7 +193,7 @@ export const SidebarGroupHeaderRow = observer(
           pinned={group.isPinned}
           collapsed={railCollapsed}
           style={{ backgroundColor: group.color }}
-          title={railCollapsed ? displayName : '点击选择组色'}
+          title={railCollapsed ? displayName : t('shellPickGroupColor')}
           onClick={(e: React.MouseEvent) => {
             e.stopPropagation();
             setPaletteOpen((v) => !v);
@@ -221,7 +223,7 @@ export const SidebarGroupHeaderRow = observer(
             data-rainsee-part="sidebar-group-title-input"
             autoFocus
             value={name}
-            placeholder={`${group.tabs.length} 个标签页`}
+            placeholder={t('sghTabCount', { count: group.tabs.length })}
             onClick={(e: React.MouseEvent) => e.stopPropagation()}
             onChange={(e) => setName(e.target.value)}
             onBlur={commitName}
@@ -237,7 +239,7 @@ export const SidebarGroupHeaderRow = observer(
           <SidebarGroupName
             data-rainsee-part="sidebar-group-title"
             collapsed={railCollapsed}
-            title="双击可重命名分组"
+            title={t('shellRenameHint')}
             onDoubleClick={(e: React.MouseEvent) => {
               e.stopPropagation();
               setEditing(true);
@@ -249,7 +251,7 @@ export const SidebarGroupHeaderRow = observer(
         {group.isPinned && !railCollapsed && (
           <SidebarGroupPinBadge
             data-rainsee-part="sidebar-group-pin"
-            title="已固定分组"
+            title={t('shellGroupPinned')}
           >
             {PinGlyph}
           </SidebarGroupPinBadge>
@@ -266,8 +268,8 @@ export const SidebarGroupHeaderRow = observer(
             type="button"
             data-rainsee-part="sidebar-group-new-tab"
             data-sidebar-group-control="true"
-            title="在分组中新建标签页"
-            aria-label="在分组中新建标签页"
+            title={t('shellNewTabInGroup')}
+            aria-label={t('shellNewTabInGroup')}
             onMouseDown={(e: React.MouseEvent) => {
               e.preventDefault();
               e.stopPropagation();

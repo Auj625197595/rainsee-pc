@@ -9,6 +9,8 @@ import { ITheme } from '~/interfaces';
 import { isURL } from '~/utils';
 import { getPalette } from '../../utils/palette';
 import store from '../../store';
+import { getSettingsTranslator } from '../../utils';
+import type { MessageKey } from '~/common/i18n';
 
 type StartupType = 'continue' | 'urls' | 'empty';
 
@@ -82,15 +84,18 @@ interface Props {
 interface State {
   value: StartupType;
   url: string;
-  statusText: string;
+  // 存消息 key 而非文案:语言切换后 render 重新翻译。
+  statusKey: MessageKey | null;
   statusTone: 'ok' | 'err';
 }
 
-class StartupControl extends React.PureComponent<Props, State> {
+// 用 Component 而非 PureComponent:语言切换时 props 不变, PureComponent 会
+// 跳过重渲染,状态提示/标题会停留在旧语言。
+class StartupControl extends React.Component<Props, State> {
   public state: State = {
     value: this.props.initialValue,
     url: this.props.initialURL || '',
-    statusText: '',
+    statusKey: null,
     statusTone: 'ok',
   };
 
@@ -98,14 +103,14 @@ class StartupControl extends React.PureComponent<Props, State> {
 
   // 点击单选项:立即切换并持久化 type(网址输入与保存按钮单独提交)。
   private select = (value: StartupType) => () => {
-    this.setState({ value, statusText: '' });
+    this.setState({ value, statusKey: null });
     store.settings.startupBehavior.type = value;
     store.save();
   };
 
   private onURLChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     // 编辑即清除上次保存结果提示。
-    this.setState({ url: e.target.value, statusText: '' });
+    this.setState({ url: e.target.value, statusKey: null });
   };
 
   // 阻止点击输入框触发行的 radio 切换 / 抢走输入焦点。
@@ -113,15 +118,15 @@ class StartupControl extends React.PureComponent<Props, State> {
     e.stopPropagation();
   };
 
-  private setStatus = (tone: 'ok' | 'err', text: string) => {
+  private setStatus = (tone: 'ok' | 'err', key: MessageKey) => {
     if (this.statusTimer) {
       window.clearTimeout(this.statusTimer);
     }
-    this.setState({ statusTone: tone, statusText: text });
+    this.setState({ statusTone: tone, statusKey: key });
     // 成功提示短暂展示后自动消失;错误提示保留到下次编辑/保存。
     if (tone === 'ok') {
       this.statusTimer = window.setTimeout(() => {
-        this.setState({ statusText: '' });
+        this.setState({ statusKey: null });
       }, 2500);
     }
   };
@@ -130,12 +135,12 @@ class StartupControl extends React.PureComponent<Props, State> {
     const raw = (this.state.url || '').trim();
 
     if (!raw) {
-      this.setStatus('err', '请输入网址');
+      this.setStatus('err', 'suErrorEmptyUrl');
       return;
     }
 
     if (!isURL(raw)) {
-      this.setStatus('err', '网址格式不正确，请检查');
+      this.setStatus('err', 'suErrorInvalidUrl');
       return;
     }
 
@@ -143,10 +148,11 @@ class StartupControl extends React.PureComponent<Props, State> {
     store.settings.startupBehavior.type = 'urls';
     store.settings.startupBehavior.url = raw;
     store.save();
-    this.setStatus('ok', '已保存');
+    this.setStatus('ok', 'suSaved');
   };
 
   public render() {
+    const t = getSettingsTranslator();
     const titleStyle = {
       marginLeft: 8,
     };
@@ -166,7 +172,7 @@ class StartupControl extends React.PureComponent<Props, State> {
             onClick={this.select('empty')}
           >
             <RadioButton selected={this.state.value === 'empty'} />
-            <Title style={titleStyle}>打开新标签页</Title>
+            <Title style={titleStyle}>{t('searchOpenNewTabPage')}</Title>
           </StartupOption>
           <StartupOption
             $selected={this.state.value === 'continue'}
@@ -174,7 +180,7 @@ class StartupControl extends React.PureComponent<Props, State> {
             onClick={this.select('continue')}
           >
             <RadioButton selected={this.state.value === 'continue'} />
-            <Title style={titleStyle}>恢复标签页</Title>
+            <Title style={titleStyle}>{t('searchRestoreTabs')}</Title>
           </StartupOption>
           <StartupOption
             $selected={this.state.value === 'urls'}
@@ -182,7 +188,7 @@ class StartupControl extends React.PureComponent<Props, State> {
             onClick={this.select('urls')}
           >
             <RadioButton selected={this.state.value === 'urls'} />
-            <Title style={titleStyle}>打开特定页面</Title>
+            <Title style={titleStyle}>{t('searchOpenSpecificPages')}</Title>
             {showURLInput && (
               <Control onClick={this.stopPropagation}>
                 <URLInput
@@ -207,11 +213,11 @@ class StartupControl extends React.PureComponent<Props, State> {
             }}
           >
             <NormalButton variant="soft" onClick={this.onSave}>
-              保存
+              {t('save')}
             </NormalButton>
-            {this.state.statusText && (
+            {this.state.statusKey && (
               <Status tone={this.state.statusTone}>
-                {this.state.statusText}
+                {t(this.state.statusKey)}
               </Status>
             )}
           </div>

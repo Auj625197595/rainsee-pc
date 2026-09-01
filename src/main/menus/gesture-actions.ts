@@ -10,70 +10,72 @@
 // 逐字一致。识别器只用 4 方向基向 L/R/U/D(无对角),形状 = 折叠后的单字符 token 串:
 // 单段 "L"/"U",两段折角 "DR"=先下再右,反向 "UD"=先上再下,依此类推。
 
+import type { MessageKey, Translator } from '~/common/i18n';
+
 export type GestureCategory = 'navigation' | 'tabs' | 'view' | 'tools';
 
 export interface GestureAction {
   // 稳定标识,持久化到 settings.mouseGestures 的 key(以 actionId 为键)
   id: string;
-  // 设置页展示的中文名称
-  label: string;
+  // 设置页和手势浮层共享的翻译 key
+  labelKey: MessageKey;
   category: GestureCategory;
 }
 
 // 设置页分组的展示顺序
-export const GESTURE_CATEGORIES: { id: GestureCategory; label: string }[] = [
-  { id: 'navigation', label: '页面导航' },
-  { id: 'tabs', label: '标签页' },
-  { id: 'view', label: '视图与滚动' },
-  { id: 'tools', label: '工具' },
+export const GESTURE_CATEGORIES: { id: GestureCategory; labelKey: MessageKey }[] = [
+  { id: 'navigation', labelKey: 'mgCategoryNavigation' },
+  { id: 'tabs', labelKey: 'mgCategoryTabs' },
+  { id: 'view', labelKey: 'mgCategoryView' },
+  { id: 'tools', labelKey: 'mgCategoryTools' },
 ];
 
 // 预设手势形状:下拉里可选。code 见识别器约定。
 export interface PresetShape {
   code: string;
-  label: string;
+  labelKey: MessageKey;
 }
 
 export const PRESET_SHAPES: PresetShape[] = [
-  { code: 'L', label: '← 向左' },
-  { code: 'R', label: '→ 向右' },
-  { code: 'U', label: '↑ 向上' },
-  { code: 'D', label: '↓ 向下' },
-  { code: 'DR', label: '↓→ 先向下再向右' },
-  { code: 'DL', label: '↓← 向下然后向左' },
-  { code: 'UR', label: '↑→ 先向上再向右' },
-  { code: 'UL', label: '↑← 先向上再向左' },
-  { code: 'RU', label: '→↑ 先向右再向上' },
-  { code: 'RD', label: '→↓ 向右然后向下' },
-  { code: 'LU', label: '←↑ 先向左再向上' },
-  { code: 'LD', label: '←↓ 向左然后向下' },
-  { code: 'UD', label: '↑↓ 先向上再向下' },
-  { code: 'DU', label: '↓↑ 先向下再向上' },
-  { code: 'LR', label: '←→ 先向左再向右' },
-  { code: 'RL', label: '→← 先向右再向左' },
+  { code: 'L', labelKey: 'mgShapeL' },
+  { code: 'R', labelKey: 'mgShapeR' },
+  { code: 'U', labelKey: 'mgShapeU' },
+  { code: 'D', labelKey: 'mgShapeD' },
+  { code: 'DR', labelKey: 'mgShapeDR' },
+  { code: 'DL', labelKey: 'mgShapeDL' },
+  { code: 'UR', labelKey: 'mgShapeUR' },
+  { code: 'UL', labelKey: 'mgShapeUL' },
+  { code: 'RU', labelKey: 'mgShapeRU' },
+  { code: 'RD', labelKey: 'mgShapeRD' },
+  { code: 'LU', labelKey: 'mgShapeLU' },
+  { code: 'LD', labelKey: 'mgShapeLD' },
+  { code: 'UD', labelKey: 'mgShapeUD' },
+  { code: 'DU', labelKey: 'mgShapeDU' },
+  { code: 'LR', labelKey: 'mgShapeLR' },
+  { code: 'RL', labelKey: 'mgShapeRL' },
 ];
 
 export const GESTURE_ACTIONS: GestureAction[] = [
   // —— 页面导航 ——
-  { id: 'back', label: '后退', category: 'navigation' },
-  { id: 'forward', label: '前进', category: 'navigation' },
-  { id: 'reload', label: '刷新', category: 'navigation' },
-  { id: 'stop', label: '停止加载', category: 'navigation' },
-  { id: 'home', label: '回到主页', category: 'navigation' },
+  { id: 'back', labelKey: 'shortcutBack', category: 'navigation' },
+  { id: 'forward', labelKey: 'shortcutForward', category: 'navigation' },
+  { id: 'reload', labelKey: 'mgActReload', category: 'navigation' },
+  { id: 'stop', labelKey: 'mgActStopLoading', category: 'navigation' },
+  { id: 'home', labelKey: 'mgActGoHome', category: 'navigation' },
   // —— 标签页 ——
-  { id: 'new-tab', label: '新建标签页', category: 'tabs' },
-  { id: 'close-tab', label: '关闭当前标签', category: 'tabs' },
-  { id: 'reopen-closed-tab', label: '恢复关闭的标签', category: 'tabs' },
-  { id: 'next-tab', label: '下一个标签', category: 'tabs' },
-  { id: 'previous-tab', label: '上一个标签', category: 'tabs' },
+  { id: 'new-tab', labelKey: 'mgActNewTab', category: 'tabs' },
+  { id: 'close-tab', labelKey: 'mgActCloseCurrentTab', category: 'tabs' },
+  { id: 'reopen-closed-tab', labelKey: 'mgActRestoreClosedTab', category: 'tabs' },
+  { id: 'next-tab', labelKey: 'shortcutNextTab', category: 'tabs' },
+  { id: 'previous-tab', labelKey: 'shortcutPreviousTab', category: 'tabs' },
   // —— 视图与滚动 ——
-  { id: 'scroll-to-top', label: '滚到顶部', category: 'view' },
-  { id: 'scroll-to-bottom', label: '滚到底部', category: 'view' },
-  { id: 'zoom-in', label: '放大', category: 'view' },
-  { id: 'zoom-out', label: '缩小', category: 'view' },
-  { id: 'reset-zoom', label: '重置缩放', category: 'view' },
+  { id: 'scroll-to-top', labelKey: 'mgActScrollTop', category: 'view' },
+  { id: 'scroll-to-bottom', labelKey: 'mgActScrollBottom', category: 'view' },
+  { id: 'zoom-in', labelKey: 'shortcutZoomIn', category: 'view' },
+  { id: 'zoom-out', labelKey: 'shortcutZoomOut', category: 'view' },
+  { id: 'reset-zoom', labelKey: 'shortcutResetZoom', category: 'view' },
   // —— 工具 ——
-  { id: 'find-in-page', label: '页内查找', category: 'tools' },
+  { id: 'find-in-page', labelKey: 'shortcutFindInPage', category: 'tools' },
 ];
 
 // 默认绑定:shape -> actionId(左划后退 / 右划前进)。只用 4 方向基向组成的形状,
@@ -129,20 +131,27 @@ export const resolveGestures = (
   return map;
 };
 
-// 动作 id -> 中文标签(供 preload 在光标旁显示动作名)。
-export const GESTURE_LABELS: { [actionId: string]: string } = (() => {
+// 动作 id -> 翻译后的标签(供 preload 在光标旁显示动作名)。不缓存:随语言即时生效。
+export const getGestureLabels = (t: Translator): { [actionId: string]: string } => {
   const m: { [actionId: string]: string } = {};
-  for (const a of GESTURE_ACTIONS) m[a.id] = a.label;
+  for (const a of GESTURE_ACTIONS) m[a.id] = t(a.labelKey);
   return m;
-})();
+};
 
-export const LEFT_GESTURE_ACTIONS = [
-  {id: 'copy', label: '复制到剪贴板'},
-  {id: 'download', label: '下载链接文件'},
-  {id: 'open-left', label: '在标签页左侧打开'},
-  {id: 'open-right', label: '在标签页右侧打开'},
-  {id: 'open-left-background', label: '在标签页左侧后台打开'},
-  {id: 'open-right-background', label: '在标签页右侧后台打开'},
+export interface LeftGestureAction {
+  id: string;
+  labelKey: MessageKey;
+  // 左键拖拽提示浮层用的短标签(空间有限,与完整动作名区分)
+  shortLabelKey: MessageKey;
+}
+
+export const LEFT_GESTURE_ACTIONS: LeftGestureAction[] = [
+  {id: 'copy', labelKey: 'lgCopyToClipboard', shortLabelKey: 'lgHintCopy'},
+  {id: 'download', labelKey: 'lgDownloadLink', shortLabelKey: 'lgHintDownload'},
+  {id: 'open-left', labelKey: 'lgOpenLeftTab', shortLabelKey: 'lgHintOpenLeft'},
+  {id: 'open-right', labelKey: 'lgOpenRightTab', shortLabelKey: 'lgHintOpenRight'},
+  {id: 'open-left-background', labelKey: 'lgOpenLeftTabBg', shortLabelKey: 'lgHintOpenLeftBg'},
+  {id: 'open-right-background', labelKey: 'lgOpenRightTabBg', shortLabelKey: 'lgHintOpenRightBg'},
 ];
 
 const GESTURE_ACTION_IDS = new Set(GESTURE_ACTIONS.map((item) => item.id));
@@ -189,11 +198,13 @@ export interface GestureConfig {
   color: string;
   // shape -> actionId
   map: { [shape: string]: string };
-  // actionId -> 中文标签
+  // actionId -> 翻译后的标签(注入脚本直接显示,不做 key 查询)
   labels: { [actionId: string]: string };
   leftThreshold: number;
   leftMap: { [direction: string]: string | null };
   leftLabels: { [actionId: string]: string };
+  // 左键拖拽提示浮层的短标签(actionId -> 翻译文本)
+  leftShortLabels: { [actionId: string]: string };
   sideButtons: { [button: string]: string | null };
 }
 
@@ -205,7 +216,7 @@ export const buildGestureConfig = (s: {
   mouseLeftGestureThreshold?: number;
   mouseLeftGestures?: { [direction: string]: string | null };
   mouseSideButtons?: { [button: string]: string | null };
-}): GestureConfig => ({
+}, t: Translator): GestureConfig => ({
   enabled: s.mouseGesturesEnabled !== false,
   leftEnabled: s.mouseLeftGesturesEnabled !== false,
   color:
@@ -213,15 +224,33 @@ export const buildGestureConfig = (s: {
       ? s.mouseGestureColor
       : '#3b82f6',
   map: resolveGestures(s.mouseGestures || {}),
-  labels: GESTURE_LABELS,
+  labels: getGestureLabels(t),
   leftThreshold:
     typeof s.mouseLeftGestureThreshold === 'number'
       ? Math.max(8, Math.min(200, Math.round(s.mouseLeftGestureThreshold)))
       : 24,
   leftMap: resolveLeftGestures(s.mouseLeftGestures),
   leftLabels: LEFT_GESTURE_ACTIONS.reduce((map, item) => {
-    map[item.id] = item.label;
+    map[item.id] = t(item.labelKey);
+    return map;
+  }, {} as { [actionId: string]: string }),
+  leftShortLabels: LEFT_GESTURE_ACTIONS.reduce((map, item) => {
+    map[item.id] = t(item.shortLabelKey);
     return map;
   }, {} as { [actionId: string]: string }),
   sideButtons: resolveSideButtons(s.mouseSideButtons),
 });
+
+// —— IPC 边界的本地化 DTO(与 shortcut-actions 的 localize* 同构) ——
+
+export const localizeGestureCategories = (t: Translator) =>
+  GESTURE_CATEGORIES.map((c) => ({ id: c.id, label: t(c.labelKey) }));
+
+export const localizeGestureActions = (t: Translator) =>
+  GESTURE_ACTIONS.map((a) => ({ id: a.id, label: t(a.labelKey), category: a.category }));
+
+export const localizePresetShapes = (t: Translator) =>
+  PRESET_SHAPES.map((p) => ({ code: p.code, label: t(p.labelKey) }));
+
+export const localizeLeftGestureActions = (t: Translator) =>
+  LEFT_GESTURE_ACTIONS.map((a) => ({ id: a.id, label: t(a.labelKey) }));

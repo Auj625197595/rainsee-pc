@@ -3,6 +3,7 @@ import {observer} from 'mobx-react-lite';
 
 import store from '../../store';
 import { isImmersiveHeaderWindow } from '../../utils/windows';
+import { getShellTranslator } from '../../utils/i18n';
 import {realurl} from '~/utils';
 import {extractSearchQuery, getExternalProtocol} from '~/utils/url';
 import {callViewMethod} from '~/utils/view';
@@ -274,26 +275,27 @@ const onBlur = (e: React.FocusEvent<HTMLInputElement>) => {
 };
 
 const onContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
+  const t = getShellTranslator();
   const menu = remote.Menu.buildFromTemplate([
     {
-      label: '复制',
+      label: t('copy'),
       click: () => {
         clipboard.clear();
         clipboard.writeText(store.addressbarValue);
       },
     },
     {
-      label: '粘贴',
+      label: t('paste'),
       click: () => {
-        let t = clipboard.readText();
-        if (t == null) {
-          t = "";
+        let text = clipboard.readText();
+        if (text == null) {
+          text = "";
         }
-        changeText(t, t.length, true);
+        changeText(text, text.length, true);
       },
     },
     {
-      label: '粘贴并转到',
+      label: t('shellPasteAndGo'),
       click: () => {
         pasteAndGo(clipboard.readText(), store.inputRef || null);
       },
@@ -363,7 +365,7 @@ export const AddressBar = observer(() => {
           onMouseMove={onMouseMove}
           onMouseUp={onMouseUp}
           onChange={onChange}
-          placeholder="搜索或输入网址"
+          placeholder={getShellTranslator()('shellAddressPlaceholder')}
           onContextMenu={onContextMenu}
           visible={inputTextVisible}
           value={store.addressbarValue}

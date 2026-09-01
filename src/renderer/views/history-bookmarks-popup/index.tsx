@@ -18,10 +18,12 @@ import {
 
 import { DialogStore } from '~/models/dialog-store';
 import { IBookmark, IHistoryItem } from '~/interfaces';
+import type { Translator } from '~/common/i18n';
 import { getIconByUrlNet } from '~/utils/url';
 import { UIStyle } from '~/renderer/mixins/default-styles';
 import styled from 'styled-components';
 import { renderUI } from '~/utils/ui-entry';
+import { useI18n } from '~/renderer/components/I18n';
 
 type Kind = 'history' | 'bookmarks';
 
@@ -90,34 +92,36 @@ const host = (url: string) => {
   }
 };
 
-const ago = (date: number) => {
+const ago = (date: number, t: (key: string, params?: any) => string) => {
   const time = new Date(date).getTime();
   const minutes = Math.max(0, Math.floor((Date.now() - time) / 60000));
-  if (minutes < 1) return '刚刚';
-  if (minutes < 60) return `${minutes} 分钟前`;
-  if (minutes < 24 * 60) return `${Math.floor(minutes / 60)} 小时前`;
+  if (minutes < 1) return t('hbpJustNow');
+  if (minutes < 60) return t('hbpMinutesAgo', { count: minutes });
+  if (minutes < 24 * 60)
+    return t('hbpHoursAgo', { count: Math.floor(minutes / 60) });
   const d = new Date(date);
-  return `${d.getMonth() + 1}月${d.getDate()}日`;
+  return t('hbpDate', { month: d.getMonth() + 1, day: d.getDate() });
 };
 
 type BookmarkTreeItem = IBookmark & { level: number };
 
-const rootTitle = (item: IBookmark) => {
+const rootTitle = (item: IBookmark, t: Translator) => {
   switch (item.static) {
     case 'main':
-      return '书签栏';
+      return t('hbpBookmarkBar');
     case 'other':
-      return '其他书签';
+      return t('hbpOtherBookmarks');
     case 'mobile':
-      return '移动书签';
+      return t('hbpMobileBookmarks');
     default:
-      return item.title || '书签';
+      return item.title || t('hbpBookmark');
   }
 };
 
 const bookmarkTree = (
   items: IBookmark[],
   expanded: Set<string>,
+  t: Translator,
 ): BookmarkTreeItem[] => {
   const roots = items
     .filter(
@@ -147,7 +151,10 @@ const bookmarkTree = (
   const visit = (item: IBookmark, level: number) => {
     result.push({
       ...item,
-      title: level === 0 ? rootTitle(item) : item.title,
+      title:
+        level === 0
+          ? rootTitle(item, t)
+          : item.title,
       level,
     });
     if (!item.isFolder || !item._id || !expanded.has(item._id)) return;
@@ -158,6 +165,7 @@ const bookmarkTree = (
 };
 
 const App = observer(() => {
+  const t = useI18n();
   const [history, setHistory] = React.useState<IHistoryItem[]>([]);
   const [bookmarks, setBookmarks] = React.useState<IBookmark[]>([]);
   const [expandedFolders, setExpandedFolders] = React.useState<Set<string>>(
@@ -250,26 +258,28 @@ const App = observer(() => {
       if (isFolder) {
         const folder = item as BookmarkTreeItem;
         menuItems.push({
-          label: expandedFolders.has(folder._id || '') ? '收起文件夹' : '展开文件夹',
+          label: expandedFolders.has(folder._id || '')
+            ? t('hbpCollapseFolder')
+            : t('hbpExpandFolder'),
           click: () => folder._id && toggleFolder(folder._id),
         });
       } else if (url) {
         menuItems.push(
           {
-            label: '在当前页打开',
+            label: t('hbpOpenCurrent'),
             click: () => store.openUrl(url),
           },
           {
-            label: '在新标签页打开',
+            label: t('hbpOpenNewTab'),
             click: () => store.openUrl(url, 'new'),
           },
           {
-            label: '在新标签页打开（不切换）',
+            label: t('hbpOpenNewTabBg'),
             click: () => store.openUrl(url, 'background'),
           },
           { type: 'separator' },
           {
-            label: '复制链接地址',
+            label: t('hbpCopyLink'),
             click: () => clipboard.writeText(url),
           },
         );
@@ -279,7 +289,7 @@ const App = observer(() => {
         menuItems.push(
           { type: 'separator' },
           {
-            label: '删除',
+            label: t('hbpDelete'),
             click: () => removeItem(item),
           },
         );
@@ -334,8 +344,8 @@ const App = observer(() => {
   }, [store.visible, store.kind]);
 
   const visibleBookmarks = React.useMemo(
-    () => bookmarkTree(bookmarks, expandedFolders),
-    [bookmarks, expandedFolders],
+    () => bookmarkTree(bookmarks, expandedFolders, t),
+    [bookmarks, expandedFolders, t],
   );
   const normalizedQuery = query.trim().toLowerCase();
   const filteredHistory = React.useMemo(
@@ -358,14 +368,14 @@ const App = observer(() => {
         .filter((item) => item.isFolder && item._id)
         .map((item) => item._id as string),
     );
-    return bookmarkTree(bookmarks, allExpanded).filter((item) =>
+    return bookmarkTree(bookmarks, allExpanded, t).filter((item) =>
       [item.title, item.url]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(normalizedQuery)),
     );
-  }, [bookmarks, normalizedQuery, visibleBookmarks]);
+  }, [bookmarks, normalizedQuery, visibleBookmarks, t]);
   const items = isHistory ? filteredHistory : filteredBookmarks;
-  const title = isHistory ? '历史记录' : '收藏夹';
+  const title = isHistory ? t('pvItemHistory') : t('shellFavorites');
 
   return (
     <ThemeProvider theme={{ ...store.theme }}>
@@ -389,8 +399,8 @@ const App = observer(() => {
             {engaged && (
               <CloseButton
                 type="button"
-                title="关闭"
-                aria-label="关闭"
+                title={t('close')}
+                aria-label={t('close')}
                 onClick={() => store.close()}
               >
                 <X size={16} weight="bold" />
@@ -404,15 +414,15 @@ const App = observer(() => {
             <SearchInput
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder={isHistory ? '搜索历史记录' : '搜索书签'}
+              placeholder={isHistory ? t('histSearchPlaceholder') : t('bmSearchFolder')}
               spellCheck={false}
             />
           </SearchBox>
           <List>
             {loading ? (
-              <Empty>正在加载…</Empty>
+              <Empty>{t('hbpLoading')}</Empty>
             ) : !items.length ? (
-              <Empty>{isHistory ? '暂无历史记录' : '暂无书签'}</Empty>
+              <Empty>{isHistory ? t('hbpNoHistory') : t('hbpNoBookmarks')}</Empty>
             ) : isHistory ? (
               filteredHistory.map((item) => (
                 <Row
@@ -432,7 +442,7 @@ const App = observer(() => {
                     <RowTitle>{item.title || host(item.url || '')}</RowTitle>
                     <RowSub>{host(item.url || '')}</RowSub>
                   </RowText>
-                  <Meta>{ago(item.date || 0)}</Meta>
+                  <Meta>{ago(item.date || 0, t)}</Meta>
                 </Row>
               ))
             ) : (
@@ -475,7 +485,7 @@ const App = observer(() => {
             )}
           </List>
           <Footer onClick={() => store.openManager()}>
-            <FooterLabel>查看全部{title}</FooterLabel>
+            <FooterLabel>{t('hbpViewAll', { title })}</FooterLabel>
             <ArrowSquareOut size={14} />
           </Footer>
         </Panel>

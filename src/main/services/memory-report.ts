@@ -18,6 +18,8 @@ import type {
   MemoryProcessCategory,
 } from '~/interfaces/memory';
 import { getWebUIURL } from '~/common/webui-main';
+import {getMainTranslator} from '../i18n';
+import type {Translator} from '~/common/i18n';
 
 // React Fast Refresh 仅由 renderer webpack 配置注入；主进程不能依赖其运行时。
 const toMB = (kb: number) => (kb / 1024).toFixed(1);
@@ -73,18 +75,18 @@ const getApplication = () => {
     .instance as import('../application').Application;
 };
 
-const friendlyInternalPage = (url: string) => {
+const friendlyInternalPage = (url: string, t: Translator) => {
   const names: Record<string, string> = {
-    app: '浏览器窗口界面',
-    memory: '内存使用情况',
-    settings: '设置',
-    history: '历史记录',
-    bookmarks: '书签',
-    downloads: '下载管理',
-    extensions: '扩展管理',
-    newtab: '新标签页',
-    preview: '标签页悬浮预览',
-    search: '地址栏搜索建议',
+    app: t('mrPgApp'),
+    memory: t('mrPgMemory'),
+    settings: t('settings'),
+    history: t('menuHistory'),
+    bookmarks: t('menuBookmarks'),
+    downloads: t('dlvTitle'),
+    extensions: t('mrPgExtensions'),
+    newtab: t('newTab'),
+    preview: t('mrPgPreview'),
+    search: t('mrPgSearch'),
   };
 
   for (const key of Object.keys(names)) {
@@ -95,41 +97,41 @@ const friendlyInternalPage = (url: string) => {
   return '';
 };
 
-const utilityLabel = (raw: string) => {
+const utilityLabel = (raw: string, t: Translator) => {
   const value = raw.toLowerCase();
-  if (value.includes('network')) return '网络服务';
-  if (value.includes('audio')) return '音频服务';
-  if (value.includes('storage')) return '存储服务';
+  if (value.includes('network')) return t('mrSvcNetwork');
+  if (value.includes('audio')) return t('mrSvcAudio');
+  if (value.includes('storage')) return t('mrSvcStorage');
   if (value.includes('video') || value.includes('capture'))
-    return '视频与采集服务';
+    return t('mrSvcMedia');
   if (value.includes('data_decoder') || value.includes('decoder'))
-    return '数据解码服务';
-  if (value.includes('proxy')) return '代理解析服务';
-  if (value.includes('print')) return '打印服务';
-  return '系统辅助服务';
+    return t('mrSvcDecoder');
+  if (value.includes('proxy')) return t('mrSvcProxy');
+  if (value.includes('print')) return t('mrSvcPrint');
+  return t('mrSvcOther');
 };
 
-const utilityDescription = (raw: string) => {
+const utilityDescription = (raw: string, t: Translator) => {
   const value = raw.toLowerCase();
   if (value.includes('network')) {
-    return '负责网页请求、连接复用、代理与网络安全隔离。';
+    return t('mrDescNetwork');
   }
   if (value.includes('audio')) {
-    return '负责网页和浏览器界面的音频播放、混音与设备访问。';
+    return t('mrDescAudio');
   }
   if (value.includes('storage')) {
-    return '负责站点数据、缓存和浏览器内部存储的读写。';
+    return t('mrDescStorage');
   }
   if (value.includes('video') || value.includes('capture')) {
-    return '负责视频解码、摄像头或屏幕采集等媒体任务。';
+    return t('mrDescMedia');
   }
   if (value.includes('data_decoder') || value.includes('decoder')) {
-    return '在隔离环境中解析图片、JSON 等不受信任的数据。';
+    return t('mrDescDecoder');
   }
   if (value.includes('proxy')) {
-    return '负责系统代理和自动代理脚本的解析。';
+    return t('mrDescProxy');
   }
-  return 'Chromium 按需启动的隔离服务，用于承载浏览器基础能力。';
+  return t('mrDescUtilityGeneric');
 };
 
 interface IContentReference {
@@ -139,7 +141,7 @@ interface IContentReference {
   url: string;
 }
 
-const buildRuntimeReferences = () => {
+const buildRuntimeReferences = (t: Translator) => {
   const pidToTabs = new Map<number, IMemoryTabReference[]>();
   const tabWebContentsIds = new Set<number>();
 
@@ -152,7 +154,7 @@ const buildRuntimeReferences = () => {
       const tabs = pidToTabs.get(pid) || [];
       tabs.push({
         id: view.id,
-        title: view.title || safeTitle(wc) || '未命名标签页',
+        title: view.title || safeTitle(wc) || t('mrUntitledTab'),
         url: view.url || safeUrl(wc),
         selected: appWindow.viewManager.selectedId === view.id,
       });
@@ -167,19 +169,19 @@ const buildRuntimeReferences = () => {
 
     const url = safeUrl(wc);
     const wcType = wc.getType();
-    const internalName = friendlyInternalPage(url);
+    const internalName = friendlyInternalPage(url, t);
     let kind: string = wcType;
     let label = safeTitle(wc) || internalName || wcType;
 
     if (tabWebContentsIds.has(wc.id)) {
       kind = 'tab';
-      label = safeTitle(wc) || internalName || '网页标签页';
+      label = safeTitle(wc) || internalName || t('mrWebTab');
     } else if (
       wcType === 'backgroundPage' ||
       url.startsWith('chrome-extension://')
     ) {
       kind = 'extension';
-      label = safeTitle(wc) || '扩展后台';
+      label = safeTitle(wc) || t('mrExtBackground');
     } else if (internalName) {
       kind = 'browser-ui';
       label = internalName;
@@ -197,6 +199,7 @@ const processPresentation = (
   metric: Electron.ProcessMetric,
   tabs: IMemoryTabReference[],
   contents: IContentReference[],
+  t: Translator,
 ): {
   category: MemoryProcessCategory;
   name: string;
@@ -211,47 +214,47 @@ const processPresentation = (
   if (type === 'Browser') {
     return {
       category: 'browser',
-      name: '雨见浏览器主进程',
+      name: t('mrNameBrowser'),
       description:
-        '负责窗口、标签管理、应用生命周期，以及各浏览器进程之间的协调。',
+        t('mrDescBrowser'),
     };
   }
   if (type === 'GPU') {
     return {
       category: 'gpu',
-      name: '图形处理进程',
+      name: t('mrNameGpu'),
       description:
-        '负责页面合成、动画、视频和硬件加速绘制；关闭硬件加速后占用通常会降低。',
+        t('mrDescGpu'),
     };
   }
   if (type === 'Utility') {
     return {
       category: 'utility',
-      name: utilityLabel(rawService),
-      description: utilityDescription(rawService),
+      name: utilityLabel(rawService, t),
+      description: utilityDescription(rawService, t),
     };
   }
   if (hasExtension && tabs.length === 0) {
     return {
       category: 'extension',
-      name: '扩展后台进程',
-      description: '承载已安装扩展的后台页面或服务，扩展启用期间可能持续运行。',
+      name: t('mrNameExtBackground'),
+      description: t('mrDescExtBackground'),
     };
   }
   if (type === 'Tab' || type.toLowerCase() === 'renderer') {
     if (tabs.length === 1) {
       return {
         category: 'tab',
-        name: tabs[0].title || '网页渲染进程',
-        description: '负责这个标签页的页面内容、脚本、样式与交互。',
+        name: tabs[0].title || t('mrNameRenderer'),
+        description: t('mrDescRenderer'),
       };
     }
     if (tabs.length > 1) {
       return {
         category: 'tab',
-        name: `共享网页渲染进程 · ${tabs.length} 个标签`,
+        name: t('mrNameSharedRenderer', {count: tabs.length}),
         description:
-          '这些同站点标签页共用一个渲染进程，显示的是共享进程内存，不能精确拆分到单个页面。',
+          t('mrDescSharedRenderer'),
       };
     }
     const uiNames = contents
@@ -262,31 +265,35 @@ const processPresentation = (
         category: 'browser',
         name: uiNames[0],
         description:
-          '浏览器自身的界面渲染进程，用于显示工具栏、弹窗或内部管理页面。',
+          t('mrDescBrowserUi'),
       };
     }
     return {
       category: 'other',
-      name: '网页子框架进程',
+      name: t('mrNameSubframe'),
       description:
-        '通常由跨站 iframe 或隔离页面创建，用于提升网页安全性与稳定性。',
+        t('mrDescSubframe'),
     };
   }
   return {
     category: 'other',
-    name: rawService || `${type} 进程`,
-    description: '浏览器或 Chromium 运行所需的独立系统进程。',
+    name: rawService || t('mrNameTypedProcess', {type}),
+    description: t('mrDescOtherProcess'),
   };
 };
 
 export const buildMemorySnapshot = (): IMemorySnapshot => {
   const metrics = readAppMetrics();
-  const { pidToTabs, pidToContents } = buildRuntimeReferences();
+  // 内存页对用户可见,标签/进程名/描述按当前设置语言即时翻译。
+  const t = getMainTranslator(
+    getApplication().settings?.object?.language,
+  );
+  const { pidToTabs, pidToContents } = buildRuntimeReferences(t);
 
   const processes: IMemoryProcessItem[] = metrics.map((metric) => {
     const tabs = pidToTabs.get(metric.pid) || [];
     const contents = pidToContents.get(metric.pid) || [];
-    const presentation = processPresentation(metric, tabs, contents);
+    const presentation = processPresentation(metric, tabs, contents, t);
     const serviceName = String(
       (metric as any).serviceName || (metric as any).name || '',
     );

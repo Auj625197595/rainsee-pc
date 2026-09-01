@@ -4,6 +4,7 @@ import * as React from 'react';
 import styled, { css } from 'styled-components';
 
 import { BrandLogo } from '../Titlebar/style';
+import { getShellTranslator } from '../../utils/i18n';
 
 export interface IProfileBrandInfo {
   profileName: string | null;
@@ -144,6 +145,7 @@ export const ProfileBrandLogo = ({
   onInteractStart?: () => void;
   onSelect: () => void;
 }) => {
+  const t = getShellTranslator();
   const interactive = Boolean(profileName);
   const activate = (event: React.SyntheticEvent) => {
     if (!interactive) return;
@@ -156,10 +158,11 @@ export const ProfileBrandLogo = ({
   return (
     <LogoFrame
       $interactive={interactive}
+      data-rainsee-part="brand-logo"
       data-profile-logo-action={interactive ? 'true' : undefined}
       role={interactive ? 'button' : undefined}
       tabIndex={interactive ? 0 : undefined}
-      title={interactive ? '点击更换小号 Logo' : undefined}
+      title={interactive ? t('shellChangeLogo') : undefined}
       onMouseEnter={interactive ? onInteractStart : undefined}
       onMouseDown={(event) => {
         if (!interactive) return;
@@ -182,8 +185,9 @@ export const ProfileBrandLogo = ({
       ) : (
         <img
           src={appIcon}
-          alt="雨见浏览器"
+          alt={t('aboutTitle')}
           draggable={false}
+          data-rainsee-part="brand-logo-icon"
           style={{ width: 22, height: 22 }}
         />
       )}

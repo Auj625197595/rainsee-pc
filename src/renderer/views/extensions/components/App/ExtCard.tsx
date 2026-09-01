@@ -19,8 +19,10 @@ import {
   Spacer,
   TextButton,
 } from './card';
+import { useI18n } from '~/renderer/components/I18n';
 
 export const ExtCard = observer(({ item }: { item: IExtItem }) => {
+  const t = useI18n();
   const [iconError, setIconError] = React.useState(false);
   const showIcon = item.icon && !iconError;
 
@@ -39,9 +41,11 @@ export const ExtCard = observer(({ item }: { item: IExtItem }) => {
           <ExtMeta>
             <span>v{item.version || '?'}</span>
             <Badge>
-              {item.type === 'theme' ? '主题' : `MV${item.manifestVersion}`}
+              {item.type === 'theme'
+                ? t('extTheme')
+                : `MV${item.manifestVersion}`}
             </Badge>
-            {!item.enabled && <span>已停用</span>}
+            {!item.enabled && <span>{t('extDisabled')}</span>}
           </ExtMeta>
         </CardTitle>
         <Switch
@@ -53,16 +57,16 @@ export const ExtCard = observer(({ item }: { item: IExtItem }) => {
       {item.description ? (
         <ExtDesc>{item.description}</ExtDesc>
       ) : item.type === 'theme' ? (
-        <ExtDesc>自定义浏览器框架与新标签页外观</ExtDesc>
+        <ExtDesc>{t('extCardDescCustom')}</ExtDesc>
       ) : (
-        <ExtDesc style={{ opacity: 0.5 }}>暂无描述</ExtDesc>
+        <ExtDesc style={{ opacity: 0.5 }}>{t('extNoDesc')}</ExtDesc>
       )}
 
       {store.devMode && <ExtId>ID: {item.id}</ExtId>}
 
       <CardFoot>
         <TextButton onClick={() => store.select(item.id)}>
-          {store.selectedId === item.id ? '收起详情' : '详情'}
+          {store.selectedId === item.id ? t('extHideDetails') : t('extDetails')}
         </TextButton>
         {store.devMode && (
           <>
@@ -78,7 +82,7 @@ export const ExtCard = observer(({ item }: { item: IExtItem }) => {
         )}
         <Spacer />
         <TextButton danger onClick={() => store.uninstall(item)}>
-          卸载
+          {t('extUninstall')}
         </TextButton>
       </CardFoot>
     </Card>

@@ -41,6 +41,12 @@ import {
   cloneMainProfileData,
   IProfileDataCloneOptions,
 } from './profile-data-clone';
+import { Application } from './application';
+import { getMainTranslator } from './i18n';
+
+// 原生弹窗/IPC 回执文案按当前设置的语言即时创建翻译器,不缓存。
+const profileTranslator = () =>
+  getMainTranslator(Application.instance.settings?.object?.language);
 
 export interface IProfileInfo {
   name: string;
@@ -425,12 +431,13 @@ const prepareProfileShortcutIcon = (
 export const getProfileShortcutDialogData = (
   rawName: unknown,
 ): IProfileShortcutDialogData => {
+  const t = profileTranslator();
   const validation = validateProfileName(rawName);
   if (!validation.ok || !validation.name) {
-    return { ok: false, message: validation.error };
+    return { ok: false, message: t(validation.error!) };
   }
   const actual = findProfileDirectoryName(validation.name);
-  if (!actual) return { ok: false, message: '该小号不存在或已被删除' };
+  if (!actual) return { ok: false, message: t('profileNotFoundDeleted') };
 
   const candidates = [
     profileShortcutIconPath(actual),
@@ -481,18 +488,19 @@ const selectProfileLogo = async (
   message?: string;
   brand?: IProfileBrandInfo;
 }> => {
+  const t = profileTranslator();
   if (!activeProfileName) {
-    return { ok: false, message: '主账号不支持更换小号 Logo' };
+    return { ok: false, message: t('profileLogoMainAccount') };
   }
 
   const owner =
     BrowserWindow.fromWebContents(event.sender) ||
     BrowserWindow.getFocusedWindow();
   const options: Electron.OpenDialogOptions = {
-    title: '选择小号 Logo',
+    title: t('profileLogoChooseFile'),
     properties: ['openFile'],
     filters: [
-      { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] },
+      { name: t('fileFilterImages'), extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] },
     ],
   };
   const result = owner
@@ -505,10 +513,10 @@ const selectProfileLogo = async (
   try {
     const source = result.filePaths[0];
     if (statSync(source).size > MAX_PROFILE_LOGO_BYTES) {
-      throw new Error('图片不能超过 10 MB');
+      throw new Error(t('profileLogoTooLarge'));
     }
     const image = nativeImage.createFromPath(source);
-    if (image.isEmpty()) throw new Error('无法读取所选图片');
+    if (image.isEmpty()) throw new Error(t('profileLogoUnreadable'));
     const normalized = image.resize({ width: 256, quality: 'best' });
     const temp = `${PROFILE_LOGO_FILE}.${process.pid}.tmp`;
     const backup = `${PROFILE_LOGO_FILE}.${process.pid}.backup`;
@@ -530,10 +538,10 @@ const selectProfileLogo = async (
     broadcastProfileBrand(brand);
     return { ok: true, brand };
   } catch (error) {
-    const message = (error as any)?.message || '更换小号 Logo 失败';
+    const message = (error as any)?.message || t('profileLogoChangeFailed');
     const messageBoxOptions: Electron.MessageBoxOptions = {
       type: 'error',
-      title: '无法更换 Logo',
+      title: t('profileLogoCannotChange'),
       message,
     };
     if (owner) {
@@ -563,11 +571,12 @@ const createProfileShortcut = async (
   name: string,
   options: IProfileShortcutOptions,
 ): Promise<IProfileOperationResult> => {
+  const t = profileTranslator();
   const args = getLaunchArguments(name);
   const wantsDesktop = !!options.desktop;
   const wantsStartMenu = process.platform === 'win32' && !!options.startMenu;
   if (!wantsDesktop && !wantsStartMenu) {
-    return { ok: false, message: '请至少选择一个添加位置' };
+    return { ok: false, message: t('profileShortcutNoTarget') };
   }
   try {
     const icon = prepareProfileShortcutIcon(name, options.localIconPath);
@@ -589,12 +598,12 @@ const createProfileShortcut = async (
           ? 'update'
           : 'create';
         if (!shell.writeShortcutLink(target, operation, details)) {
-          throw new Error('系统未能写入快捷方式');
+          throw new Error(t('profileShortcutWriteFailed'));
         }
       }
     } else if (process.platform === 'darwin') {
       if (!wantsDesktop) {
-        return { ok: false, message: '当前系统不支持添加到“开始”菜单' };
+        return { ok: false, message: t('profileShortcutStartMenuUnsupported') };
       }
       const target = desktopShortcutPath(name);
       mkdirSync(dirname(target), { recursive: true });
@@ -631,7 +640,7 @@ const createProfileShortcut = async (
       }
     } else {
       if (!wantsDesktop) {
-        return { ok: false, message: '当前系统不支持添加到“开始”菜单' };
+        return { ok: false, message: t('profileShortcutStartMenuUnsupported') };
       }
       const target = desktopShortcutPath(name);
       mkdirSync(dirname(target), { recursive: true });
@@ -652,14 +661,14 @@ const createProfileShortcut = async (
     }
     const message =
       wantsDesktop && wantsStartMenu
-        ? '已添加到桌面和“开始”菜单'
+        ? t('profileShortcutAddedBoth')
         : wantsStartMenu
-        ? '已添加到“开始”菜单'
-        : '已添加到桌面';
+        ? t('profileShortcutAddedStartMenu')
+        : t('profileShortcutAddedDesktop');
     return { ok: true, message };
   } catch (error: any) {
     console.error('[profiles] 创建小号快捷方式失败:', error);
-    return { ok: false, message: error?.message || '创建小号快捷方式失败' };
+    return { ok: false, message: error?.message || t('profileShortcutCreateFailed') };
   }
 };
 
@@ -667,9 +676,10 @@ export const createProfileShortcuts = async (
   rawName: unknown,
   options?: IProfileShortcutOptions,
 ): Promise<IProfileOperationResult> => {
+  const t = profileTranslator();
   const validation = validateProfileName(rawName);
   if (!validation.ok || !validation.name) {
-    return { ok: false, message: validation.error };
+    return { ok: false, message: t(validation.error!) };
   }
   const normalizedOptions: IProfileShortcutOptions = {
     desktop: !!options?.desktop,
@@ -681,10 +691,10 @@ export const createProfileShortcuts = async (
       const actual = findProfileDirectoryName(validation.name || '');
       return actual
         ? createProfileShortcut(actual, normalizedOptions)
-        : { ok: false, message: '该小号不存在或已被删除' };
+        : { ok: false, message: t('profileNotFoundDeleted') };
     });
   } catch (error) {
-    return operationError(error, '创建小号快捷方式失败');
+    return operationError(error, t('profileShortcutCreateFailed'));
   }
 };
 
@@ -736,7 +746,9 @@ export const setupProfilesIpc = () => {
         currentProfile: activeProfileName,
         ok: false,
         profiles: [],
-        error: `自定义数据目录当前不可用：${configuredRoot}`,
+        error: profileTranslator()('profileCustomDataRootUnavailable', {
+          path: configuredRoot,
+        }),
       };
     }
     const result = listProfilesResult();
@@ -757,11 +769,12 @@ export const setupProfilesIpc = () => {
   ipcMain.handle(
     'profiles-create',
     async (_event, rawName: unknown, rawOptions?: unknown) => {
+      const t = profileTranslator();
       const validation = validateProfileName(rawName);
       if (!validation.ok || !validation.name) {
         return {
           ok: false,
-          message: validation.error,
+          message: t(validation.error!),
         } as IProfileOperationResult;
       }
       const name = validation.name;
@@ -790,7 +803,7 @@ export const setupProfilesIpc = () => {
       try {
         return await withManagerLock(async () => {
           if (findProfileDirectoryName(name)) {
-            throw new Error('已存在同名小号');
+            throw new Error(t('profileDuplicateName'));
           }
           const dir = join(PROFILES_ROOT, name);
           const staging = join(
@@ -814,7 +827,10 @@ export const setupProfilesIpc = () => {
                 );
               } catch (error: any) {
                 throw new Error(
-                  `克隆主程序数据失败：${error?.message || '无法读取主账号数据'}`,
+                  t('profileCloneFailed', {
+                    reason:
+                      error?.message || t('profileCloneUnreadable'),
+                  }),
                 );
               }
             }
@@ -831,17 +847,18 @@ export const setupProfilesIpc = () => {
             : launched;
         });
       } catch (error) {
-        return operationError(error, '创建小号失败');
+        return operationError(error, t('qmCreateFailed'));
       }
     },
   );
 
   ipcMain.handle('profiles-open', async (_event, rawName: unknown) => {
+    const t = profileTranslator();
     const validation = validateProfileName(rawName);
     if (!validation.ok || !validation.name) {
       return {
         ok: false,
-        message: validation.error,
+        message: t(validation.error!),
       } as IProfileOperationResult;
     }
     try {
@@ -849,27 +866,28 @@ export const setupProfilesIpc = () => {
         const actual = findProfileDirectoryName(validation.name || '');
         return actual
           ? launchProfile(actual)
-          : { ok: false, message: '该小号不存在或已被删除' };
+          : { ok: false, message: t('profileNotFoundDeleted') };
       });
     } catch (error) {
-      return operationError(error, '小号窗口启动失败');
+      return operationError(error, t('qmOpenFailed'));
     }
   });
 
   ipcMain.handle('profiles-delete', async (_event, rawName: unknown) => {
+    const t = profileTranslator();
     const validation = validateProfileName(rawName);
     if (!validation.ok || !validation.name) {
       return {
         ok: false,
-        message: validation.error,
+        message: t(validation.error!),
       } as IProfileOperationResult;
     }
     try {
       return await withManagerLock(() => {
         const actual = findProfileDirectoryName(validation.name || '');
-        if (!actual) return { ok: false, message: '该小号不存在或已被删除' };
+        if (!actual) return { ok: false, message: t('profileNotFoundDeleted') };
         if (isProfileRunning(actual)) {
-          return { ok: false, message: '该小号仍在运行，请关闭窗口后再删除' };
+          return { ok: false, message: t('qmDeleteRunning') };
         }
 
         const source = join(PROFILES_ROOT, actual);
@@ -889,10 +907,10 @@ export const setupProfilesIpc = () => {
           rmSync(runtimeProfileDir(actual), { recursive: true, force: true });
         } catch {}
         removeProfileShortcut(actual);
-        return { ok: true, message: '小号已删除' };
+        return { ok: true, message: t('qmDeleted') };
       });
     } catch (error) {
-      return operationError(error, '删除小号失败');
+      return operationError(error, t('qmDeleteFailed'));
     }
   });
 

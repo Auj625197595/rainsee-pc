@@ -4,6 +4,7 @@ import { ipcRenderer } from 'electron';
 
 import store from '../../store';
 import { ICON_SEARCH, ICON_TUNE } from '~/renderer/constants';
+import { getShellTranslator } from '../../utils/i18n';
 import { getWebUIURL } from '~/common/webui';
 import { IconButton, EngineIcon } from './style';
 
@@ -26,6 +27,7 @@ const isHomePage = (rawUrl: string) => {
 
 // 首页显示默认搜索引擎入口;其他页面对齐 Chrome,显示并打开站点信息。
 export const SearchEngineSwitcher = observer(() => {
+  const t = getShellTranslator();
   const btnRef = React.useRef<HTMLDivElement>(null);
   const engine = store.settings.searchEngine;
   const homePage = isHomePage(store.tabs.selectedTab?.url || '');
@@ -53,8 +55,8 @@ export const SearchEngineSwitcher = observer(() => {
       ref={btnRef}
       title={
         homePage
-          ? `搜索引擎: ${engine?.name || ''}（点击切换）`
-          : '查看网站信息'
+          ? t('shellEngineSwitch', { name: engine?.name || '' })
+          : t('shellSiteInfo')
       }
       onMouseDown={onMouseDown}
     >

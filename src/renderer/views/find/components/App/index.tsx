@@ -15,6 +15,7 @@ import store from '../../store';
 import { callViewMethod } from '~/utils/view';
 import { ICON_UP, ICON_DOWN, ICON_CLOSE } from '~/renderer/constants/icons';
 import { UIStyle } from '~/renderer/mixins/default-styles';
+import { useI18n } from '~/renderer/components/I18n';
 
 const onInput = async () => {
   const { value } = store.findInputRef.current;
@@ -52,6 +53,7 @@ const onKeyUp = (e: React.KeyboardEvent<HTMLInputElement>) => {
 };
 
 export const App = observer(() => {
+  const t = useI18n();
   return (
     <ThemeProvider
       theme={{ ...store.theme, dark: store.theme['dialog.lightForeground'] }}
@@ -66,7 +68,7 @@ export const App = observer(() => {
             onKeyPress={onKeyPress}
             onChange={onInput}
             ref={store.findInputRef}
-            placeholder="搜索页面内容"
+            placeholder={t('findPlaceholder')}
           />
           <Occurrences>{store.findInfo.occurrences}</Occurrences>
           <Buttons>

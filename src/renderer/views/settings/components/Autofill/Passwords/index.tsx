@@ -6,6 +6,9 @@ import { IFormFillData } from '~/interfaces';
 import { Section } from '../Section';
 import { getUserPassword } from '~/preloads/utils/autofill';
 import { getDomain, getIconByUrlNet } from '~/utils/url';
+import { ipcRenderer } from '~/common/renderer-ipc';
+import { getSettingsTranslator } from '../../../utils';
+import type { Translator } from '~/common/i18n';
 import {
   CardHeader,
   CloudButton,
@@ -51,10 +54,10 @@ const isReadablePassword = (password: string) =>
   password.trim() !== '' &&
   !password.includes('暂不支持查看密码');
 
-const getSiteDisplay = (url?: string) => {
+const getSiteDisplay = (url: string | undefined, t: Translator) => {
   if (!url) {
     return {
-      domain: '未知网站',
+      domain: t('afUnknownSite'),
       fullUrl: '',
     };
   }
@@ -99,12 +102,13 @@ const compareCredentials = (left: IFormFillData, right: IFormFillData) => {
 };
 
 const Item = observer(({ data }: { data: IFormFillData }) => {
+  const t = getSettingsTranslator();
   const { url, favicon, fields } = data;
   const [displayPassword, setDisplayPassword] = React.useState(
     getMaskedPassword(null, fields?.passLength || 0),
   );
-  const site = React.useMemo(() => getSiteDisplay(url), [url]);
-  const username = fields?.username || '未填写用户名';
+  const site = React.useMemo(() => getSiteDisplay(url, t), [url, t]);
+  const username = fields?.username || t('afNoUsername');
   const iconUrl =
     favicon && favicon.trim() !== ''
       ? favicon
@@ -155,7 +159,7 @@ const Item = observer(({ data }: { data: IFormFillData }) => {
       </ValueCell>
       <ValueCell $align="end">
         <TextValue title={displayPassword}>{displayPassword}</TextValue>
-        <DeleteButton onClick={onDelete} title="删除密码" />
+        <DeleteButton onClick={onDelete} title={t('afDeletePassword')} />
       </ValueCell>
     </Row>
   );
@@ -163,20 +167,20 @@ const Item = observer(({ data }: { data: IFormFillData }) => {
 
 // 导入/导出 CSV(支持 Chrome / Firefox / Bitwarden 导出的格式)
 const ImportExportToolbar = observer(() => {
+  const t = getSettingsTranslator();
   const [busy, setBusy] = React.useState(false);
   const [status, setStatus] = React.useState('');
 
   const ipc = (channel: string): Promise<any> => {
-    const invoke = (window as any).ipcInvoke;
-    return invoke ? invoke(channel) : Promise.resolve(null);
+    return ipcRenderer.invoke(channel);
   };
 
   const onImport = async () => {
     if (busy) return;
     setBusy(true);
-    setStatus('正在导入…');
+    setStatus(t('afImporting'));
     const res = await ipc('passwords-import-csv').catch(() => null);
-    setStatus(res?.msg || '导入失败');
+    setStatus(res?.msg || t('afImportFailed'));
     if (res?.ok && res.count > 0) {
       await store.autoFill.load();
     }
@@ -186,32 +190,33 @@ const ImportExportToolbar = observer(() => {
   const onExport = async () => {
     if (busy) return;
     setBusy(true);
-    setStatus('正在导出…');
+    setStatus(t('afExporting'));
     const res = await ipc('passwords-export-csv').catch(() => null);
-    setStatus(res?.msg || '导出失败');
+    setStatus(res?.msg || t('afExportFailed'));
     setBusy(false);
   };
 
   return (
     <Toolbar>
       <CloudButton $variant="primary" onClick={onImport}>
-        导入密码
+        {t('afImport')}
       </CloudButton>
-      <CloudButton onClick={onExport}>导出密码</CloudButton>
-      <StatusText>支持 Chrome / Firefox 的 CSV</StatusText>
+      <CloudButton onClick={onExport}>{t('afExport')}</CloudButton>
+      <StatusText>{t('afCsvHint')}</StatusText>
       {status ? <StatusText>{status}</StatusText> : null}
     </Toolbar>
   );
 });
 
 export const Passwords = observer(() => {
+  const t = getSettingsTranslator();
   const [query, setQuery] = React.useState('');
   const keyword = query.trim().toLowerCase();
   const filteredCredentials = (
     keyword === ''
       ? store.autoFill.credentials.slice()
       : store.autoFill.credentials.filter((item) => {
-          const site = getSiteDisplay(item.url);
+          const site = getSiteDisplay(item.url, t);
           const username = item.fields?.username || '';
 
           return [site.domain, site.fullUrl, username].some((value) =>
@@ -221,40 +226,36 @@ export const Passwords = observer(() => {
   ).sort(compareCredentials);
 
   return (
-    <Section label="网站密码" icon={ICON_KEY} defaultExpanded>
+    <Section label={t('afSectionTitle')} icon={ICON_KEY} defaultExpanded>
       <ImportExportToolbar />
       <CardHeader>
         <div>
-          <HeaderTitle>已保存的网站密码</HeaderTitle>
-          <HeaderMeta>
-            支持按网站搜索，网站和用户名可直接鼠标选中复制。
-          </HeaderMeta>
+          <HeaderTitle>{t('afSavedTitle')}</HeaderTitle>
+          <HeaderMeta>{t('afSavedHint')}</HeaderMeta>
         </div>
         <SearchBox>
           <SearchInput
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索网站或用户名"
+            placeholder={t('afSearchPlaceholder')}
           />
           {query ? (
-            <SearchClear onClick={() => setQuery('')} title="清空搜索">
-              清空
+            <SearchClear onClick={() => setQuery('')} title={t('afClearSearch')}>
+              {t('afClear')}
             </SearchClear>
           ) : null}
         </SearchBox>
       </CardHeader>
       <Container>
-        <HeaderLabel>网站</HeaderLabel>
-        <HeaderLabel>用户名</HeaderLabel>
-        <HeaderLabel $align="end">密码</HeaderLabel>
+        <HeaderLabel>{t('afSite')}</HeaderLabel>
+        <HeaderLabel>{t('afUsername')}</HeaderLabel>
+        <HeaderLabel $align="end">{t('sysPasswords')}</HeaderLabel>
         {filteredCredentials.length ? (
           filteredCredentials.map((item) => <Item key={item._id} data={item} />)
         ) : (
           <EmptyState>
-            没有找到匹配的网站
-            <EmptyStateSub>
-              试试输入域名、完整网址或用户名关键词。
-            </EmptyStateSub>
+            {t('afNoMatch')}
+            <EmptyStateSub>{t('afNoMatchHint')}</EmptyStateSub>
           </EmptyState>
         )}
       </Container>

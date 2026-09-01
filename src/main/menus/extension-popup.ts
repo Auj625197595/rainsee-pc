@@ -5,17 +5,21 @@ import {
 import { isURL, prefixHttp } from '~/utils';
 import { saveAs, viewSource, printPage } from './common-actions';
 import {Application} from "~/main/application";
+import { getMainTranslator } from '~/main/i18n';
 
 export const getViewMenu = (
   params: Electron.ContextMenuParams,
   webContents: Electron.WebContents,
 ) => {
+  const t = getMainTranslator(
+    Application.instance.settings?.object?.language,
+  );
   let menuItems: Electron.MenuItemConstructorOptions[] = [];
 
   if (params.linkURL !== '') {
     menuItems = menuItems.concat([
       {
-        label: '在新标签页打开链接',
+        label: t('openInNewTab'),
         click: () => {
           Application.instance.windows.current.viewManager.create(
             {
@@ -30,7 +34,7 @@ export const getViewMenu = (
         type: 'separator',
       },
       {
-        label: '复制链接地址',
+        label: t('copyLinkAddress'),
         click: () => {
           clipboard.clear();
           clipboard.writeText(params.linkURL);
@@ -45,7 +49,7 @@ export const getViewMenu = (
   if (params.hasImageContents) {
     menuItems = menuItems.concat([
       {
-        label: '在新标签页打开图片',
+        label: t('menuOpenImageNewTab'),
         click: () => {
           Application.instance.windows.current.viewManager.create(
             {
@@ -57,18 +61,18 @@ export const getViewMenu = (
         },
       },
       {
-        label: '复制图片',
+        label: t('copyImage'),
         click: () => webContents.copyImageAt(params.x, params.y),
       },
       {
-        label: '复制图片地址',
+        label: t('copyImageAddress'),
         click: () => {
           clipboard.clear();
           clipboard.writeText(params.srcURL);
         },
       },
       {
-        label: '保存图片为...',
+        label: t('saveImageAs'),
         click: () => {
           webContents.downloadURL(params.srcURL);
         },
@@ -84,12 +88,12 @@ export const getViewMenu = (
       {
         role: 'undo',
         accelerator: 'CmdOrCtrl+Z',
-        label: '撤销',
+        label: t('menuUndo'),
       },
       {
         role: 'redo',
         accelerator: 'CmdOrCtrl+Shift+Z',
-        label: '重做',
+        label: t('menuRedo'),
       },
       {
         type: 'separator',
@@ -97,27 +101,27 @@ export const getViewMenu = (
       {
         role: 'cut',
         accelerator: 'CmdOrCtrl+X',
-        label: '剪切',
+        label: t('menuCut'),
       },
       {
         role: 'copy',
         accelerator: 'CmdOrCtrl+C',
-        label: '复制',
+        label: t('menuCopy'),
       },
       {
         role: 'pasteAndMatchStyle',
         accelerator: 'CmdOrCtrl+V',
-        label: '粘贴',
+        label: t('menuPaste'),
       },
       {
         role: 'paste',
         accelerator: 'CmdOrCtrl+Shift+V',
-        label: '粘贴为文本',
+        label: t('pasteAsText'),
       },
       {
         role: 'selectAll',
         accelerator: 'CmdOrCtrl+A',
-        label: '选择全部',
+        label: t('menuSelectAll'),
       },
       {
         type: 'separator',
@@ -130,7 +134,7 @@ export const getViewMenu = (
       {
         role: 'copy',
         accelerator: 'CmdOrCtrl+C',
-        label: '复制'
+        label: t('menuCopy')
       },
       {
         type: 'separator',
@@ -144,7 +148,7 @@ export const getViewMenu = (
     if (isURL(trimmedText)) {
       menuItems = menuItems.concat([
         {
-          label: '转到 ' + trimmedText,
+          label: t('goToSelection', { text: trimmedText }),
           click: () => {
             Application.instance.windows.current.viewManager.create(
               {
@@ -170,7 +174,7 @@ export const getViewMenu = (
   ) {
     menuItems = menuItems.concat([
       {
-        label: '返回',
+        label: t('shortcutBack'),
         accelerator: 'Alt+Left',
         enabled: webContents.canGoBack(),
         click: () => {
@@ -178,7 +182,7 @@ export const getViewMenu = (
         },
       },
       {
-        label: '前进',
+        label: t('shortcutForward'),
         accelerator: 'Alt+Right',
         enabled: webContents.canGoForward(),
         click: () => {
@@ -186,7 +190,7 @@ export const getViewMenu = (
         },
       },
       {
-        label: '重新加载',
+        label: t('shortcutReload'),
         accelerator: 'CmdOrCtrl+R',
         click: () => {
           webContents.reload();
@@ -196,14 +200,14 @@ export const getViewMenu = (
         type: 'separator',
       },
       {
-        label: '保存页面为...',
+        label: t('shortcutSavePage'),
         accelerator: 'CmdOrCtrl+S',
         click: async () => {
           saveAs();
         },
       },
       {
-        label: '打印',
+        label: t('shortcutPrint'),
         accelerator: 'CmdOrCtrl+P',
         click: async () => {
           printPage();
@@ -213,7 +217,7 @@ export const getViewMenu = (
         type: 'separator',
       },
       {
-        label: '查看网页源代码',
+        label: t('shortcutViewSource'),
         accelerator: 'CmdOrCtrl+U',
         click: () => {
           viewSource();
@@ -223,7 +227,7 @@ export const getViewMenu = (
   }
 
   menuItems.push({
-    label: '检查',
+    label: t('inspect'),
     accelerator: 'CmdOrCtrl+Shift+I',
     click: () => {
       webContents.inspectElement(params.x, params.y);

@@ -27,10 +27,12 @@ import {
   InstallBtn,
   CancelBtn,
 } from './style';
+import { useI18n } from '~/renderer/components/I18n';
 
 // PWA 安装 / 小号快捷方式确认弹窗。复选框与忙碌状态为本地 React 态,
 // 每次弹窗打开(store.visible 翻 true)重置为默认勾选。
 export const App = observer(() => {
+  const t = useI18n();
   const [desktop, setDesktop] = React.useState(true);
   const [startMenu, setStartMenu] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
@@ -52,8 +54,10 @@ export const App = observer(() => {
   }, [store.visible]);
 
   const isProfile = store.mode === 'profile';
-  const name = store.name || '应用';
-  const initial = (name.trim().charAt(0) || '应').toUpperCase();
+  const name = store.name || t('iaAppFallback');
+  const initial = (
+    name.trim().charAt(0) || t('iaInitialFallback')
+  ).toUpperCase();
 
   const onInstall = async () => {
     if (busy) return;
@@ -66,7 +70,7 @@ export const App = observer(() => {
       if (!result?.ok) {
         setError(
           result?.message ||
-            (isProfile ? '创建快捷方式失败' : '安装失败，请稍后重试'),
+            (isProfile ? t('iaProfileShortcutFailed') : t('iaInstallFailed')),
         );
       }
     } finally {
@@ -98,8 +102,8 @@ export const App = observer(() => {
         <Header>
           <AppIconWrap
             type="button"
-            title="选择本地图标"
-            aria-label="选择本地图标"
+            title={t('iaChooseIcon')}
+            aria-label={t('iaChooseIcon')}
             onClick={onSelectIcon}
           >
             {iconSource && iconOk ? (
@@ -115,7 +119,9 @@ export const App = observer(() => {
             <AppName>{name}</AppName>
             {store.publisher ? (
               <Publisher>
-                {isProfile ? store.publisher : `发布者：${store.publisher}`}
+                {isProfile
+        ? store.publisher
+        : t('iaPublisher', { name: store.publisher })}
               </Publisher>
             ) : null}
           </TitleCol>
@@ -124,22 +130,26 @@ export const App = observer(() => {
         <Body>
           <BodyText>
             {isProfile
-              ? '通过快捷方式直接打开此小号，并可自定义显示图标。'
+              ? t('iaProfileDesc')
               : store.installed
-              ? '已安装此应用,点击「打开」在其独立窗口中运行,并按下方勾选项刷新快捷方式。'
-              : '将作为应用安装,并在其各自的窗口中运行。'}
+              ? t('iaProfileInstalledDesc')
+              : t('iaAppDesc')}
           </BodyText>
           {error ? <ErrorText>{error}</ErrorText> : null}
           <OptionsTitle>
-            {isProfile ? '添加位置' : store.installed ? '快捷方式' : '安装选项'}
+            {isProfile
+        ? t('iaAddLocation')
+        : store.installed
+          ? t('iaShortcutSection')
+          : t('iaInstallOptions')}
           </OptionsTitle>
           <OptionRow onClick={() => setDesktop((v) => !v)}>
             <CheckBox checked={desktop} />
-            <OptionLabel>创建桌面快捷方式</OptionLabel>
+            <OptionLabel>{t('iaDesktopShortcut')}</OptionLabel>
           </OptionRow>
           <OptionRow onClick={() => setStartMenu((v) => !v)}>
             <CheckBox checked={startMenu} />
-            <OptionLabel>添加到“开始”菜单</OptionLabel>
+            <OptionLabel>{t('iaStartMenu')}</OptionLabel>
           </OptionRow>
         </Body>
         <Footer>
@@ -149,15 +159,15 @@ export const App = observer(() => {
           >
             {isProfile
               ? busy
-                ? '创建中…'
-                : '创建'
+                ? t('iaCreating')
+                : t('iaCreate')
               : store.installed
-              ? '打开'
+              ? t('iaOpen')
               : busy
-              ? '安装中…'
-              : '安装'}
+              ? t('iaInstalling')
+              : t('iaInstall')}
           </InstallBtn>
-          <CancelBtn onClick={() => store.cancel()}>取消</CancelBtn>
+          <CancelBtn onClick={() => store.cancel()}>{t('cancel')}</CancelBtn>
         </Footer>
       </StyledApp>
     </ThemeProvider>

@@ -23,6 +23,12 @@ import {
 } from '~/common/profile-network';
 import { activeProfileName } from './bootstrap-paths';
 import { WEBUI_BASE_URL, WEBUI_URL_SUFFIX } from '~/constants/files';
+import { getMainTranslator } from './i18n';
+import { Application } from './application';
+
+// IPC 回执文案按当前设置的语言即时创建翻译器,不缓存。
+const profileNetworkTranslator = () =>
+  getMainTranslator(Application.instance.settings?.object?.language);
 
 interface IStoredProxy {
   mode: ProfileProxyMode;
@@ -244,7 +250,7 @@ const fingerprintPayload = () =>
 const requireSettingsSender = (event: Electron.IpcMainInvokeEvent) => {
   const senderUrl = event.sender.getURL().split(/[?#]/, 1)[0];
   if (senderUrl !== SETTINGS_URL && senderUrl !== `${SETTINGS_URL}/`) {
-    throw new Error('该操作只能从浏览器设置页执行');
+    throw new Error(profileNetworkTranslator()('pnetErrSettingsOnly'));
   }
 };
 
@@ -262,6 +268,7 @@ const testProxy = async (): Promise<{
   ip?: string;
   message?: string;
 }> => {
+  const t = profileNetworkTranslator();
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 12000);
@@ -271,10 +278,13 @@ const testProxy = async (): Promise<{
         .fetch('https://api.ipify.org?format=json', {
           signal: controller.signal,
         });
-      if (!response.ok) throw new Error(`检测服务返回 ${response.status}`);
+      if (!response.ok)
+        throw new Error(
+          t('pnetErrDetectStatus', { status: response.status }),
+        );
       const body = (await response.json()) as { ip?: unknown };
       const ip = typeof body.ip === 'string' ? body.ip : '';
-      if (!ip) throw new Error('检测服务未返回出口 IP');
+      if (!ip) throw new Error(t('pnetErrNoIp'));
       return { ok: true, ip };
     } finally {
       clearTimeout(timer);
@@ -284,8 +294,8 @@ const testProxy = async (): Promise<{
       ok: false,
       message:
         (error as any)?.name === 'AbortError'
-          ? '连接超时，请检查代理地址和端口'
-          : (error as any)?.message || '无法连接代理',
+          ? t('pnetErrTimeout')
+          : (error as any)?.message || t('pnetErrConnect'),
     };
   }
 };
@@ -312,27 +322,47 @@ export const setupProfileNetworkIpc = () => {
     };
   });
 
-  ipcMain.handle('profile-fingerprint-set-enabled', (event, enabled: unknown) => {
-    requireSettingsSender(event);
-    if (!activeProfileName) return { ok: false, message: '当前不是小号窗口' };
-    config.fingerprint.enabled = enabled === true;
-    writeConfig(config);
-    return { ok: true, fingerprint: fingerprintPayload() };
-  });
+  ipcMain.handle(
+    'profile-fingerprint-set-enabled',
+    (event, enabled: unknown) => {
+      requireSettingsSender(event);
+      if (!activeProfileName) {
+        return {
+          ok: false,
+          message: profileNetworkTranslator()('pnetErrNotAltWindow'),
+        };
+      }
+      config.fingerprint.enabled = enabled === true;
+      writeConfig(config);
+      return { ok: true, fingerprint: fingerprintPayload() };
+    },
+  );
 
   ipcMain.handle('profile-fingerprint-regenerate', (event) => {
     requireSettingsSender(event);
-    if (!activeProfileName) return { ok: false, message: '当前不是小号窗口' };
+    if (!activeProfileName) {
+      return {
+        ok: false,
+        message: profileNetworkTranslator()('pnetErrNotAltWindow'),
+      };
+    }
     config.fingerprint.seed = makeSeed();
     writeConfig(config);
     return { ok: true, fingerprint: fingerprintPayload() };
   });
 
   ipcMain.handle('profile-proxy-save', async (event, value: unknown) => {
+    const t = profileNetworkTranslator();
     requireSettingsSender(event);
     const validation = normalizeProfileProxy(value);
     if (!validation.ok || !validation.settings) {
-      return { ok: false, message: validation.error || '代理配置无效' };
+      // common 模块返回消息 key,此处按当前语言翻译后回传渲染层。
+      return {
+        ok: false,
+        message: validation.error
+          ? t(validation.error)
+          : t('pnetErrInvalidProxy'),
+      };
     }
     try {
       saveProxy(validation.settings);
@@ -341,7 +371,7 @@ export const setupProfileNetworkIpc = () => {
     } catch (error) {
       return {
         ok: false,
-        message: (error as any)?.message || '保存代理设置失败',
+        message: (error as any)?.message || t('sysProxySaveFailed'),
       };
     }
   });

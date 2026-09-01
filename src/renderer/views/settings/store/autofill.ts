@@ -2,6 +2,7 @@ import { observable, action, makeObservable } from 'mobx';
 
 import { IFormFillData } from '~/interfaces';
 import { PreloadDatabase } from '~/preloads/models/database';
+import {ipcRenderer} from '~/common/renderer-ipc';
 
 export class AutoFillStore {
   public db = new PreloadDatabase<IFormFillData>('formfill');
@@ -29,21 +30,19 @@ export class AutoFillStore {
 
     this.load();
 
-    window.addEventListener('message', ({ data }) => {
-      if (data.type === 'credentials-insert') {
-        this.credentials.push(data.data);
-      } else if (data.type === 'credentials-update') {
-        const { _id, fields } = data.data;
-        const item = this.credentials.find((r) => r._id === _id);
-
-        if (item) Object.assign(item, data.data, { fields: { ...fields } });
-      } else if (data.type === 'credentials-remove') {
-        const { _id } = data.data;
-        this.credentials = this.credentials.filter((r) => r._id !== _id);
-      } else if (data.type === 'credentials-reload') {
-        this.load();
-      }
+    ipcRenderer.on('credentials-insert', (_event, data) => {
+      this.credentials.push(data);
     });
+    ipcRenderer.on('credentials-update', (_event, data) => {
+      const { _id, fields } = data;
+      const item = this.credentials.find((r) => r._id === _id);
+      if (item) Object.assign(item, data, { fields: { ...fields } });
+    });
+    ipcRenderer.on('credentials-remove', (_event, data) => {
+      const {_id} = data;
+      this.credentials = this.credentials.filter((r) => r._id !== _id);
+    });
+    ipcRenderer.on('credentials-reload', () => this.load());
   }
 
   @action

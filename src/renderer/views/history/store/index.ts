@@ -9,6 +9,10 @@ import {
 import { getTheme } from '~/utils/themes';
 import { PreloadDatabase } from '~/preloads/models/database';
 import { getSectionLabel, compareDates } from '../utils';
+import {ipcRenderer} from '~/common/renderer-ipc';
+import {getWebUIContext} from '~/common/webui-context';
+
+const webUIContext = getWebUIContext();
 
 export type QuickRange =
   | 'all'
@@ -25,7 +29,7 @@ export class Store {
   // Observable
 
   @observable
-  public settings: ISettings = { ...(window as any).settings };
+  public settings: ISettings = { ...(webUIContext.settings as Partial<ISettings>) } as ISettings;
 
   @observable
   public items: IHistoryItem[] = [];
@@ -157,9 +161,9 @@ export class Store {
   public constructor() {
     makeObservable(this);
 
-    (window as any).updateSettings = (settings: ISettings) => {
+    ipcRenderer.on('update-settings', (_event, settings: ISettings) => {
       this.settings = { ...this.settings, ...settings };
-    };
+    });
 
     this.load();
     this.loadFavicons();
@@ -191,21 +195,12 @@ export class Store {
     });
   }
 
-  // 读取本地历史。优先用 window.getHistory(异步注入,可能尚未就绪),
-  // 不可用则回退到 storage 桥(favicons 同款通道,始终可用)。
   private async fetchLocal(): Promise<IHistoryItem[]> {
-    const get = (window as any).getHistory;
-    if (typeof get === 'function') {
-      try {
-        const list = await get();
-        if (Array.isArray(list)) return list;
-      } catch (e) {
-        // 落到 DB 回退
-      }
-    }
     try {
-      const list = await this.historyDb.get({} as IHistoryItem);
-      return this.sortByDate(list);
+      const list = await ipcRenderer.invoke('history-get');
+      if (Array.isArray(list)) return list;
+      const fallback = await this.historyDb.get({} as IHistoryItem);
+      return this.sortByDate(fallback);
     } catch (e) {
       return [];
     }
@@ -220,18 +215,6 @@ export class Store {
   public async load() {
     // 先读取本地库立即渲染,避免等待网络导致列表迟迟不出来
     this.setItems(await this.fetchLocal());
-
-    // 云端历史下载并合并放到后台进行,完成后再刷新列表
-    const dl = (window as any).cloudDownloadHistory;
-    if (typeof dl === 'function') {
-      dl()
-        .then(async () => {
-          this.setItems(await this.fetchLocal());
-        })
-        .catch(() => {
-          // 云服务可选,失败忽略
-        });
-    }
   }
 
   public async loadFavicons() {
@@ -245,13 +228,13 @@ export class Store {
   }
 
   public clear() {
-   (window as any).removeHistory(this.items.map((x) => x._id));
-     this.items = [];
+    ipcRenderer.send('history-remove', this.items.map((x) => x._id));
+    this.items = [];
   }
 
   public removeItems(id: string[]) {
     this.items = this.items.filter((x) => id.indexOf(x._id) === -1);
-    (window as any).removeHistory(id);
+    ipcRenderer.send('history-remove', [...id]);
   }
 
   @action

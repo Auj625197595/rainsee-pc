@@ -79,10 +79,10 @@ import {
   GroupEditorActions,
   GroupEditorButton,
 } from './style';
+import { useI18n } from '~/renderer/components/I18n';
 
-const w = window as any;
 const getPathForFile = (file: File) => {
-  const fn = w.getPathForFile || w.electron?.webUtils?.getPathForFile;
+  const fn = (globalThis as any).rainseeWebUI?.getPathForFile;
   if (typeof fn !== 'function') return '';
   try {
     return fn(file) || '';
@@ -135,6 +135,7 @@ const cleanIntro = (intro: string) =>
     .trim();
 
 const StoreItemCard = observer(({ item }: { item: IStoreExt }) => {
+  const t = useI18n();
   const installing = store.isInstalling(item.crxkey);
   const icon = (item.icon_image || '').replace(/\\\//g, '/');
   return (
@@ -153,20 +154,25 @@ const StoreItemCard = observer(({ item }: { item: IStoreExt }) => {
         disabled={item.installed || installing}
         onClick={() => store.installFromStore(item)}
       >
-        {item.installed ? '已安装' : installing ? '安装中…' : '安装'}
+        {item.installed
+    ? t('extInstalled')
+    : installing
+      ? t('extInstalling')
+      : t('extInstall')}
       </StoreInstallBtn>
     </StoreCard>
   );
 });
 
 const StoreSection = observer(() => {
+  const t = useI18n();
   if (store.storeLoading && store.storeList.length === 0) {
     return (
       <>
         <StoreDivider />
         <StoreHeader>
-          <StoreTitle>拓展商店</StoreTitle>
-          <StoreSubtitle>加载中…</StoreSubtitle>
+          <StoreTitle>{t('extStoreTitle')}</StoreTitle>
+          <StoreSubtitle>{t('extStoreLoading')}</StoreSubtitle>
         </StoreHeader>
       </>
     );
@@ -178,8 +184,8 @@ const StoreSection = observer(() => {
     <>
       <StoreDivider />
       <StoreHeader>
-        <StoreTitle>拓展商店</StoreTitle>
-        <StoreSubtitle>一键安装</StoreSubtitle>
+        <StoreTitle>{t('extStoreTitle')}</StoreTitle>
+        <StoreSubtitle>{t('extStoreSubtitle')}</StoreSubtitle>
       </StoreHeader>
       <StoreGrid>
         {store.storeList.map((item) => (
@@ -230,6 +236,7 @@ const ExtensionGroup = observer(
     title: string;
     onRename: (groupId: string, name: string) => void;
   }) => {
+    const t = useI18n();
     const group = groupId ? store.groups.find((item) => item.id === groupId) : null;
     const items = store.itemsForGroup(groupId);
     const onDrop = (event: React.DragEvent<HTMLDivElement>) => {
@@ -243,7 +250,7 @@ const ExtensionGroup = observer(
       <GroupSectionStyle>
         <GroupHeader>
           <GroupTitle>{title}</GroupTitle>
-          <GroupCount>{items.length} 个扩展</GroupCount>
+          <GroupCount>{t('extGroupCount', { count: items.length })}</GroupCount>
           {group && (
             <>
               <Switch
@@ -251,17 +258,17 @@ const ExtensionGroup = observer(
                 onClick={() => store.setGroupEnabled(group.id, !store.groupEnabled(group.id))}
               />
               <GroupAction
-                aria-label="重命名分组"
-                title="重命名分组"
+                aria-label={t('extRenameGroup')}
+                title={t('extRenameGroup')}
                 onClick={() => onRename(group.id, group.name)}
               >
                 <IconEdit />
               </GroupAction>
               <GroupAction
-                aria-label="删除分组"
-                title="删除分组"
+                aria-label={t('extDeleteGroup')}
+                title={t('extDeleteGroup')}
                 onClick={() => {
-                  if (window.confirm(`删除分组「${group.name}」？扩展不会被卸载。`)) {
+                  if (window.confirm(t('extDeleteGroupConfirm', { name: group.name }))) {
                     store.removeGroup(group.id);
                   }
                 }}
@@ -279,7 +286,7 @@ const ExtensionGroup = observer(
               ))}
             </Grid>
           ) : (
-            <DropZone>将扩展拖到这里加入分组</DropZone>
+            <DropZone>{t('extDropToGroup')}</DropZone>
           )}
         </div>
       </GroupSectionStyle>
@@ -288,6 +295,7 @@ const ExtensionGroup = observer(
 );
 
 export default observer(() => {
+  const t = useI18n();
   const list: IExtItem[] = store.list;
   const detail = store.selected;
   const [dragActive, setDragActive] = React.useState(false);
@@ -371,27 +379,27 @@ export default observer(() => {
         <GlobalNavigationDrawer></GlobalNavigationDrawer>
 
         <Sidebar>
-          <SideTitle>拓展程序</SideTitle>
+          <SideTitle>{t('extSideTitle')}</SideTitle>
 
           <SearchBox>
             <IconSearch />
-            <SearchInput placeholder="搜索扩展" onInput={onInput} />
+            <SearchInput placeholder={t('extSearchPlaceholder')} onInput={onInput} />
           </SearchBox>
 
-          <SectionLabel>状态</SectionLabel>
+          <SectionLabel>{t('extStatusSection')}</SectionLabel>
           <FilterNav>
             <FilterItem icon={<IconAll />} filter="all">
-              全部
+              {t('mgFilterAll')}
             </FilterItem>
             <FilterItem icon={<IconCheck />} filter="enabled">
-              已启用
+              {t('extEnabled')}
             </FilterItem>
             <FilterItem icon={<IconBan />} filter="disabled">
-              已停用
+              {t('extDisabled')}
             </FilterItem>
           </FilterNav>
 
-          <SectionLabel>更新</SectionLabel>
+          <SectionLabel>{t('suSectionUpdates')}</SectionLabel>
           <InstallButton
             onClick={() => store.checkUpdates()}
             style={
@@ -401,24 +409,26 @@ export default observer(() => {
             }
           >
             <IconRefresh />
-            {store.checking ? '正在检查更新…' : '检查更新'}
+            {store.checking
+              ? t('extUpdateChecking')
+              : t('extCheckUpdates')}
           </InstallButton>
           {store.updateStatus && (
             <UpdateStatus>{store.updateStatus}</UpdateStatus>
           )}
 
-          <SectionLabel>安装</SectionLabel>
+          <SectionLabel>{t('abmInstallSection')}</SectionLabel>
           <InstallButton onClick={() => store.openBrowserMigration()}>
             <BrowsersIcon size={17} />
-            从本地浏览器迁移扩展
+            {t('extMigrateTitle')}
           </InstallButton>
           <InstallButton onClick={() => store.installFromCrx()}>
             <IconCrx />
-            从本地 crx/zip 安装
+            {t('extInstallCrxLocal')}
           </InstallButton>
           <InstallButton onClick={() => store.installFromDir()}>
             <IconFolder />
-            加载已解压的文件夹
+            {t('extInstallUnpacked')}
           </InstallButton>
           <InstallButton
             onClick={() =>
@@ -428,7 +438,7 @@ export default observer(() => {
             }
           >
             <IconStore />
-            Edge 扩展商店
+            {t('extEdgeStore')}
           </InstallButton>
           <InstallButton
             onClick={() =>
@@ -436,7 +446,7 @@ export default observer(() => {
             }
           >
             <IconStore />
-            Chrome 扩展商店
+            {t('extChromeStore')}
           </InstallButton>
           {/* <InstallButton
             onClick={() => store.installFromWeb('https://www.crxsoso.com/')}
@@ -447,14 +457,14 @@ export default observer(() => {
 
           <BottomActions>
             <DevToggleRow>
-              <span>自动更新扩展程序</span>
+              <span>{t('extAutoUpdate')}</span>
               <Switch
                 value={store.autoUpdate}
                 onClick={() => store.setAutoUpdate(!store.autoUpdate)}
               />
             </DevToggleRow>
             <DevToggleRow>
-              <span>开发者模式</span>
+              <span>{t('extDevMode')}</span>
               <Switch
                 value={store.devMode}
                 onClick={() => store.toggleDevMode()}
@@ -466,13 +476,13 @@ export default observer(() => {
         <MainScroll>
           <MainInner>
             <MainHeader>
-              <MainTitle>已安装扩展</MainTitle>
+              <MainTitle>{t('extInstalledTitle')}</MainTitle>
               <HeaderAction
                 type="button"
                 onClick={() => setGroupEditor({ groupId: null, name: '' })}
               >
                 <IconPlus />
-                新建分组
+                {t('extNewGroup')}
               </HeaderAction>
             </MainHeader>
             {groupEditor && (
@@ -485,13 +495,13 @@ export default observer(() => {
                   }}
                 >
                   <GroupEditorTitle>
-                    {groupEditor.groupId ? '重命名分组' : '新建分组'}
+                    {groupEditor.groupId ? t('extRenameGroup') : t('extNewGroup')}
                   </GroupEditorTitle>
                   <GroupEditorInput
                     autoFocus
                     maxLength={40}
                     value={groupEditor.name}
-                    placeholder="输入分组名称"
+                    placeholder={t('extGroupNamePlaceholder')}
                     onChange={(event) =>
                       setGroupEditor({ ...groupEditor, name: event.currentTarget.value })
                     }
@@ -501,10 +511,10 @@ export default observer(() => {
                   />
                   <GroupEditorActions>
                     <GroupEditorButton type="button" onClick={() => setGroupEditor(null)}>
-                      取消
+                      {t('cancel')}
                     </GroupEditorButton>
                     <GroupEditorButton primary type="submit" disabled={!groupEditor.name.trim()}>
-                      确定
+                      {t('confirm')}
                     </GroupEditorButton>
                   </GroupEditorActions>
                 </GroupEditorDialog>
@@ -514,11 +524,11 @@ export default observer(() => {
               <DragOverlay>
                 <DragCard>
                   <IconCrx />
-                  <DragTitle>释放即可安装扩展</DragTitle>
+                  <DragTitle>{t('extDropInstallTitle')}</DragTitle>
                   <DragText>
-                    支持直接拖入 `.crx`、`.zip` 文件。
+                    {t('extDropInstallHint1')}
                     <br />
-                    `.zip` 可为扩展源码目录，或内部包含 `.crx` 文件。
+                    {t('extDropInstallHint2')}
                   </DragText>
                 </DragCard>
               </DragOverlay>
@@ -535,8 +545,8 @@ export default observer(() => {
                 <IconPuzzle />
                 <EmptyText>
                   {store.searched || store.selectedFilter !== 'all'
-                    ? '没有符合条件的扩展'
-                    : '还没有安装任何扩展'}
+                    ? t('extNoMatch')
+                    : t('extNoneInstalled')}
                 </EmptyText>
               </EmptyState>
             ) : (
@@ -549,7 +559,7 @@ export default observer(() => {
                     onRename={(groupId, name) => setGroupEditor({ groupId, name })}
                   />
                 ))}
-                <ExtensionGroup groupId={null} title="未分组" onRename={() => undefined} />
+                <ExtensionGroup groupId={null} title={t('extUngrouped')} onRename={() => undefined} />
               </>
             )}
 

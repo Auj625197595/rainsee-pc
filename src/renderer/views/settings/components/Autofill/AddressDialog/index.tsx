@@ -7,8 +7,10 @@ import { Textfield } from '~/renderer/components/Textfield';
 import { Dropdown } from '~/renderer/components/Dropdown';
 import { Row } from '../../App/style';
 import { Dialog, Title, Content, Buttons, CloseButton } from '../../Dialog';
+import { getSettingsTranslator } from '../../../utils';
 
 export default observer(() => {
+  const t = getSettingsTranslator();
   return (
     <Dialog
       visible={store.dialogContent === 'edit-address'}
@@ -16,11 +18,11 @@ export default observer(() => {
     >
       <Title>Edit address</Title>
       <Content>
-        <Textfield label="名称" />
-        <Textfield label="街道地址" />
+        <Textfield label={t('afName')} />
+        <Textfield label={t('afStreet')} />
         <Row>
-          <Textfield label="邮政编码" style={{ marginRight: 24 }} />
-          <Textfield label="城市 " />
+          <Textfield label={t('afZip')} style={{ marginRight: 24 }} />
+          <Textfield label={t('afCity')} />
         </Row>
         <Dropdown>
           <Dropdown.Item value="pl">Poland</Dropdown.Item>
@@ -28,7 +30,7 @@ export default observer(() => {
       </Content>
       <Buttons>
         <CloseButton />
-        <NormalButton>保存</NormalButton>
+        <NormalButton>{t('save')}</NormalButton>
       </Buttons>
     </Dialog>
   );

@@ -1,6 +1,6 @@
 import * as React from 'react';
 
-const DEFAULT_HOVER_DELAY = 100;
+const DEFAULT_HOVER_DELAY = 200;
 
 export const useDelayedHover = (
   onHover: () => void,

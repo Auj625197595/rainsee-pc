@@ -4,10 +4,13 @@ import { observer } from 'mobx-react-lite';
 import { PaintBrushHousehold } from '@phosphor-icons/react';
 
 import { NormalButton } from '../App';
+import { Switch } from '~/renderer/components/Switch';
 import store from '../../store';
 import { getPalette } from '../../utils/palette';
+import { getSettingsTranslator } from '../../utils';
 import { ITheme } from '~/interfaces';
 import { ipcRenderer } from '~/common/renderer-ipc';
+import type { Translator } from '~/common/i18n';
 import {
   CHROME_PANEL_SECTIONS,
   IChromePanelField,
@@ -237,6 +240,7 @@ const ColorHexText = styled.span`
 const PREVIEW_THROTTLE_MS = 32;
 
 const ChromeStylePanel = observer(() => {
+  const t = getSettingsTranslator();
   const savedValues = sanitizeChromePanelValues(
     store.settings.chromeStylePanel || {},
   );
@@ -328,13 +332,14 @@ const ChromeStylePanel = observer(() => {
   // 全部走 ref,回调引用稳定 → 行级 React.memo 只重渲染值变化的一行,
   // 拖动时不再整面板 34 行重渲染。
   const setField = React.useCallback(
-    (field: IChromePanelField, value: string | number | null) => {
+    (field: IChromePanelField, value: string | number | boolean | null) => {
       const next = { ...draftRef.current };
       if (
         value === null ||
         value === '' ||
         (field.type === 'slider' &&
-          value === getChromePanelFieldDefault(field.key))
+          value === getChromePanelFieldDefault(field.key)) ||
+        (field.type === 'toggle' && value === true)
       ) {
         // 恢复默认 → 移除键,让 CSS 生成器回到「不覆盖」。
         delete next[field.key];
@@ -351,7 +356,8 @@ const ChromeStylePanel = observer(() => {
   };
 
   const copyAsCss = async () => {
-    const cssText = buildChromePanelCss(draft) || '/* 暂无调整 */';
+    const cssText =
+      buildChromePanelCss(draft) || `/* ${t('chromePanelNoAdjustments')} */`;
     try {
       await navigator.clipboard.writeText(cssText);
     } catch {
@@ -365,24 +371,22 @@ const ChromeStylePanel = observer(() => {
         <div>
           <PanelTitle>
             <PaintBrushHousehold size={16} weight="fill" />
-            可视化调控
+            {t('chromePanelTitle')}
           </PanelTitle>
-          <PanelDesc>
-            拖动滑条或选取颜色,浏览器顶部栏与侧边栏立即变化;「自定义
-            CSS」页中的手写规则优先级更高。已调整 {customized} 项。
-          </PanelDesc>
+          <PanelDesc>{t('chromePanelDescription', { count: customized })}</PanelDesc>
         </div>
       </PanelHead>
       <SectionList>
         {CHROME_PANEL_SECTIONS.map((section) => (
           <SectionCard key={section.id}>
-            <SectionHead>{section.label}</SectionHead>
+            <SectionHead>{t(section.labelKey)}</SectionHead>
             {section.fields.map((field) => (
               <ChromePanelFieldRow
                 key={field.key}
                 field={field}
                 value={draft[field.key]}
                 onChange={setField}
+                t={t}
               />
             ))}
           </SectionCard>
@@ -390,10 +394,10 @@ const ChromeStylePanel = observer(() => {
       </SectionList>
       <PanelActions>
         <NormalButton variant="soft" onClick={copyAsCss}>
-          复制为 CSS
+          {t('chromePanelCopyCss')}
         </NormalButton>
         <NormalButton variant="soft" disabled={!customized} onClick={resetAll}>
-          恢复默认
+          {t('resetToDefault')}
         </NormalButton>
       </PanelActions>
     </PanelShell>
@@ -401,16 +405,19 @@ const ChromeStylePanel = observer(() => {
 });
 
 // 行级 memo:onChange 引用稳定 + value 未变的行跳过渲染。
-// 拖动一条滑条时其余 33 行不重渲染。
+// 拖动一条滑条时其余 33 行不重渲染。t 经 getSettingsTranslator 按 locale
+// 缓存(引用稳定),只有语言切换才会让全部行重渲染。
 const ChromePanelFieldRow = React.memo(
   ({
     field,
     value,
     onChange,
+    t,
   }: {
     field: IChromePanelField;
     value: string | number | boolean | undefined;
-    onChange: (field: IChromePanelField, v: string | number | null) => void;
+    onChange: (field: IChromePanelField, v: string | number | boolean | null) => void;
+    t: Translator;
   }) => {
     // 滑条显示值:未设置时回落 schema 默认,保证拖把从默认位置开始。
     const sliderDefault = getChromePanelFieldDefault(field.key);
@@ -425,29 +432,42 @@ const ChromePanelFieldRow = React.memo(
       return (
         <FieldRow>
           <FieldHead>
-            <FieldLabel>{field.label}</FieldLabel>
+            <FieldLabel>{t(field.labelKey)}</FieldLabel>
             <ColorSwatch>
               <ColorHexText>
                 {typeof value === 'string' && value
                   ? value.toUpperCase()
-                  : '默认'}
+                  : t('chromePanelDefault')}
               </ColorHexText>
               {typeof value === 'string' && value && (
                 <ColorClearButton
                   type="button"
-                  title="恢复默认"
+                  title={t('resetToDefault')}
                   onClick={() => onChange(field, null)}
                 >
-                  默认
+                  {t('chromePanelDefault')}
                 </ColorClearButton>
               )}
               <ColorInput
                 type="color"
                 value={typeof value === 'string' && value ? value : '#ffffff'}
                 onChange={(event) => onChange(field, event.target.value)}
-                aria-label={field.label}
+                aria-label={t(field.labelKey)}
               />
             </ColorSwatch>
+          </FieldHead>
+        </FieldRow>
+      );
+    }
+
+    // 开关行:缺省 = 默认开启;拨回开由 setField 删键回到「不覆盖」。
+    if (field.type === 'toggle') {
+      const on = value !== false;
+      return (
+        <FieldRow style={{ cursor: 'pointer' }} onClick={() => onChange(field, !on)}>
+          <FieldHead>
+            <FieldLabel>{t(field.labelKey)}</FieldLabel>
+            <Switch value={on} />
           </FieldHead>
         </FieldRow>
       );
@@ -459,6 +479,7 @@ const ChromePanelFieldRow = React.memo(
         value={sliderCurrent}
         defaultValue={sliderDefault}
         onChange={onChange}
+        t={t}
       />
     );
   },
@@ -470,11 +491,13 @@ const ChromePanelSliderFieldRow = React.memo(
     value,
     defaultValue,
     onChange,
+    t,
   }: {
     field: IChromePanelField;
     value: number;
     defaultValue: number;
     onChange: (field: IChromePanelField, v: string | number | null) => void;
+    t: Translator;
   }) => {
     const inputRef = React.useRef<HTMLInputElement>(null);
     const frameRef = React.useRef<number | null>(null);
@@ -530,17 +553,17 @@ const ChromePanelSliderFieldRow = React.memo(
     return (
       <FieldRow>
         <FieldHead>
-          <FieldLabel>{field.label}</FieldLabel>
+          <FieldLabel>{t(field.labelKey)}</FieldLabel>
           <FieldValue>
             {liveValue}
             {field.unit}
           </FieldValue>
           <ResetBtn
             type="button"
-            title="恢复默认"
+            title={t('resetToDefault')}
             onClick={() => onChange(field, null)}
           >
-            默认
+            {t('chromePanelDefault')}
           </ResetBtn>
         </FieldHead>
         {/* 不传 value,让 Chromium 原生绘制的 thumb 完全跟随指针;React 状态与
@@ -573,7 +596,7 @@ const ChromePanelSliderFieldRow = React.memo(
             scheduleValue(next);
           }}
           onBlur={flushPendingValue}
-          aria-label={field.label}
+          aria-label={t(field.labelKey)}
         />
       </FieldRow>
     );

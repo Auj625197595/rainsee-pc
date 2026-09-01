@@ -21,6 +21,7 @@ import {
 } from './style';
 import store from '../../store';
 import { UIStyle } from '~/renderer/mixins/default-styles';
+import { useI18n } from '~/renderer/components/I18n';
 
 const onClose = () => store.hide();
 
@@ -40,10 +41,11 @@ const DownloadGlyph = () => (
 );
 
 export const App = observer(() => {
+  const t = useI18n();
   const qrText = store.loading
-    ? '正在生成二维码…'
+    ? t('shQrGenerating')
     : store.qrError || !store.qrUrl
-      ? '二维码生成失败'
+      ? t('shQrFailed')
       : '';
 
   return (
@@ -52,10 +54,10 @@ export const App = observer(() => {
         <UIStyle />
         <Header>
           <div>
-            <Title>分享网页</Title>
-            <Subtitle>{store.title || store.url || '当前网页'}</Subtitle>
+            <Title>{t('shTitle')}</Title>
+            <Subtitle>{store.title || store.url || t('shCurrentPage')}</Subtitle>
           </div>
-          <CloseButton type="button" onClick={onClose} aria-label="关闭分享弹窗">
+          <CloseButton type="button" onClick={onClose} aria-label={t('shCloseAria')}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
               <path d="M18 6L6 18M6 6l12 12" />
             </svg>
@@ -68,7 +70,7 @@ export const App = observer(() => {
           ) : (
             <QrPlaceholder>{qrText}</QrPlaceholder>
           )}
-          <QrHint>扫描二维码在手机上打开</QrHint>
+          <QrHint>{t('shQrHint')}</QrHint>
           <QrDownloadButton
             type="button"
             disabled={store.loading || store.qrError || !store.qrUrl || store.downloading}
@@ -76,18 +78,18 @@ export const App = observer(() => {
           >
             <DownloadGlyph />
             {store.downloading
-              ? '保存中…'
-              : store.downloadHint || '下载二维码'}
+              ? t('shSaving')
+              : store.downloadHint || t('shDownloadQr')}
           </QrDownloadButton>
         </QrCard>
 
-        <FieldLabel>短链接</FieldLabel>
+        <FieldLabel>{t('shShortLink')}</FieldLabel>
         <LinkRow>
           <LinkText>
             {store.loading
-              ? '正在生成短链接…'
+              ? t('shShortLinkGenerating')
               : store.shortError || !store.shortUrl
-                ? '短链接生成失败'
+                ? t('shShortLinkFailed')
                 : store.shortUrl}
           </LinkText>
           <CopyButton
@@ -95,7 +97,7 @@ export const App = observer(() => {
             disabled={store.loading || store.shortError || !store.shortUrl}
             onClick={copy(store.shortUrl)}
           >
-            {store.copied ? '已复制' : '复制'}
+            {store.copied ? t('shCopied') : t('shCopy')}
           </CopyButton>
         </LinkRow>
       </StyledApp>

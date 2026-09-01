@@ -20,7 +20,7 @@ import {
 } from './style';
 import store from '../../store';
 import { clipboard, ipcRenderer } from 'electron';
-import { realurl } from '~/utils';
+import { isURL, realurl } from '~/utils';
 import { extractSearchQuery, getExternalProtocol } from '~/utils/url';
 import { getWebUIURL } from '~/common/webui';
 import { Suggestions } from '../Suggestions';
@@ -35,6 +35,7 @@ import {
   DEFAULT_TITLEBAR_HEIGHT,
   TOOLBAR_HEIGHT,
 } from '~/constants/design';
+import { useI18n } from '~/renderer/components/I18n';
 
 const SUGGESTION_ROW_HEIGHT = 38;
 const MAX_VISIBLE_SUGGESTIONS = 10;
@@ -70,8 +71,38 @@ const onKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
     // 联想过滤词按光标前缀计算。光标位于 URL 中间编辑时，第 0 项可能只是
     // 前缀(例如删除 https 中的 s 后得到 "http"),不能覆盖用户实际输入的完整 URL。
     // 仅在光标位于末尾时执行默认联想项;中间编辑统一按完整输入解析。
-    if (suggestions.selectedSuggestion && caretAtEnd) {
+    // Inline URL completion can change the input from a short prefix (for
+    // example "bilibili") to a full history URL while the default selected
+    // suggestion is still the search row for the original prefix. In that
+    // state, executing the stale search suggestion would search the URL text
+    // instead of navigating to it. A URL-shaped current value always wins;
+    // explicitly selected non-URL search suggestions still work as before.
+    const inputIsUrl =
+      isURL(text) || text.trim().indexOf('://') !== -1;
+    console.log('[search-enter] state', {
+      text,
+      selectionStart: e.currentTarget.selectionStart,
+      selectionEnd: e.currentTarget.selectionEnd,
+      caretAtEnd,
+      inputIsUrl,
+      selectedId: suggestions.selected,
+      selectedType: suggestions.selectedSuggestion?.type,
+      selectedIsSearch: suggestions.selectedSuggestion?.isSearch,
+      selectedPrimaryText: suggestions.selectedSuggestion?.primaryText,
+      selectedUrl: suggestions.selectedSuggestion?.url,
+    });
+    if (
+      suggestions.selectedSuggestion &&
+      caretAtEnd &&
+      !(inputIsUrl && suggestions.selectedSuggestion.isSearch)
+    ) {
       const suggestion = suggestions.selectedSuggestion;
+      console.log('[search-enter] execute suggestion', {
+        type: suggestion.type,
+        isSearch: suggestion.isSearch,
+        primaryText: suggestion.primaryText,
+        url: suggestion.url,
+      });
       if (store.executeSuggestion(suggestion, text)) {
         store.hide({ enter: true });
         return;
@@ -79,8 +110,13 @@ const onKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
     }
 
     // 默认回车:按输入框当前内容判定网址 / 搜索(对齐安卓 realurl)。
-    // 这样自动补全成 yjllq.com 后回车会直达网址,而非把网址当搜索词。
+    // 这样自动补全成完整域名后回车会直达网址,而非把网址当搜索词。
     url = normalizeInternalInputUrl(text, searchEngine.url);
+    console.log('[search-enter] default navigation', {
+      input: text,
+      resolvedUrl: url,
+      isExternal: !!getExternalProtocol(url),
+    });
 
     e.currentTarget.value = url;
 
@@ -210,6 +246,7 @@ const pasteAndSearch = () => {
 };
 
 export const App = observer(() => {
+  const t = useI18n();
   const suggestionsVisible = store.suggestions.list.length !== 0;
   const multiLinkVisible = !!store.multiLink;
   const searchEnginePickerVisible = store.searchEnginePickerVisible;
@@ -291,8 +328,8 @@ export const App = observer(() => {
           {isDefaultPageIcon ? (
             <CurrentIcon
               type="button"
-              title="选择搜索引擎"
-              aria-label="选择搜索引擎"
+              title={t('svChooseEngineTitle')}
+              aria-label={t('svChooseEngineTitle')}
               aria-expanded={searchEnginePickerVisible}
               onClick={onSearchEngineIconClick}
               style={{
@@ -305,8 +342,8 @@ export const App = observer(() => {
           ) : (
             <CurrentIcon
               type="button"
-              title="选择搜索引擎"
-              aria-label="选择搜索引擎"
+              title={t('svChooseEngineTitle')}
+              aria-label={t('svChooseEngineTitle')}
               aria-expanded={searchEnginePickerVisible}
               onClick={onSearchEngineIconClick}
               style={{
@@ -345,9 +382,9 @@ export const App = observer(() => {
             )}
           </InputArea>
           {store.openInNewTab && (
-            <NewTabHint title="本次搜索将在新标签页中打开">
+            <NewTabHint title={t('svNewTabHintTitle')}>
               <ArrowSquareOut size={12} weight="bold" />
-              新标签页打开
+              {t('svNewTabHint')}
             </NewTabHint>
           )}
         </SearchBox>
@@ -355,7 +392,7 @@ export const App = observer(() => {
           <SearchEnginePicker
             $height={searchEnginePickerHeight}
             role="listbox"
-            aria-label="搜索引擎"
+            aria-label={t('abSearchEngine')}
           >
             {searchEngines.map((engine, index) => (
               <SearchEngineOption

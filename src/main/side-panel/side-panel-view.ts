@@ -5,6 +5,8 @@ import * as path from 'path';
 import { AppWindow } from '../windows';
 import { Application } from '../application';
 import { windowOpenToLoadOptions } from '../utils/window-open';
+import {getMainTranslator} from '../i18n';
+import type {Translator} from '~/common/i18n';
 
 export const SIDE_PANEL_HEADER_HEIGHT = 48;
 
@@ -95,7 +97,7 @@ export class SidePanelView {
     this.headerView.webContents.send('side-panel-pin-state', { pinned: isPinned });
   }
 
-  private getExtensionInfo(extensionId: string) {
+  private getExtensionInfo(extensionId: string, t: Translator) {
     const extension = Application.instance.sessions.view.getExtension(extensionId);
     const manifest: any = extension?.manifest || {};
     const iconValue = manifest.action?.default_icon || manifest.icons;
@@ -141,7 +143,7 @@ export class SidePanelView {
       }
     }
     return {
-      name: extension?.name || manifest.name || '扩展程序',
+      name: extension?.name || manifest.name || t('spnlExtFallback'),
       iconUrl,
     };
   }
@@ -160,7 +162,10 @@ export class SidePanelView {
   }
 
   private headerHtml(extensionId: string): string {
-    const { name, iconUrl } = this.getExtensionInfo(extensionId);
+    const t = getMainTranslator(
+      Application.instance.settings?.object?.language,
+    );
+    const { name, iconUrl } = this.getExtensionInfo(extensionId, t);
     const dark = this.isDark;
     const bg = dark ? '#202124' : '#ffffff';
     const fg = dark ? '#e8eaed' : '#202124';
@@ -195,21 +200,22 @@ export class SidePanelView {
     </style></head><body><div class="bar">
       <div class="identity">${icon}<div class="title" title="${this.escapeHtml(name)}">${this.escapeHtml(name)}</div></div>
       <div class="actions">
-        <button class="btn" id="pin" type="button" title="固定到工具栏" aria-label="固定到工具栏" aria-pressed="false">
+        <button class="btn" id="pin" type="button" title="${this.escapeHtml(t('spnlPinToToolbar'))}" aria-label="${this.escapeHtml(t('spnlPinToToolbar'))}" aria-pressed="false">
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 3a1 1 0 0 1 .8 1.6L15.75 6H17a1 1 0 0 1 .8 1.6L15 11.33V14l1.7 1.7A1 1 0 0 1 16 17h-3v4a1 1 0 1 1-2 0v-4H8a1 1 0 0 1-.7-1.7L9 13.58v-2.25L6.2 7.6A1 1 0 0 1 7 6h1.25L7.2 4.6A1 1 0 0 1 8 3h8Zm-2 4H10l1 1.33V14h2V8.33L14 7Z"/></svg>
         </button>
-        <button class="btn" id="close" type="button" title="关闭侧边栏" aria-label="关闭侧边栏">
+        <button class="btn" id="close" type="button" title="${this.escapeHtml(t('spnlClose'))}" aria-label="${this.escapeHtml(t('spnlClose'))}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
         </button>
       </div>
     </div><script>
       const {ipcRenderer}=require('electron');
       const pin=document.getElementById('pin');
+      const pinLabels={pinned:${JSON.stringify(t('spnlUnpinFromToolbar'))},unpinned:${JSON.stringify(t('spnlPinToToolbar'))}};
       const renderPin=(state)=>{
         const pinned=!!state?.pinned;
         pin.classList.toggle('active',pinned);
         pin.setAttribute('aria-pressed',String(pinned));
-        pin.title=pinned?'从工具栏取消固定':'固定到工具栏';
+        pin.title=pinned?pinLabels.pinned:pinLabels.unpinned;
         pin.setAttribute('aria-label',pin.title);
       };
       pin.addEventListener('click',()=>ipcRenderer.send('${this.pinChannel}'));

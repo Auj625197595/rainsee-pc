@@ -1,6 +1,8 @@
 import {execFile} from 'child_process';
 import {dialog, shell} from 'electron';
 import {existsSync} from 'fs';
+import {Application} from '../application';
+import {getMainTranslator} from '../i18n';
 
 // 外部下载器(唤起第三方下载器)。
 // 启动方式沿用 view.ts 的 callPotPlayer:execFile(path, argvArray) 永不拼 shell 字符串,
@@ -29,7 +31,12 @@ export const DOWNLOADER_PRESETS: Record<string, IDownloaderPreset> = {
   },
   thunder: {
     type: 'thunder',
-    name: '迅雷',
+    // 显示名读取时按当前语言解析(不缓存翻译器);IDM/aria2 为品牌名无需翻译。
+    get name() {
+      return getMainTranslator(
+        Application.instance.settings?.object?.language,
+      )('dlThunder');
+    },
     usesProtocol: true,
   },
   aria2: {
@@ -39,7 +46,11 @@ export const DOWNLOADER_PRESETS: Record<string, IDownloaderPreset> = {
   },
   custom: {
     type: 'custom',
-    name: '自定义',
+    get name() {
+      return getMainTranslator(
+        Application.instance.settings?.object?.language,
+      )('dlCustom');
+    },
   },
 };
 
@@ -229,8 +240,9 @@ export function canHandoffDownload(
 export async function launchExternalDownload(
   opts: ILaunchOptions,
 ): Promise<boolean> {
+  const t = getMainTranslator(Application.instance.settings?.object?.language);
   const preset = DOWNLOADER_PRESETS[opts.type];
-  const name = preset?.name ?? '外部下载器';
+  const name = preset?.name ?? t('dlpExternalDownloader');
 
   // 迅雷:走 thunder:// 协议。负载 = base64("AA" + url + "ZZ")(标准迅雷协议)。
   if (preset?.usesProtocol) {
@@ -243,9 +255,9 @@ export async function launchExternalDownload(
       console.error(`唤起${name}失败:`, e);
       dialog.showMessageBox({
         type: 'warning',
-        title: '温馨提示',
-        message: `唤起${name}失败,请确认已安装${name}。`,
-        buttons: ['确定'],
+        title: t('dialogHintTitle'),
+        message: t('xdLaunchFailed', {name}),
+        buttons: [t('confirm')],
       });
       return false;
     }
@@ -259,9 +271,9 @@ export async function launchExternalDownload(
   if (!path || !existsSync(path)) {
     dialog.showMessageBox({
       type: 'warning',
-      title: '温馨提示',
-      message: `未找到${name},请在设置中确认路径。`,
-      buttons: ['确定'],
+      title: t('dialogHintTitle'),
+      message: t('xdPathNotFound', {name}),
+      buttons: [t('confirm')],
     });
     return false;
   }

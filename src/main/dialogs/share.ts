@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as QRCode from 'qrcode';
 import {Application} from '../application';
 import {PersistentDialog} from './dialog';
+import {getMainTranslator} from '../i18n';
 
 const WIDTH = 392;
 const HEIGHT = 620;
@@ -55,10 +56,13 @@ export class ShareDialog extends PersistentDialog {
         if (!m) throw new Error('invalid_data_url');
         const ext = m[1].toLowerCase();
         const buf = Buffer.from(m[2], 'base64');
+        const t = getMainTranslator(
+          Application.instance.settings?.object?.language,
+        );
         const {canceled, filePath} = await dialog.showSaveDialog(this.browserWindow, {
-          title: '保存二维码',
+          title: t('shareSaveQr'),
           defaultPath: `qrcode.${ext}`,
-          filters: [{name: '图片', extensions: [ext]}],
+          filters: [{name: t('fileFilterImages'), extensions: [ext]}],
         });
         if (canceled || !filePath) {
           this.send('share-download-result', {ok: false, canceled: true});

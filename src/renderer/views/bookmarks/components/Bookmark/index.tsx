@@ -17,9 +17,13 @@ import {
 import { IBookmark } from '~/interfaces';
 import store from '../../store';
 import { getBookmarkPath, getBookmarkTitle } from '../../utils';
+import { useI18n } from '~/renderer/components/I18n';
 import { getIconByUrlNet, parseBookmarklet } from '~/utils/url';
 import { setDraggedLinkData } from '~/renderer/views/app/utils/link-drop';
 import { ipcRenderer } from '~/common/renderer-ipc';
+import {getWebUIContext} from '~/common/webui-context';
+
+const webUIContext = getWebUIContext();
 import {
   BOOKMARK_SORT_MIME,
   hasBookmarkSortDrag,
@@ -48,10 +52,9 @@ const openBookmark = (item: IBookmark) => {
   // 也非目标网页),交给主进程在当前选中的网页标签执行。走 add-tab 咽喉——view-manager
   // 会识别 javascript: URL 改为 executeJavaScript。
   if (parseBookmarklet(item.url) !== null) {
-    const wid = (window as any).windowId;
-    const ipc = (window as any).electron?.ipcRenderer;
-    if (wid != null && ipc) {
-      ipc.send(`add-tab-${wid}`, { url: item.url, active: true });
+    const wid = webUIContext.windowId;
+    if (wid != null) {
+      ipcRenderer.send(`add-tab-${wid}`, { url: item.url, active: true });
     }
     return;
   }
@@ -163,7 +166,7 @@ const onContextMenu = (data: IBookmark) => (e: any) => {
 
   // 与书签栏共用 Chrome 风格原生菜单，确保打开方式、剪切/复制/粘贴等
   // 操作在书签管理器中保持一致。更多按钮仍保留本页的紧凑菜单。
-  const windowId = (window as any).windowId;
+  const windowId = webUIContext.windowId;
   if (windowId != null) {
     void ipcRenderer.invoke(
       `show-bookmarks-bar-context-menu-${windowId}`,
@@ -315,6 +318,7 @@ export const Bookmark = observer(
     editing?: boolean;
     onRemove?: (e: React.MouseEvent) => void;
   }) => {
+    const t = useI18n();
     const selected = store.selectedItems.includes(data._id);
     const flagged = !!data._id && store.isFlagged(data._id);
     const flash = store.flashId === data._id;
@@ -363,7 +367,11 @@ export const Bookmark = observer(
       <FlagToggle
         active={flagged}
         onClick={onFlagClick(data)}
-        title={flagged ? '取消重点标记' : '重点标记'}
+        title={
+          flagged
+            ? t('bmUnflagMark')
+            : t('bmFlagMark')
+        }
       >
         {!flagged && <FlagCircleGlyph />}
       </FlagToggle>
@@ -375,7 +383,7 @@ export const Bookmark = observer(
           onClick={onHandleClick}
           onDragStart={onHandleDragStart(data)}
           onDragEnd={onHandleDragEnd}
-          title="拖拽排序或移动到文件夹"
+          title={t('bmDragHint')}
         >
           <DragGlyph />
         </DragHandle>
@@ -405,16 +413,25 @@ export const Bookmark = observer(
         )}
       </Info>
       {editing && !data.static && !store.isReadOnly(data) && (
-        <DeleteButton onClick={onRemove} title="删除">
+        <DeleteButton
+          onClick={onRemove}
+          title={t('bmDelete')}
+        >
           <TrashGlyph />
         </DeleteButton>
       )}
       {!editing && !data.static && !store.isReadOnly(data) && (
         <RowActions>
-          <IconButton onClick={onEditClick(data)} title="编辑">
+          <IconButton
+            onClick={onEditClick(data)}
+            title={t('edit')}
+          >
             <PencilGlyph />
           </IconButton>
-          <IconButton onClick={onMoreClick(data)} title="更多">
+          <IconButton
+            onClick={onMoreClick(data)}
+            title={t('bmMore')}
+          >
             <DotsGlyph />
           </IconButton>
         </RowActions>

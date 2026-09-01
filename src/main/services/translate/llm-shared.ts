@@ -9,6 +9,13 @@
 
 export type ApiType = 'chat' | 'responses';
 
+import { Application } from '../../application';
+import { getMainTranslator } from '../../i18n';
+
+// 错误文案直接显示在划词卡片,按当前语言即时翻译(不缓存翻译器)。
+const errorTranslator = () =>
+  getMainTranslator(Application.instance?.settings?.object?.language);
+
 // 渲染层语言码 → 人类可读语言名(进 prompt)。未命中退化为码本身。
 const LANG_NAMES: Record<string, string> = {
   'zh-CN': 'Simplified Chinese',
@@ -275,18 +282,21 @@ export const requestResponses = async (opts: ChatRequestOpts): Promise<any> => {
   }
 };
 
-// 统一响应解析:把 HTTP 状态翻译成中文错误(划词卡片直接显示),非 2xx 抛。
+// 统一响应解析:把 HTTP 状态翻译成错误文案(划词卡片直接显示),非 2xx 抛。
 export const parseResponse = async (res: Response): Promise<any> => {
-  if (res.status === 402) throw new Error('雨见翻译额度不足,请登录或升级会员');
+  const tr = errorTranslator();
+  if (res.status === 402) throw new Error(tr('trErrQuota'));
   if (res.status === 401 || res.status === 403)
-    throw new Error('翻译服务鉴权失败,请重新登录');
-  if (res.status === 429) throw new Error('翻译请求过于频繁,请稍后再试');
+    throw new Error(tr('trErrAuth'));
+  if (res.status === 429) throw new Error(tr('trErrRateLimited'));
   if (res.status === 408 || res.status === 580)
-    throw new Error('翻译请求超时,请重试');
-  if (res.status >= 500) throw new Error('翻译服务暂时不可用,请稍后再试');
+    throw new Error(tr('trErrTimeout'));
+  if (res.status >= 500) throw new Error(tr('trErrUnavailable'));
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
-    throw new Error(`翻译服务返回 ${res.status} ${detail.slice(0, 160)}`);
+    throw new Error(
+      tr('trErrHttp', {status: res.status, detail: detail.slice(0, 160)}),
+    );
   }
   return await res.json();
 };
@@ -322,7 +332,7 @@ const translateLlmOnce = async (
   const text = extractLLMText(json, opts.apiType);
   const arr = parseTranslationArray(text, batch.length);
   if (!arr) {
-    throw new Error('翻译结果解析失败,请重试');
+    throw new Error(errorTranslator()('trErrParse'));
   }
   // empty/非 string 槽位回退原文(parseTranslationArray 已把非 string 置 '')
   return arr.map((t, i) => t || batch[i]);

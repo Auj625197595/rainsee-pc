@@ -13,6 +13,7 @@ import { LayoutSwitcher } from '../LayoutSwitcher';
 import { isURL, realurl } from '~/utils';
 import { getExternalProtocol } from '~/utils/url';
 import { useActionBubble } from '../../utils/action-bubble';
+import { getShellTranslator } from '../../utils/i18n';
 import { getDraggedLinkURL, isLinkDragEvent } from '../../utils/link-drop';
 import {
   createTabWheelHandler,
@@ -137,12 +138,13 @@ export const Tabbar = observer(() => {
 
   // 右键「+ 新建标签」按钮 → 读剪贴板:网址则新建标签打开、文本则搜索、空则提示。
   const onAddTabContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
+    const t = getShellTranslator();
     e.preventDefault();
     e.stopPropagation();
 
     const raw = (clipboard.readText() || '').trim();
     if (raw === '') {
-      showBubble('剪贴板没有内容', e.currentTarget);
+      showBubble(t('shellClipboardEmpty'), e.currentTarget);
       return;
     }
 
@@ -150,11 +152,14 @@ export const Tabbar = observer(() => {
     // 剪贴板是外部协议(motrixnext://、thunder://、magnet:、mailto: 等)→ 唤起系统应用,不新建标签加载。
     if (getExternalProtocol(url)) {
       ipcRenderer.send('open-external-url', url);
-      showBubble('已在系统中打开链接', e.currentTarget);
+      showBubble(t('shellOpenedExternal'), e.currentTarget);
       return;
     }
     store.tabs.addTab({ url, active: true });
-    showBubble(isURL(raw) ? '已打开剪贴板网址' : '已搜索剪贴板', e.currentTarget);
+    showBubble(
+      isURL(raw) ? t('shellOpenedClipboardUrl') : t('shellSearchedClipboard'),
+      e.currentTarget,
+    );
   };
 
   return (

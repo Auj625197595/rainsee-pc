@@ -1,6 +1,7 @@
 import { BrowserWindow, ipcMain, dialog, clipboard, nativeImage } from 'electron';
 import * as fs from 'fs';
 import { Application } from '../application';
+import { getMainTranslator } from '../i18n';
 import { PersistentDialog } from './dialog';
 
 // 全屏截图浮层:覆盖当前页面内容区,展示 1:1 页面快照供框选。
@@ -27,13 +28,16 @@ export class ScreenshotDialog extends PersistentDialog {
     ipcMain.on(saveChannel, async (e, dataURL: string) => {
       console.log('[screenshot] SAVE handler dataURL.len=', dataURL?.length);
       try {
+        const t = getMainTranslator(
+          Application.instance.settings?.object?.language,
+        );
         const img = nativeImage.createFromDataURL(dataURL);
         const { canceled, filePath } = await dialog.showSaveDialog(
           this.browserWindow,
           {
-            title: '保存截图',
+            title: t('shotSaveDialogTitle'),
             defaultPath: `screenshot-${this.stamp()}.png`,
-            filters: [{ name: '图片', extensions: ['png'] }],
+            filters: [{ name: t('fileFilterImages'), extensions: ['png'] }],
           },
         );
         if (canceled || !filePath) {

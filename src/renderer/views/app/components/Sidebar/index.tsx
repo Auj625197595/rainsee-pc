@@ -18,6 +18,7 @@ import {
   SidebarGroupSection,
 } from './style';
 import store from '../../store';
+import { getShellTranslator } from '../../utils/i18n';
 import { SidebarTab } from '../SidebarTab';
 import { SidebarGroupHeaderRow } from './SidebarGroupHeaderRow';
 import { LayoutSwitcher } from '../LayoutSwitcher';
@@ -206,13 +207,14 @@ const SidebarBrandMark = observer(({ collapsed }: { collapsed: boolean }) => {
         $macLeft={platform() === 'darwin' && store.tabsLayout === 'left'}
       >
         {workspace && <SidebarWorkspaceDot color={workspace.color} />}
-        {workspace?.name || profileBrand.profileName || '雨见浏览器'}
+        {workspace?.name || profileBrand.profileName || getShellTranslator()('aboutTitle')}
       </SidebarBrandText>
     </SidebarBrand>
   );
 });
 
 export const Sidebar = observer(() => {
+  const t = getShellTranslator();
   const { show: showBubble, portal: bubblePortal } = useActionBubble();
   const side = store.tabsLayout === 'right' ? 'right' : 'left';
   const pinned = store.settings.object.sidebarPinned !== false;
@@ -263,20 +265,20 @@ export const Sidebar = observer(() => {
 
     const raw = (clipboard.readText() || '').trim();
     if (raw === '') {
-      showBubble('剪贴板没有内容', e.currentTarget, 'top');
+      showBubble(t('shellClipboardEmpty'), e.currentTarget, 'top');
       return;
     }
 
     const url = realurl(raw, store.settings.searchEngine.url);
     if (getExternalProtocol(url)) {
       ipcRenderer.send('open-external-url', url);
-      showBubble('已在系统中打开链接', e.currentTarget, 'top');
+      showBubble(t('shellOpenedExternal'), e.currentTarget, 'top');
       return;
     }
 
     store.tabs.addTab({ url, active: true });
     showBubble(
-      isURL(raw) ? '已打开剪贴板网址' : '已搜索剪贴板',
+      isURL(raw) ? t('shellOpenedClipboardUrl') : t('shellSearchedClipboard'),
       e.currentTarget,
       'top',
     );
@@ -375,8 +377,8 @@ export const Sidebar = observer(() => {
             pinned={pinned}
             title={
               pinned
-                ? '固定模式（点击切换为缩放模式）'
-                : '缩放模式（点击切换为固定模式）'
+                ? t('shellPinMode')
+                : t('shellCompactMode')
             }
             onMouseDown={togglePinned}
           >
@@ -392,11 +394,11 @@ export const Sidebar = observer(() => {
           collapsed={railCollapsed}
           onMouseDown={onNewTab}
           onContextMenu={onNewTabContextMenu}
-          title="新建标签页"
+          title={t('shellNewTab')}
         >
           {railCollapsed && ICON_PLUS}
           <SidebarNewTabLabel collapsed={railCollapsed}>
-            新建标签页
+            {t('shellNewTab')}
           </SidebarNewTabLabel>
         </SidebarNewTab>
 

@@ -20,11 +20,13 @@ import {
   Footer,
   RestoreButton,
 } from './style';
+import { useI18n } from '~/renderer/components/I18n';
 
 // 语言选择弹窗:点击某语言即翻译/切换到该语言(未开启则开启,已开启则重译)。
 // 已开启时底部多出「显示原文」按钮。语言列表使用自定义滚动区域,避免 BrowserView
 // 对原生下拉列表的裁剪。
 export const App = observer(() => {
+  const t = useI18n();
   return (
     <ThemeProvider theme={{...store.theme}}>
       <StyledApp
@@ -37,18 +39,18 @@ export const App = observer(() => {
           <HeaderIcon>
             <Translate size={17} weight="bold" />
           </HeaderIcon>
-          <HeaderTitle>选择翻译语言</HeaderTitle>
+          <HeaderTitle>{t('tvChooseLanguage')}</HeaderTitle>
         </Header>
         <EngineSection>
-          <SectionLabel>翻译引擎</SectionLabel>
+          <SectionLabel>{t('tvEngineSection')}</SectionLabel>
           <EngineSelect
             value={store.settings.translateEngine || 'microsoft'}
             onChange={(event) =>
               void store.chooseEngine(event.target.value as TranslateEngine)
             }
           >
-            <option value="microsoft">微软翻译（免费）</option>
-            <option value="custom-llm">自定义 LLM</option>
+            <option value="microsoft">{t('tvEngineMicrosoft')}</option>
+            <option value="custom-llm">{t('tvEngineCustom')}</option>
           </EngineSelect>
         </EngineSection>
         <List>
@@ -65,7 +67,7 @@ export const App = observer(() => {
         </List>
         {store.active && (
           <Footer>
-            <RestoreButton onClick={() => store.restore()}>显示原文</RestoreButton>
+            <RestoreButton onClick={() => store.restore()}>{t('tvShowOriginal')}</RestoreButton>
           </Footer>
         )}
       </StyledApp>

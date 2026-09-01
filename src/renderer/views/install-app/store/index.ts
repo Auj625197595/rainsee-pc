@@ -1,4 +1,5 @@
 import { ipcRenderer } from 'electron';
+import { createLocaleTranslator } from '~/common/i18n';
 import { DialogStore } from '~/models/dialog-store';
 
 // PWA 安装与小号快捷方式共用的确认弹窗 store。
@@ -6,7 +7,7 @@ import { DialogStore } from '~/models/dialog-store';
 export class Store extends DialogStore {
   // 显示态字段:仅随 visible 翻转(observable)同步赋值,触发重渲染,故可为普通字段。
   public mode: 'pwa' | 'profile' = 'pwa';
-  public name = '应用';
+  public name = createLocaleTranslator(undefined)('iaAppFallback');
   public publisher = '';
   public iconUrl = '';
   public fallbackIconUrl = '';
@@ -21,7 +22,8 @@ export class Store extends DialogStore {
     ipcRenderer.on('visible', (e, flag, data) => {
       if (flag && data) {
         this.mode = data.mode === 'profile' ? 'profile' : 'pwa';
-        this.name = data.name || '应用';
+        this.name =
+        data.name || createLocaleTranslator(this.settings.language)('iaAppFallback');
         this.publisher = data.publisher || '';
         this.iconUrl = data.iconUrl || '';
         this.fallbackIconUrl = data.fallbackIconUrl || '';

@@ -23,7 +23,12 @@ import {
 } from '../App/style';
 import store from '../../store';
 import { observer } from 'mobx-react-lite';
-import { onSwitchChange, saveWebBrowsingSettings } from '../../utils';
+import {
+  onSwitchChange,
+  saveWebBrowsingSettings,
+  getSettingsTranslator,
+} from '../../utils';
+import type { Translator } from '~/common/i18n';
 import { Switch } from '~/renderer/components/Switch';
 import { NormalButton } from '~/renderer/views/settings/components/App';
 import { ITheme } from '~/interfaces';
@@ -42,22 +47,28 @@ const onClearOnExit = () => {
 };
 
 // 「退出时自动清理」勾选项摘要:展示当前会清理哪些项(无勾选时显示「已关闭」)。
-const clearOnExitSummary = (coe?: {
-  cache: boolean;
-  cookies: boolean;
-  history: boolean;
-  searchHistory: boolean;
-}) => {
-  if (!coe) return '已关闭';
+const clearOnExitSummary = (
+  coe: {
+    cache: boolean;
+    cookies: boolean;
+    history: boolean;
+    searchHistory: boolean;
+  } | undefined,
+  t: Translator,
+) => {
+  if (!coe) return t('wbClearOnExitOff');
   const labels: string[] = [];
-  if (coe.cache) labels.push('缓存');
+  if (coe.cache) labels.push(t('wbCache'));
   if (coe.cookies) labels.push('Cookie');
-  if (coe.history) labels.push('历史');
-  if (coe.searchHistory) labels.push('搜索历史');
-  return labels.length === 0 ? '已关闭' : `将清理:${labels.join('、')}`;
+  if (coe.history) labels.push(t('wbHistoryLabel'));
+  if (coe.searchHistory) labels.push(t('wbSearchHistory'));
+  return labels.length === 0
+    ? t('wbClearOnExitOff')
+    : t('wbClearSummary', { labels: labels.join(t('wbListSep')) });
 };
 
 const DoNotTrackToggle = observer(() => {
+  const t = getSettingsTranslator();
   const { doNotTrack } = store.settings;
 
   return (
@@ -66,7 +77,7 @@ const DoNotTrackToggle = observer(() => {
         <EyeSlash size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>发送“不跟踪”请求</Title>
+        <Title>{t('wbDoNotTrack')}</Title>
       </SettingCopy>
       <Control>
         <Switch value={doNotTrack} />
@@ -76,6 +87,7 @@ const DoNotTrackToggle = observer(() => {
 });
 
 const IncognitoThirdPartyCookieToggle = observer(() => {
+  const t = getSettingsTranslator();
   const { incognitoBlockThirdPartyCookies } = store.settings;
 
   return (
@@ -84,7 +96,7 @@ const IncognitoThirdPartyCookieToggle = observer(() => {
         <Cookie size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>无痕模式下阻止第三方 Cookie</Title>
+        <Title>{t('searchIncognitoThirdPartyCookies')}</Title>
       </SettingCopy>
       <Control>
         <Switch value={incognitoBlockThirdPartyCookies} />
@@ -259,6 +271,7 @@ const normalizeHost = (value: string): string | null => {
 };
 
 const PersistSessionCookieHosts = observer(() => {
+  const t = getSettingsTranslator();
   const [input, setInput] = React.useState('');
   const [error, setError] = React.useState('');
   const hosts = store.settings.persistSessionCookieHosts || [];
@@ -269,11 +282,11 @@ const PersistSessionCookieHosts = observer(() => {
     event.preventDefault();
     const host = normalizeHost(input);
     if (!host) {
-      setError('请输入有效主域名，例如 example.com');
+      setError(t('wbHostInvalid'));
       return;
     }
     if (hosts.includes(host)) {
-      setError('该主域名已添加');
+      setError(t('wbHostDuplicate'));
       return;
     }
     const next = [...hosts, host];
@@ -295,18 +308,22 @@ const PersistSessionCookieHosts = observer(() => {
         <PersistCookieHostInput
           value={input}
           maxLength={253}
-          placeholder="添加主域名，例如 example.com"
+          placeholder={t('wbHostPlaceholder')}
           onChange={(event) => {
             setInput(event.target.value);
             if (error) setError('');
           }}
         />
-        <PersistCookieHostIconButton type="submit" title="添加主域名" aria-label="添加主域名">
+        <PersistCookieHostIconButton
+          type="submit"
+          title={t('wbHostAdd')}
+          aria-label={t('wbHostAdd')}
+        >
           <Plus size={18} weight="bold" />
         </PersistCookieHostIconButton>
       </PersistCookieHostForm>
       <PersistCookieHostHint error={!!error}>
-        {error || '仅保存列表内主域名及其子域名的会话 Cookie。'}
+        {error || t('wbHostHint')}
       </PersistCookieHostHint>
       {hosts.length > 0 && (
         <PersistCookieHostList>
@@ -315,8 +332,8 @@ const PersistSessionCookieHosts = observer(() => {
               {host}
               <PersistCookieHostRemoveButton
                 type="button"
-                title={`移除 ${host}`}
-                aria-label={`移除 ${host}`}
+                title={t('wbHostRemove', { host })}
+                aria-label={t('wbHostRemove', { host })}
                 onClick={() => removeHost(host)}
               >
                 <Trash size={14} weight="bold" />
@@ -332,6 +349,7 @@ const PersistSessionCookieHosts = observer(() => {
 // 仅对用户手动添加的主域名保存会话 Cookie。重新进入登录页时会先清理该域名的
 // 旧 Cookie，避免新旧登录态共存。
 const PersistSessionCookiesToggle = observer(() => {
+  const t = getSettingsTranslator();
   const { persistSessionCookies } = store.settings;
   const highlight = store.highlightedSetting;
   const [flashing, setFlashing] = React.useState(false);
@@ -376,8 +394,8 @@ const PersistSessionCookiesToggle = observer(() => {
         <SignIn size={19} weight="fill" />
       </SettingIcon>
       <SettingCopy>
-        <Title>重启后保持登录</Title>
-        <SecondaryText>仅对下方主域名列表生效。</SecondaryText>
+        <Title>{t('searchPersistLogin')}</Title>
+        <SecondaryText>{t('wbPersistHint')}</SecondaryText>
       </SettingCopy>
       <Control>
         <Switch value={persistSessionCookies} />
@@ -387,21 +405,22 @@ const PersistSessionCookiesToggle = observer(() => {
 });
 
 export const WebBrowsing = observer(() => {
+  const t = getSettingsTranslator();
   return (
     <>
       <SettingGroupBlock>
-        <SettingGroupLabel>浏览数据</SettingGroupLabel>
+        <SettingGroupLabel>{t('wbBrowsingData')}</SettingGroupLabel>
         <SettingGroup>
           <Row>
             <SettingIcon tone="orange">
               <Broom size={19} weight="fill" />
             </SettingIcon>
             <SettingCopy>
-              <Title>浏览数据</Title>
+              <Title>{t('wbBrowsingData')}</Title>
             </SettingCopy>
             <Control>
               <NormalButton variant="soft" onClick={onClearBrowsingData}>
-                清除
+                {t('clear')}
               </NormalButton>
             </Control>
           </Row>
@@ -411,20 +430,20 @@ export const WebBrowsing = observer(() => {
               <ClockCounterClockwise size={19} weight="fill" />
             </SettingIcon>
             <SettingCopy>
-              <Title>退出时自动清理</Title>
+              <Title>{t('searchClearOnExit')}</Title>
               <SecondaryText>
-                {clearOnExitSummary(store.settings.clearOnExit)}
+                {clearOnExitSummary(store.settings.clearOnExit, t)}
               </SecondaryText>
             </SettingCopy>
             <Control>
-              <NormalButton variant="soft">设置</NormalButton>
+              <NormalButton variant="soft">{t('settings')}</NormalButton>
             </Control>
           </Row>
         </SettingGroup>
       </SettingGroupBlock>
 
       <SettingGroupBlock>
-        <SettingGroupLabel>Cookie 与追踪</SettingGroupLabel>
+        <SettingGroupLabel>{t('wbCookieSection')}</SettingGroupLabel>
         <SettingGroup>
           <DoNotTrackToggle />
           <IncognitoThirdPartyCookieToggle />
