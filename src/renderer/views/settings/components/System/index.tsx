@@ -25,8 +25,9 @@ import {
 } from '../App/style';
 import { NormalButton } from '../App';
 import store from '../../store';
-import { onSwitchChange } from '../../utils';
+import { onSwitchChange, getSettingsTranslator } from '../../utils';
 import { getPalette } from '../../utils/palette';
+import type { MessageKey } from '~/common/i18n';
 import { ProfileNetwork } from './ProfileNetwork';
 
 // 数据存储位置 / 迁移状态。
@@ -234,7 +235,8 @@ const BackupOption = styled.label`
     width: 16px;
     height: 16px;
     margin: 0;
-    accent-color: ${({ theme }: { theme?: ITheme }) => getPalette(theme).primary};
+    accent-color: ${({ theme }: { theme?: ITheme }) =>
+      getPalette(theme).primary};
   }
 
   ${({ theme }: { theme?: ITheme }) => css`
@@ -242,6 +244,89 @@ const BackupOption = styled.label`
     background: ${getPalette(theme).bg};
     border: 1px solid ${getPalette(theme).line};
   `}
+`;
+
+const BackupRecent = styled.section`
+  margin-top: 18px;
+`;
+
+const BackupRecentHead = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+`;
+
+const BackupRecentTitle = styled.h4`
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+`;
+
+const BackupRecentHint = styled.span`
+  font-size: 12px;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textMute};
+  `}
+`;
+
+const BackupRecentList = styled.div`
+  display: grid;
+  gap: 6px;
+`;
+
+const BackupRecentRow = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 9px 10px;
+  border-radius: 7px;
+  border: 1px solid ${({ theme }: { theme?: ITheme }) => getPalette(theme).line};
+  background: ${({ theme }: { theme?: ITheme }) => getPalette(theme).bg};
+`;
+
+const BackupRecentInfo = styled.div`
+  min-width: 0;
+  flex: 1;
+`;
+
+const BackupRecentName = styled.div`
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 600;
+`;
+
+const BackupRecentMeta = styled.div`
+  margin-top: 3px;
+  font-size: 11.5px;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textSub};
+  `}
+`;
+
+const BackupOpenButton = styled.button`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: ${({ theme }: { theme?: ITheme }) => getPalette(theme).textSub};
+  background: transparent;
+  cursor: pointer;
+
+  &:hover {
+    color: ${({ theme }: { theme?: ITheme }) => getPalette(theme).primary};
+    background: ${({ theme }: { theme?: ITheme }) => getPalette(theme).surface};
+  }
 `;
 
 const BackupModalFooter = styled.div`
@@ -254,14 +339,23 @@ const BackupModalFooter = styled.div`
 type BackupItem = 'bookmarks' | 'history' | 'passwords' | 'extensions';
 type BackupMode = 'full' | 'selected';
 
-const BACKUP_OPTIONS: Array<{ key: BackupItem; label: string }> = [
-  { key: 'bookmarks', label: '书签' },
-  { key: 'history', label: '历史记录' },
-  { key: 'passwords', label: '密码' },
-  { key: 'extensions', label: '扩展程序' },
+interface BackupHistoryEntry {
+  path: string;
+  name: string;
+  mode: BackupMode;
+  createdAt: string;
+  size: number;
+}
+
+const BACKUP_OPTIONS: Array<{ key: BackupItem; labelKey: MessageKey }> = [
+  { key: 'bookmarks', labelKey: 'abSuggestBookmarks' },
+  { key: 'history', labelKey: 'pvItemHistory' },
+  { key: 'passwords', labelKey: 'sysPasswords' },
+  { key: 'extensions', labelKey: 'sysExtensions' },
 ];
 
 const DataBackup = ({ onNotice }: { onNotice: (message: string) => void }) => {
+  const t = getSettingsTranslator();
   const [open, setOpen] = React.useState(false);
   const [mode, setMode] = React.useState<BackupMode>('full');
   const [items, setItems] = React.useState<BackupItem[]>([
@@ -271,6 +365,40 @@ const DataBackup = ({ onNotice }: { onNotice: (message: string) => void }) => {
     'extensions',
   ]);
   const [busy, setBusy] = React.useState(false);
+  const [recentBackups, setRecentBackups] = React.useState<
+    BackupHistoryEntry[]
+  >([]);
+  const [recentLoading, setRecentLoading] = React.useState(false);
+
+  const loadRecentBackups = async () => {
+    setRecentLoading(true);
+    try {
+      const result = (await ipcRenderer.invoke('data-backup-list')) as unknown;
+      setRecentBackups(
+        Array.isArray(result) ? (result as BackupHistoryEntry[]) : [],
+      );
+    } catch {
+      setRecentBackups([]);
+    } finally {
+      setRecentLoading(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (open) void loadRecentBackups();
+  }, [open]);
+
+  const openBackupDirectory = async (filePath: string) => {
+    const result = (await ipcRenderer.invoke(
+      'data-backup-open-dir',
+      filePath,
+    )) as {
+      status?: string;
+      message?: string;
+    };
+    if (result?.status === 'error')
+      onNotice(result.message || t('sysOpenDirFailed'));
+  };
 
   const toggleItem = (item: BackupItem) => {
     setItems((current) =>
@@ -284,19 +412,33 @@ const DataBackup = ({ onNotice }: { onNotice: (message: string) => void }) => {
     if (busy || (mode === 'selected' && !items.length)) return;
     setBusy(true);
     try {
-      const result = (await ipcRenderer.invoke('data-backup-create', mode, items)) as {
+      const result = (await ipcRenderer.invoke(
+        'data-backup-create',
+        mode,
+        items,
+      )) as {
         status: 'ok' | 'cancelled' | 'error';
         path?: string;
         message?: string;
+        skippedFiles?: string[];
       };
       if (result.status === 'ok') {
+        void loadRecentBackups();
         setOpen(false);
-        onNotice(`备份已保存至 ${result.path}`);
+        const skippedCount = result.skippedFiles?.length || 0;
+        onNotice(
+          skippedCount
+            ? t('sysBackupDoneSkipped', {
+                path: result.path,
+                count: skippedCount,
+              })
+            : t('sysBackupDone', { path: result.path }),
+        );
       } else if (result.status === 'error') {
-        onNotice(result.message || '创建备份失败');
+        onNotice(result.message || t('sysBackupFailed'));
       }
     } catch {
-      onNotice('创建备份失败');
+      onNotice(t('sysBackupFailed'));
     } finally {
       setBusy(false);
     }
@@ -306,13 +448,15 @@ const DataBackup = ({ onNotice }: { onNotice: (message: string) => void }) => {
     if (busy) return;
     setBusy(true);
     try {
-      const selected = (await ipcRenderer.invoke('data-backup-select-restore')) as {
+      const selected = (await ipcRenderer.invoke(
+        'data-backup-select-restore',
+      )) as {
         status: 'ok' | 'cancelled' | 'error';
         path?: string;
         message?: string;
       };
       if (selected.status === 'error') {
-        onNotice(selected.message || '无法读取备份文件');
+        onNotice(selected.message || t('sysRestoreReadFailed'));
         return;
       }
       if (selected.status !== 'ok' || !selected.path) return;
@@ -323,13 +467,13 @@ const DataBackup = ({ onNotice }: { onNotice: (message: string) => void }) => {
       )) as { status: 'ok' | 'cancelled' | 'error'; message?: string };
       if (restored.status === 'ok') {
         setOpen(false);
-        onNotice('还原已准备完成，正在重启浏览器…');
+        onNotice(t('sysRestoreReady'));
         window.setTimeout(() => ipcRenderer.send('data-backup-relaunch'), 700);
       } else if (restored.status === 'error') {
-        onNotice(restored.message || '还原失败');
+        onNotice(restored.message || t('sysRestoreFailed'));
       }
     } catch {
-      onNotice('还原失败');
+      onNotice(t('sysRestoreFailed'));
     } finally {
       setBusy(false);
     }
@@ -342,14 +486,12 @@ const DataBackup = ({ onNotice }: { onNotice: (message: string) => void }) => {
           <Archive size={19} weight="fill" />
         </SettingIcon>
         <RowInfo>
-          <Title>数据备份</Title>
-          <SecondaryText>
-            完整备份可保存全部浏览器数据；可选备份支持单独保存书签、历史、密码和扩展。
-          </SecondaryText>
+          <Title>{t('searchDataBackup')}</Title>
+          <SecondaryText>{t('sysBackupRowDesc')}</SecondaryText>
         </RowInfo>
         <Control>
           <NormalButton variant="soft" onClick={() => setOpen(true)}>
-            管理备份
+            {t('sysManageBackups')}
           </NormalButton>
         </Control>
       </PlainRow>
@@ -361,34 +503,39 @@ const DataBackup = ({ onNotice }: { onNotice: (message: string) => void }) => {
             if (!busy && event.target === event.currentTarget) setOpen(false);
           }}
         >
-          <BackupModal role="dialog" aria-modal="true" aria-label="数据备份">
+          <BackupModal
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('searchDataBackup')}
+          >
             <BackupModalHead>
-              <BackupModalTitle>数据备份</BackupModalTitle>
-              <BackupModalSub>
-                备份文件为 ZIP 格式。密码备份含敏感信息，请仅保存到可信位置。
-              </BackupModalSub>
+              <BackupModalTitle>{t('searchDataBackup')}</BackupModalTitle>
+              <BackupModalSub>{t('sysBackupModalSub')}</BackupModalSub>
             </BackupModalHead>
             <BackupModalBody>
-              <BackupModeTabs role="tablist" aria-label="备份模式">
+              <BackupModeTabs
+                role="tablist"
+                aria-label={t('sysBackupModeAria')}
+              >
                 <BackupModeTab
                   type="button"
                   $active={mode === 'full'}
                   onClick={() => setMode('full')}
                 >
-                  完整备份
+                  {t('sysBackupFull')}
                 </BackupModeTab>
                 <BackupModeTab
                   type="button"
                   $active={mode === 'selected'}
                   onClick={() => setMode('selected')}
                 >
-                  可选备份
+                  {t('sysBackupSelected')}
                 </BackupModeTab>
               </BackupModeTabs>
               <BackupModeHint>
                 {mode === 'full'
-                  ? '归档整个数据目录，包含书签、历史、密码、Cookie、扩展及浏览器设置。'
-                  : '选择需要保存的数据。还原时只覆盖所选项目，不影响其他浏览器设置。'}
+                  ? t('sysFullHint')
+                  : t('sysSelectedHint')}
               </BackupModeHint>
               {mode === 'selected' && (
                 <BackupOptions>
@@ -399,25 +546,72 @@ const DataBackup = ({ onNotice }: { onNotice: (message: string) => void }) => {
                         checked={items.includes(option.key)}
                         onChange={() => toggleItem(option.key)}
                       />
-                      {option.label}
+                      {t(option.labelKey)}
                     </BackupOption>
                   ))}
                 </BackupOptions>
               )}
+              <BackupRecent>
+                <BackupRecentHead>
+                  <BackupRecentTitle>{t('sysRecentBackups')}</BackupRecentTitle>
+                  <BackupRecentHint>{t('sysMaxFive')}</BackupRecentHint>
+                </BackupRecentHead>
+                <BackupRecentList>
+                  {recentLoading ? (
+                    <BackupRecentMeta>{t('sysReadingBackups')}</BackupRecentMeta>
+                  ) : recentBackups.length ? (
+                    recentBackups.map((backup) => (
+                      <BackupRecentRow key={backup.path}>
+                        <BackupRecentInfo>
+                          <BackupRecentName title={backup.path}>
+                            {backup.name}
+                          </BackupRecentName>
+                          <BackupRecentMeta>
+                            {backup.mode === 'full'
+                              ? t('sysBackupFull')
+                              : t('sysBackupSelected')}{' '}
+                            · {new Date(backup.createdAt).toLocaleString()}
+                          </BackupRecentMeta>
+                        </BackupRecentInfo>
+                        <BackupOpenButton
+                          type="button"
+                          title={t('sysOpenDirTitle')}
+                          aria-label={t('sysOpenDirNamed', {
+                            name: backup.name,
+                          })}
+                          onClick={() => void openBackupDirectory(backup.path)}
+                        >
+                          <FolderSimple size={17} weight="bold" />
+                        </BackupOpenButton>
+                      </BackupRecentRow>
+                    ))
+                  ) : (
+                    <BackupRecentMeta>{t('sysNoBackups')}</BackupRecentMeta>
+                  )}
+                </BackupRecentList>
+              </BackupRecent>
             </BackupModalBody>
             <BackupModalFooter>
-              <NormalButton variant="soft" onClick={restoreBackup} disabled={busy}>
+              <NormalButton
+                variant="soft"
+                onClick={restoreBackup}
+                disabled={busy}
+              >
                 <ArrowClockwise size={16} weight="bold" />
-                还原备份
+                {t('sysRestoreBackup')}
               </NormalButton>
-              <NormalButton variant="soft" onClick={() => setOpen(false)} disabled={busy}>
-                取消
+              <NormalButton
+                variant="soft"
+                onClick={() => setOpen(false)}
+                disabled={busy}
+              >
+                {t('cancel')}
               </NormalButton>
               <NormalButton
                 onClick={createBackup}
                 disabled={busy || (mode === 'selected' && !items.length)}
               >
-                {busy ? '处理中…' : '选择目录并备份'}
+                {busy ? t('pvProcessing') : t('sysChooseDirAndBackup')}
               </NormalButton>
             </BackupModalFooter>
           </BackupModal>
@@ -428,6 +622,7 @@ const DataBackup = ({ onNotice }: { onNotice: (message: string) => void }) => {
 };
 
 const FlashSupport = observer(() => {
+  const t = getSettingsTranslator();
   const enabled = store.settings.flashSupport !== false;
   const [busy, setBusy] = React.useState(false);
   const [status, setStatus] = React.useState('');
@@ -436,7 +631,7 @@ const FlashSupport = observer(() => {
     if (busy) return;
     setBusy(true);
     setStatus(
-      enabled ? '正在卸载 Flash 兼容插件…' : '正在安装 Flash 兼容插件…',
+      enabled ? t('sysFlashUninstalling') : t('sysFlashInstalling'),
     );
     try {
       const result = (await ipcRenderer.invoke(
@@ -446,12 +641,12 @@ const FlashSupport = observer(() => {
       setStatus(
         result?.ok
           ? result.enabled
-            ? 'Flash 兼容插件已安装并启用'
-            : 'Flash 支持已关闭，兼容插件已卸载'
-          : result?.message || '操作失败，请稍后重试',
+            ? t('sysFlashInstalled')
+            : t('sysFlashDisabled')
+          : result?.message || t('sysOperationFailed'),
       );
     } catch (_) {
-      setStatus('操作失败，请稍后重试');
+      setStatus(t('sysOperationFailed'));
     } finally {
       setBusy(false);
     }
@@ -466,11 +661,8 @@ const FlashSupport = observer(() => {
         <Lightning size={19} weight="fill" />
       </SettingIcon>
       <RowInfo>
-        <Title>Flash 支持</Title>
-        <SecondaryText>
-          使用 Ruffle 兼容插件播放旧版 Flash
-          内容。开启会安装插件，关闭会卸载插件并停止检测 Flash 页面。
-        </SecondaryText>
+        <Title>{t('searchFlashSupport')}</Title>
+        <SecondaryText>{t('sysFlashDesc')}</SecondaryText>
         {status && <RestartHint>{status}</RestartHint>}
       </RowInfo>
       <Control>
@@ -483,6 +675,7 @@ const FlashSupport = observer(() => {
 // 硬件加速:app.disableHardwareAcceleration() 只能在启动前生效,运行时切换仅落盘,
 // 真正生效要等下次启动。当前值与进入设置页时不同 → 提示重启。(从「个性化」迁入)
 const HardwareAcceleration = observer(() => {
+  const t = getSettingsTranslator();
   const { hardwareAcceleration } = store.settings;
   const [initialValue] = React.useState(hardwareAcceleration);
   const needsRestart = hardwareAcceleration !== initialValue;
@@ -493,11 +686,9 @@ const HardwareAcceleration = observer(() => {
         <Cpu size={19} weight="fill" />
       </SettingIcon>
       <RowInfo>
-        <Title>硬件加速</Title>
-        <SecondaryText>
-          使用 GPU 渲染页面。若遇到花屏、黑屏或闪烁等问题可尝试关闭。
-        </SecondaryText>
-        {needsRestart && <RestartHint>更改将在重启浏览器后生效</RestartHint>}
+        <Title>{t('searchHardwareAcceleration')}</Title>
+        <SecondaryText>{t('sysHwAccelDesc')}</SecondaryText>
+        {needsRestart && <RestartHint>{t('sysRestartRequired')}</RestartHint>}
       </RowInfo>
       <Control>
         <Switch value={hardwareAcceleration} />
@@ -507,6 +698,7 @@ const HardwareAcceleration = observer(() => {
 });
 
 const MemorySaver = observer(() => {
+  const t = getSettingsTranslator();
   const { memorySaver } = store.settings;
 
   return (
@@ -515,7 +707,7 @@ const MemorySaver = observer(() => {
         <Gauge size={19} weight="fill" />
       </SettingIcon>
       <RowInfo>
-        <Title>内存节省</Title>
+        <Title>{t('searchMemorySaver')}</Title>
       </RowInfo>
       <Control>
         <Switch value={memorySaver} />
@@ -525,6 +717,7 @@ const MemorySaver = observer(() => {
 });
 
 export const SystemSection = observer(() => {
+  const t = getSettingsTranslator();
   const [data, setData] = React.useState<IGetResult | null>(null);
   const [notice, setNotice] = React.useState('');
   const [busy, setBusy] = React.useState(false);
@@ -557,7 +750,7 @@ export const SystemSection = observer(() => {
       )) as ChangeResult;
       if (res.status === 'cancelled') return;
       if (res.status === 'error') {
-        setNotice(res.message || '目录不可用');
+        setNotice(res.message || t('sysDirUnavailable'));
         return;
       }
       // ok:刷新到 pending 态;附带提示信息。
@@ -567,7 +760,7 @@ export const SystemSection = observer(() => {
       if (res.spaceWarn) notes.push(res.spaceWarn);
       if (notes.length > 0) setNotice(notes.join(' '));
     } catch (e) {
-      setNotice('选择目录失败');
+      setNotice(t('sysChooseDirFailed'));
     } finally {
       setBusy(false);
     }
@@ -585,7 +778,7 @@ export const SystemSection = observer(() => {
         'data-location-reset',
       )) as ChangeResult;
       if (res.status === 'error') {
-        setNotice(res.message || '恢复默认目录失败');
+        setNotice(res.message || t('sysResetDirFailed'));
         return;
       }
       if (res.status === 'cancelled') return;
@@ -595,7 +788,7 @@ export const SystemSection = observer(() => {
       if (res.spaceWarn) notes.push(res.spaceWarn);
       if (notes.length > 0) setNotice(notes.join(' '));
     } catch {
-      setNotice('恢复默认目录失败');
+      setNotice(t('sysResetDirFailed'));
     } finally {
       setBusy(false);
     }
@@ -618,10 +811,14 @@ export const SystemSection = observer(() => {
 
   return (
     <>
-      {data && <ProfileNetwork profileName={data.profileName || '主账号'} />}
+      {data && (
+        <ProfileNetwork
+          profileName={data.profileName || t('sysMainAccount')}
+        />
+      )}
 
       <SettingGroupBlock>
-        <SettingGroupLabel>运行环境</SettingGroupLabel>
+        <SettingGroupLabel>{t('sysRuntimeSection')}</SettingGroupLabel>
         <SettingGroup>
           <FlashSupport />
           <HardwareAcceleration />
@@ -630,7 +827,7 @@ export const SystemSection = observer(() => {
       </SettingGroupBlock>
 
       <SettingGroupBlock>
-        <SettingGroupLabel>数据存储</SettingGroupLabel>
+        <SettingGroupLabel>{t('sysDataSection')}</SettingGroupLabel>
         <SettingGroup>
           {data && !data.canChange ? (
             <PlainRow>
@@ -638,16 +835,15 @@ export const SystemSection = observer(() => {
                 <FolderSimple size={19} weight="fill" />
               </SettingIcon>
               <div>
-                <Title>小号数据存储位置</Title>
+                <Title>{t('sysAltDataLocation')}</Title>
                 <PathText>{current}</PathText>
                 <SecondaryText>
-                  “{data.profileName}
-                  ”的数据与其他窗口完全隔离，存储位置由主账号统一管理。
+                  {t('sysAltDataDesc', { name: data.profileName || '' })}
                 </SecondaryText>
               </div>
               <Control>
                 <NormalButton variant="soft" onClick={onOpenDir}>
-                  打开目录
+                  {t('sysOpenDir')}
                 </NormalButton>
               </Control>
             </PlainRow>
@@ -658,22 +854,22 @@ export const SystemSection = observer(() => {
                   <FolderSimple size={19} weight="fill" />
                 </SettingIcon>
                 <div>
-                  <Title>迁移已计划</Title>
+                  <Title>{t('sysMigrationPending')}</Title>
                   <PathText>
                     {pending.from}
                     <Arrow>→</Arrow>
                     {pending.to}
                   </PathText>
-                  <SecondaryText>
-                    下次启动浏览器时执行迁移,数据将复制到新位置(原目录保留)。
-                  </SecondaryText>
+                  <SecondaryText>{t('sysMigrationDesc')}</SecondaryText>
                 </div>
                 <Control>
                   <NormalButton variant="soft" onClick={onCancel}>
-                    取消迁移
+                    {t('sysCancelMigration')}
                   </NormalButton>
                   <BtnGap />
-                  <NormalButton onClick={onRelaunch}>立即重启</NormalButton>
+                  <NormalButton onClick={onRelaunch}>
+                    {t('sysRelaunchNow')}
+                  </NormalButton>
                 </Control>
               </PlainRow>
             </>
@@ -683,15 +879,13 @@ export const SystemSection = observer(() => {
                 <FolderSimple size={19} weight="fill" />
               </SettingIcon>
               <div>
-                <Title>数据存储位置</Title>
-                <PathText>{current || '加载中…'}</PathText>
-                <SecondaryText>
-                  设置、书签、历史、扩展、登录态等全部数据存放于此。修改后需重启迁移。
-                </SecondaryText>
+                <Title>{t('searchDataLocation')}</Title>
+                <PathText>{current || t('scLoading')}</PathText>
+                <SecondaryText>{t('sysDataLocationDesc')}</SecondaryText>
               </div>
               <Control>
                 <NormalButton variant="soft" onClick={onOpenDir}>
-                  打开目录
+                  {t('sysOpenDir')}
                 </NormalButton>
                 {data && !data.isDefault && (
                   <>
@@ -700,15 +894,15 @@ export const SystemSection = observer(() => {
                       variant="soft"
                       onClick={onReset}
                       disabled={busy}
-                      title={`恢复到 ${data.defaultPath}`}
+                      title={t('sysResetTitle', { path: data.defaultPath })}
                     >
-                      恢复默认
+                      {t('resetToDefault')}
                     </NormalButton>
                   </>
                 )}
                 <BtnGap />
                 <NormalButton onClick={onChange} disabled={busy}>
-                  修改
+                  {t('modify')}
                 </NormalButton>
               </Control>
             </PlainRow>
