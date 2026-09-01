@@ -41,7 +41,7 @@ const hostMatches = (host: string, base: string) =>
 /**
  * 面板主题模式注入(随生效主题)。在 dom-ready 与 did-finish-load 调用:
  *  夜间模式:统一移除 Dark Reader 的 <style class="darkreader">;
- *           metaso.cn → 注入秘塔深色;aiagent.yjllq.com → 不注入(自带夜间模式);
+ *           metaso.cn → 注入秘塔深色;
  *           其他 → 注入通用夜间样式表。
  *  亮色模式:仅 metaso.cn → 注入秘塔亮色主题;其余不动。
  */
@@ -56,12 +56,10 @@ export const injectPanelThemeMode = (wc: WebContents) => {
   }
 
   const isMetaso = hostMatches(host, 'metaso.cn');
-  const isAiAgent = hostMatches(host, 'aiagent.yjllq.com');
 
   if (isDarkThemeActive()) {
-    // 夜间模式:统一先移除 darkreader;aiagent 不再注入,其余按 host 注入。
-    const script =
-      REMOVE_DARKREADER + (isAiAgent ? '' : isMetaso ? METASO_DARK : GENERIC_DARK);
+    // 夜间模式:统一先移除 darkreader,再按 host 注入。
+    const script = REMOVE_DARKREADER + (isMetaso ? METASO_DARK : GENERIC_DARK);
     wc.executeJavaScript(script, true).catch(() => undefined);
     return;
   }
