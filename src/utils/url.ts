@@ -148,6 +148,17 @@ const pickTld = (
   for (const candidate of TLD_LIST) {
     if (lowerThing.includes(candidate) && lowerThing !== candidate) {
       const idx = lowerThing.lastIndexOf(candidate);
+      // A TLD must end at a URL label boundary. Without this check, a path
+      // or query token such as "player" can make the ".play" TLD appear to
+      // be the last domain suffix and turn an otherwise valid URL into a
+      // search keyword.
+      const candidateSuffix = lowerThing.slice(idx + candidate.length);
+      const candidateIsKeyword =
+        candidateSuffix !== '' &&
+        candidateSuffix !== '.' &&
+        !/^\.?(?:[/#?:])/.test(candidateSuffix);
+      if (candidateIsKeyword) continue;
+
       if (
         tld === null ||
         idx > tldIndex ||
