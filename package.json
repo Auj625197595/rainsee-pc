@@ -1,6 +1,6 @@
 {
   "name": "rainsee-pc",
-  "version": "1.4.3",
+  "version": "1.4.6",
   "sideEffects": false,
   "description": "为桌面端打造的现代浏览体验——轻盈、清爽、本地优先。",
   "keywords": [
@@ -13,7 +13,8 @@
   ],
   "homepage": "https://github.com/Auj625197595/rainsee-pc",
   "main": "build/main-launcher.js",
-  "author": "Auj625197595 <yjbrowserjyt@gmail.com>", "repository": {
+  "author": "Auj625197595 <yjbrowserjyt@gmail.com>",
+  "repository": {
     "type": "git",
     "url": "git+https://github.com/Auj625197595/rainsee-pc.git"
   },
@@ -116,9 +117,9 @@
     "styled-components": "^5.3.0",
     "terser": "^5.7.0",
     "terser-webpack-plugin": "^5.1.4",
+    "tldts": "^7.4.8",
     "ts-loader": "^9.2.3",
     "tsconfig-paths-webpack-plugin": "^3.5.1",
-    "tldts": "^7.4.8",
     "typescript": "^4.3.4",
     "typescript-plugin-styled-components": "^1.6.0",
     "webpack": "5.40.0",
