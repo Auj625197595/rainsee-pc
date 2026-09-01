@@ -1,9 +1,10 @@
 import {session, ipcMain, app, dialog, webContents} from 'electron';
 import {getPath, makeId} from '~/utils';
-import {promises, existsSync} from 'fs';
+import {promises, existsSync, readFileSync, writeFileSync, renameSync, unlinkSync} from 'fs';
 import {resolve, relative, isAbsolute, sep, basename, parse, extname} from 'path';
 import {createHash, generateKeyPairSync} from 'crypto';
 import {Application} from './application';
+import {getMainTranslator} from './i18n';
 import {getWebUIURL} from '~/common/webui-main';
 import {PRINT_PREVIEW_PROTOCOL, registerProtocol} from './models/protocol';
 import * as url from 'url';
@@ -26,6 +27,8 @@ import {
 import {pathExists, deletePath} from '~/utils/files';
 import {extractZip} from '~/utils/zip';
 import {requestPermission} from './dialogs/permissions';
+import {requestHidDevice} from './dialogs/hid';
+import {requestDisplayCapture} from './dialogs/display-capture';
 import * as rimraf from 'rimraf';
 import {promisify} from 'util';
 import {ElectronChromeExtensions} from "~/vendor/electron-chrome-extensions";
@@ -184,6 +187,7 @@ wireCrxBeacon();
 // TODO: sessions should be separate.  This structure actually doesn't make sense.
 export class SessionsService {
   private static readonly DEFAULT_PINNED_EXTENSIONS_COUNT = 3;
+  private static readonly MAX_PERSISTED_DEVICE_PERMISSIONS = 1000;
 
   public view = session.fromPartition('persist:view');
   // Electron 不支持向内存型(off-the-record) Session 加载扩展。使用专用持久
@@ -222,6 +226,15 @@ export class SessionsService {
   private managedSessionCookies: ManagedSessionCookie[] = [];
   private managedSessionCookiesLoad: Promise<void> | null = null;
   private loginCookieCleanupHosts = new Set<string>();
+  private devicePermissions = new Set<string>();
+  private devicePermissionNames = new Map<string, string>();
+  private deviceSessionPermissions = new Set<string>();
+  private deviceSessionStableKeys = new Map<string, string>();
+  private pendingDeviceOrigins = new Map<string, string>();
+  private readonly devicePermissionFile = resolve(
+    app.getPath('userData'),
+    'device-permissions.json',
+  );
   private incognitoExtensionTask: Promise<void> = Promise.resolve();
   private incognitoDataReady: Promise<void> = Promise.resolve();
   private swRecoveryCooldown = new Map<string, number>();
@@ -263,7 +276,7 @@ export class SessionsService {
    * decision still comes from the installed extensions' rules, never from a
    * browser-side special case for a particular extension or URL suffix.
    */
-  public decideExtensionNavigation(url: string, tab: Electron.WebContents) {
+  public decideExtensionNavigation(url: string, tab: Electron.WebContents, method = 'GET') {
     const dnr = (this.chromeExtensions as any)?.ctx?.declarativeNetRequest;
     if (!dnr || typeof dnr.decideBeforeRequest !== 'function') {
       return {action: 'none'} as const;
@@ -271,8 +284,8 @@ export class SessionsService {
     try {
       return dnr.decideBeforeRequest({
         url,
-        resourceType: 'mainFrame',
-        method: 'GET',
+        resourceType: 'main_frame',
+        method,
         webContentsId: tab.id,
         tabId: tab.id,
         frame: (tab as any).mainFrame || null,
@@ -402,6 +415,7 @@ export class SessionsService {
     enabled: boolean,
   ): Promise<{ok: boolean; enabled: boolean; message?: string}> {
     const settings = Application.instance.settings;
+    const t = getMainTranslator(settings?.object?.language);
 
     if (!enabled) {
       // 先关闭总开关，确保卸载过程中的网页事件不会再次触发探测/安装。
@@ -419,7 +433,7 @@ export class SessionsService {
         return {ok: true, enabled: false};
       } catch (error) {
         console.error('[flash] failed to uninstall Ruffle from settings', error);
-        return {ok: false, enabled: false, message: 'Flash 兼容插件卸载失败'};
+        return {ok: false, enabled: false, message: t('ssFlashUninstallFailed')};
       }
     }
 
@@ -438,7 +452,7 @@ export class SessionsService {
         settings.updateSettings({flashSupport: loaded});
         return loaded
           ? {ok: true, enabled: true}
-          : {ok: false, enabled: false, message: 'Flash 兼容插件启用失败'};
+          : {ok: false, enabled: false, message: t('ssFlashEnableFailed')};
       }
 
       // 若卸载前曾被停用，清掉残留禁用记录，否则 ensure 会按“尊重用户停用”跳过。
@@ -455,15 +469,16 @@ export class SessionsService {
       settings.updateSettings({flashSupport: ready});
       return ready
         ? {ok: true, enabled: true}
-        : {ok: false, enabled: false, message: 'Flash 兼容插件下载安装失败'};
+        : {ok: false, enabled: false, message: t('ssFlashInstallFailed')};
     } catch (error) {
       console.error('[flash] failed to enable Flash support from settings', error);
       settings.updateSettings({flashSupport: false});
-      return {ok: false, enabled: false, message: 'Flash 支持开启失败'};
+      return {ok: false, enabled: false, message: t('ssFlashSupportEnableFailed')};
     }
   }
 
   private async confirmRuffleRemoval(action: 'disable' | 'uninstall'): Promise<boolean> {
+    const t = getMainTranslator(Application.instance.settings?.object?.language);
     const owner =
       Application.instance.windows.current ||
       Application.instance.windows.lastFocused ||
@@ -471,22 +486,32 @@ export class SessionsService {
     const result = owner?.win
       ? await dialog.showMessageBox(owner.win, {
           type: 'warning',
-          title: 'Flash 支持',
-          message: '关闭 Flash 兼容插件后，网页中的 Flash 内容将无法使用。',
+          title: t('searchFlashSupport'),
+          message: t('ssFlashDisableWarning'),
           detail:
             action === 'uninstall'
-              ? '继续卸载会同时关闭设置中的“Flash 支持”。'
-              : '继续停用会同时关闭设置中的“Flash 支持”。',
-          buttons: [action === 'uninstall' ? '继续卸载' : '继续停用', '取消'],
+              ? t('ssFlashUninstallDetail')
+              : t('ssFlashDisableDetail'),
+          buttons: [
+            action === 'uninstall'
+              ? t('ssFlashContinueUninstall')
+              : t('ssFlashContinueDisable'),
+            t('cancel'),
+          ],
           defaultId: 1,
           cancelId: 1,
           noLink: true,
         })
       : await dialog.showMessageBox({
           type: 'warning',
-          title: 'Flash 支持',
-          message: '关闭 Flash 兼容插件后，网页中的 Flash 内容将无法使用。',
-          buttons: [action === 'uninstall' ? '继续卸载' : '继续停用', '取消'],
+          title: t('searchFlashSupport'),
+          message: t('ssFlashDisableWarning'),
+          buttons: [
+            action === 'uninstall'
+              ? t('ssFlashContinueUninstall')
+              : t('ssFlashContinueDisable'),
+            t('cancel'),
+          ],
           defaultId: 1,
           cancelId: 1,
           noLink: true,
@@ -627,6 +652,251 @@ export class SessionsService {
     this.notifyRuntimeInstalled(extension, details);
   }
 
+  private loadDevicePermissions() {
+    try {
+      const raw = JSON.parse(readFileSync(this.devicePermissionFile, 'utf8'));
+      if (Array.isArray(raw)) {
+        raw.forEach((item) => {
+          if (!item || typeof item !== 'object') return;
+          const value = item as any;
+          if (!['hid', 'usb', 'serial'].includes(value.deviceType)) return;
+          if (typeof value.origin !== 'string' || typeof value.deviceKey !== 'string') return;
+          const origin = this.normalizeDeviceOrigin(value.origin);
+          if (!origin || !value.deviceKey.startsWith('stable:')) return;
+          const key = `${value.deviceType}\n${origin}\n${value.deviceKey}`;
+          this.devicePermissions.add(key);
+          if (typeof value.name === 'string' && value.name.trim()) {
+            this.devicePermissionNames.set(key, value.name.trim().slice(0, 160));
+          }
+        });
+      }
+    } catch {
+      // First run or a corrupt optional file: start with no remembered devices.
+    }
+  }
+
+  private persistDevicePermissions() {
+    const temp = `${this.devicePermissionFile}.${process.pid}.tmp`;
+    try {
+      const records = [...this.devicePermissions].map((entry) => {
+        const [deviceType, origin, deviceKey] = entry.split('\n');
+        return {deviceType, origin, deviceKey, name: this.devicePermissionNames.get(entry) || ''};
+      });
+      writeFileSync(temp, JSON.stringify(records), 'utf8');
+      renameSync(temp, this.devicePermissionFile);
+    } catch (error) {
+      try { if (existsSync(temp)) unlinkSync(temp); } catch {}
+      console.warn('[device] failed to persist permissions', error);
+    }
+  }
+
+  private normalizeDeviceOrigin(value: string): string {
+    if (!value) return '';
+    try {
+      const parsed = new URL(value);
+      if (parsed.origin !== 'null') return parsed.origin;
+      if (parsed.protocol === 'file:') return 'file://';
+      return parsed.host ? `${parsed.protocol}//${parsed.host}` : '';
+    } catch {
+      return value === 'file://' ? value : '';
+    }
+  }
+
+  private getDeviceSessionId(deviceType: 'hid' | 'usb' | 'serial', device: any): string {
+    const id = deviceType === 'serial' ? device?.portId : device?.deviceId;
+    return typeof id === 'string' && id ? `session:${id}` : '';
+  }
+
+  private getStableDeviceKey(deviceType: 'hid' | 'usb' | 'serial', device: any): string {
+    if (!device) return '';
+    let identity = '';
+    if (deviceType === 'serial' && device.deviceInstanceId) {
+      identity = `instance:${String(device.deviceInstanceId)}`;
+    } else {
+      const serialNumber = typeof device.serialNumber === 'string'
+        ? device.serialNumber.trim()
+        : '';
+      if (!serialNumber) return '';
+      const vendorId = String(device.vendorId ?? '');
+      const productId = String(device.productId ?? '');
+      identity = `usb:${vendorId}:${productId}:${serialNumber}`;
+    }
+    return `stable:${createHash('sha256').update(identity).digest('hex')}`;
+  }
+
+  private rememberDevicePermission(
+    requestingUrl: string,
+    deviceType: 'hid' | 'usb' | 'serial',
+    device: any,
+  ) {
+    const origin = this.normalizeDeviceOrigin(requestingUrl);
+    if (!origin || !device) return;
+    const sessionId = this.getDeviceSessionId(deviceType, device);
+    const stableKey = this.getStableDeviceKey(deviceType, device);
+    if (sessionId) {
+      const sessionPermissionKey = `${deviceType}\n${origin}\n${sessionId}`;
+      this.deviceSessionPermissions.add(sessionPermissionKey);
+      if (stableKey) this.deviceSessionStableKeys.set(sessionPermissionKey, stableKey);
+    }
+    if (!stableKey) return;
+    const key = `${deviceType}\n${origin}\n${stableKey}`;
+    const name = String(
+      device.name || device.productName || device.displayName || device.portName || '',
+    ).trim().slice(0, 160);
+    if (!this.devicePermissions.has(key)) {
+      while (this.devicePermissions.size >= SessionsService.MAX_PERSISTED_DEVICE_PERMISSIONS) {
+        const oldest = this.devicePermissions.values().next().value;
+        if (typeof oldest !== 'string') break;
+        this.devicePermissions.delete(oldest);
+        this.devicePermissionNames.delete(oldest);
+      }
+      this.devicePermissions.add(key);
+      if (name) this.devicePermissionNames.set(key, name);
+      this.persistDevicePermissions();
+    } else if (name && this.devicePermissionNames.get(key) !== name) {
+      this.devicePermissionNames.set(key, name);
+      this.persistDevicePermissions();
+    }
+  }
+
+  private hasDevicePermission(details: any): boolean {
+    const deviceType = details?.deviceType;
+    const device = details?.device;
+    if (!['hid', 'usb', 'serial'].includes(deviceType) || !device) {
+      return false;
+    }
+    const origin = this.normalizeDeviceOrigin(
+      typeof details?.origin === 'string' ? details.origin : '',
+    );
+    if (!origin) return false;
+    const typedDeviceType = deviceType as 'hid' | 'usb' | 'serial';
+    const sessionId = this.getDeviceSessionId(typedDeviceType, device);
+    if (sessionId && this.deviceSessionPermissions.has(`${deviceType}\n${origin}\n${sessionId}`)) {
+      return true;
+    }
+    const stableKey = this.getStableDeviceKey(typedDeviceType, device);
+    return !!stableKey && this.devicePermissions.has(`${deviceType}\n${origin}\n${stableKey}`);
+  }
+
+  private revokeDevicePermission(
+    origin: string | undefined,
+    deviceType: 'hid' | 'usb' | 'serial',
+    device: any,
+  ) {
+    const normalizedOrigin = this.normalizeDeviceOrigin(origin || '');
+    const sessionId = this.getDeviceSessionId(deviceType, device);
+    if (sessionId && normalizedOrigin) {
+      const key = `${deviceType}\n${normalizedOrigin}\n${sessionId}`;
+      this.deviceSessionPermissions.delete(key);
+      this.deviceSessionStableKeys.delete(key);
+    }
+    const stableKey = this.getStableDeviceKey(deviceType, device);
+    if (!normalizedOrigin) {
+      const sessionSuffix = sessionId ? `\n${sessionId}` : '';
+      for (const key of [...this.deviceSessionPermissions]) {
+        if (sessionSuffix && key.startsWith(`${deviceType}\n`) && key.endsWith(sessionSuffix)) {
+          this.deviceSessionPermissions.delete(key);
+          this.deviceSessionStableKeys.delete(key);
+        }
+      }
+      let changed = false;
+      const stableSuffix = stableKey ? `\n${stableKey}` : '';
+      for (const key of [...this.devicePermissions]) {
+        if (stableSuffix && key.startsWith(`${deviceType}\n`) && key.endsWith(stableSuffix)) {
+          this.devicePermissions.delete(key);
+          this.devicePermissionNames.delete(key);
+          changed = true;
+        }
+      }
+      if (changed) this.persistDevicePermissions();
+      return;
+    }
+    const persistentKey = `${deviceType}\n${normalizedOrigin}\n${stableKey}`;
+    if (stableKey && this.devicePermissions.delete(persistentKey)) {
+      this.devicePermissionNames.delete(persistentKey);
+      this.persistDevicePermissions();
+    }
+  }
+
+  private revokeStoredDevicePermission(key: string): boolean {
+    if (!this.devicePermissions.delete(key)) return false;
+    const [deviceType, origin, stableKey] = key.split('\n');
+    this.devicePermissionNames.delete(key);
+    for (const [sessionKey, associatedStableKey] of [...this.deviceSessionStableKeys]) {
+      if (
+        associatedStableKey === stableKey &&
+        sessionKey.startsWith(`${deviceType}\n${origin}\n`)
+      ) {
+        this.deviceSessionStableKeys.delete(sessionKey);
+        this.deviceSessionPermissions.delete(sessionKey);
+      }
+    }
+    this.persistDevicePermissions();
+    return true;
+  }
+
+  private resolveChooserTarget(
+    frame?: Electron.WebFrameMain | null,
+    explicitWebContents?: Electron.WebContents | null,
+    allowMissingSourceFallback = false,
+  ): {
+    sourceWebContents?: Electron.WebContents;
+    owner: any;
+    sourceView: any;
+    tabId: number;
+    pageUrl: string;
+  } | null {
+    let sourceWebContents = explicitWebContents || undefined;
+    if (!sourceWebContents && frame) {
+      sourceWebContents = webContents.fromFrame(frame) || undefined;
+    }
+    if (sourceWebContents?.isDestroyed()) return null;
+
+    const windows = Application.instance.windows;
+    let owner = sourceWebContents
+      ? windows.findByBrowserView(sourceWebContents.id)
+      : undefined;
+    let sourceView = owner && sourceWebContents
+      ? owner.viewManager.findViewByWebContentsId(sourceWebContents.id)
+      : undefined;
+
+    if (!sourceView) {
+      if (sourceWebContents && isAppModeWebContents(sourceWebContents)) return null;
+      if (sourceWebContents) {
+        let type = '';
+        try { type = sourceWebContents.getType(); } catch { return null; }
+        if (type !== 'browserView') return null;
+      } else if (!allowMissingSourceFallback) {
+        return null;
+      }
+      owner = [windows.current, windows.lastFocused, ...windows.list].find(
+        (candidate) => candidate?.win && !candidate.win.isDestroyed(),
+      );
+      if (!owner) return null;
+      sourceView = owner.viewManager.getById(owner.viewManager.selectedId);
+    }
+
+    if (!owner || owner.win.isDestroyed() || !sourceView) return null;
+    const tabId = sourceView.id;
+    if (owner.viewManager.selectedId !== tabId) return null;
+    let pageUrl = '';
+    try {
+      pageUrl = frame?.url || sourceWebContents?.getURL() || sourceView.webContents?.getURL() || '';
+    } catch {
+      return null;
+    }
+    return {sourceWebContents, owner, sourceView, tabId, pageUrl};
+  }
+
+  private deviceOriginMapKey(
+    targetSession: Electron.Session,
+    webContentsId: number,
+    permission: string,
+  ): string {
+    const sessionKey = targetSession === this.viewIncognito ? 'view-incognito' : 'view';
+    return `${sessionKey}\n${webContentsId}\n${permission}`;
+  }
+
   public constructor() {
     // BrowserWindow chrome uses the default session; tab BrowserViews use the
     // persist:view sessions below. Theme assets must be available to both.
@@ -638,6 +908,33 @@ export class SessionsService {
     ElectronChromeExtensions.handleCRXProtocol(this.viewIncognito);
 
     this.installLoginPageCookieCleanup();
+    this.loadDevicePermissions();
+    ipcMain.handle('device-permissions-list', () =>
+      [...this.devicePermissions].map((key) => {
+        const [deviceType, origin] = key.split('\n');
+        return {
+          id: key,
+          deviceType,
+          origin,
+          name: this.devicePermissionNames.get(key) || '',
+        };
+      }),
+    );
+    ipcMain.handle('device-permission-revoke', (_event, key: unknown) =>
+      typeof key === 'string' && this.revokeStoredDevicePermission(key),
+    );
+    ipcMain.handle('device-permissions-revoke-site', (_event, host: unknown) => {
+      if (typeof host !== 'string' || !host) return 0;
+      let removed = 0;
+      for (const key of [...this.devicePermissions]) {
+        const origin = key.split('\n')[1] || '';
+        let originHost = '';
+        if (origin === 'file://') originHost = 'file://';
+        else try { originHost = new URL(origin).hostname; } catch {}
+        if (originHost === host && this.revokeStoredDevicePermission(key)) removed++;
+      }
+      return removed;
+    });
 
     // 【调试】根据全局开关 DISABLE_START_WORKER_FOR_SCOPE 决定是否彻底禁用主动
     // 拉起后台 service worker。SW 由多条路径拉起(主进程 startBackgroundWorker、
@@ -876,14 +1173,17 @@ export class SessionsService {
             ...(requested.origins || []),
           ];
           if (permissionNames.length === 0) return true;
+          const t = getMainTranslator(
+            Application.instance.settings?.object?.language,
+          );
           const owner =
             Application.instance.windows.current || Application.instance.windows.lastFocused;
           const options: Electron.MessageBoxOptions = {
             type: 'question',
-            title: '扩展权限请求',
-            message: `${extension.name} 请求以下权限`,
+            title: t('ssExtPermissionRequest'),
+            message: t('ssExtPermissionRequestMsg', {name: extension.name}),
             detail: permissionNames.join('\n'),
-            buttons: ['允许', '拒绝'],
+            buttons: [t('permOptAllow'), t('permOptDeny')],
             defaultId: 1,
             cancelId: 1,
             noLink: true,
@@ -1061,8 +1361,13 @@ export class SessionsService {
     // 抽成 const 以便同时挂到 view 与 viewIncognito(原仅挂 view,无痕 session 权限
     // 请求走 Electron 默认态)。handler 内只用 Application.instance,不依赖 this。
     const permHandler: NonNullable<
-      Parameters<typeof this.view.setPermissionRequestHandler>[0]
-    > = async (webContents, permission, callback, details) => {
+      Parameters<Electron.Session['setPermissionRequestHandler']>[0]
+    > = async (webContents, requestedPermission, callback, rawDetails) => {
+        // The running Chromium exposes `bluetooth` although the installed
+        // Electron declaration omits it. Keep the handler boundary typed and
+        // widen only the two values whose runtime union is newer than the d.ts.
+        const permission: string = requestedPermission;
+        const details: any = rawDetails;
         const window = Application.instance.windows.findByBrowserView(
           webContents.id,
         );
@@ -1124,7 +1429,7 @@ export class SessionsService {
           return;
         }
 
-        if (permission === 'fullscreen') {
+        if (permission === 'fullscreen' || permission === 'display-capture') {
           callback(true);
         } else if (permission === 'bluetooth') {
           // Web Bluetooth:此处放行,授权由设备选择弹窗(select-bluetooth-device)
@@ -1153,7 +1458,7 @@ export class SessionsService {
               permission === 'media' &&
               requestedMediaTypes.length > 1
             ) {
-              const mediaRules = await Promise.all(
+              const mediaRules: any[] = await Promise.all(
                 requestedMediaTypes.map((mediaType: string) =>
                   Application.instance.storage.findOne<any>({
                     scope: 'permissions',
@@ -1249,6 +1554,263 @@ export class SessionsService {
 
     this.view.setPermissionRequestHandler(permHandler);
     this.viewIncognito.setPermissionRequestHandler(permHandler);
+
+    // WebHID performs a permission check before emitting the session-level
+    // `select-hid-device` event. The chooser below is the user authorization
+    // boundary, just as it is in Chrome; no origin-specific allowlist belongs
+    // here.
+    const installPermissionCheckHandler = (targetSession: Electron.Session) => {
+      targetSession.setPermissionCheckHandler((requestingWebContents, permission, requestingOrigin) => {
+        if (!['hid', 'usb', 'serial'].includes(permission)) return false;
+        const origin = this.normalizeDeviceOrigin(requestingOrigin);
+        if (permission === 'serial' && requestingWebContents && origin) {
+          this.pendingDeviceOrigins.set(
+            this.deviceOriginMapKey(targetSession, requestingWebContents.id, permission),
+            origin,
+          );
+        }
+        console.log('[device] permission check', {permission, requestingOrigin, allowed: true});
+        return true;
+      });
+    };
+    installPermissionCheckHandler(this.view);
+    installPermissionCheckHandler(this.viewIncognito);
+    // Electron otherwise keeps device grants in memory only. Persist the same
+    // origin/device relationship Chrome keeps, while leaving incognito grants
+    // session-scoped by using the default handler for that session.
+    (this.view as any).setDevicePermissionHandler((details: any) =>
+      this.hasDevicePermission(details),
+    );
+    (this.view as any).on('hid-device-revoked', (_event: any, details: any) => {
+      if (details?.device) this.revokeDevicePermission(details.origin, 'hid', details.device);
+    });
+    (this.view as any).on('usb-device-revoked', (_event: any, details: any) => {
+      if (details?.device) this.revokeDevicePermission(details.origin, 'usb', details.device);
+    });
+    (this.view as any).on('serial-port-revoked', (_event: any, details: any) => {
+      if (details?.port && details?.origin) this.revokeDevicePermission(details.origin, 'serial', details.port);
+    });
+
+    const mapHidDevice = (device: any) => ({
+      deviceId: String(device?.deviceId || ''),
+      name: String(device?.name || '').trim(),
+      vendorId: Number(device?.vendorId) || 0,
+      productId: Number(device?.productId) || 0,
+      serialNumber: device?.serialNumber,
+    });
+    const mapUsbDevice = (device: any) => ({
+      deviceId: String(device?.deviceId || ''),
+      name: String(device?.productName || device?.manufacturerName || '').trim(),
+      vendorId: Number(device?.vendorId) || 0,
+      productId: Number(device?.productId) || 0,
+      serialNumber: device?.serialNumber,
+    });
+    const mapSerialPort = (port: any) => ({
+      deviceId: String(port?.portId || ''),
+      name: String(port?.displayName || port?.portName || '').trim(),
+      vendorId: Number.parseInt(String(port?.vendorId || ''), 16) || 0,
+      productId: Number.parseInt(String(port?.productId || ''), 16) || 0,
+      serialNumber: port?.serialNumber,
+    });
+
+    const attachHidChooser = (targetSession: Electron.Session) => {
+      targetSession.on(
+        'select-hid-device',
+        (event, details, callback) => {
+          event.preventDefault();
+          const target = this.resolveChooserTarget(details.frame);
+          if (!target) {
+            callback();
+            return;
+          }
+          let rawDevices = Array.isArray(details.deviceList) ? [...details.deviceList] : [];
+          const handle = requestHidDevice(
+            target.owner.win,
+            target.tabId,
+            target.pageUrl,
+            rawDevices.map(mapHidDevice),
+          );
+          const matchesRequest = (frame: Electron.WebFrameMain | null) => {
+            if (!frame || !target.sourceWebContents) return false;
+            return webContents.fromFrame(frame)?.id === target.sourceWebContents.id;
+          };
+          const onAdded = (_event: Electron.Event, added: Electron.HidDeviceAddedDetails) => {
+            if (!matchesRequest(added.frame)) return;
+            rawDevices = rawDevices.filter((item: any) => item.deviceId !== added.device.deviceId);
+            rawDevices.push(added.device);
+            handle.update(rawDevices.map(mapHidDevice));
+          };
+          const onRemoved = (_event: Electron.Event, removed: Electron.HidDeviceRemovedDetails) => {
+            if (!matchesRequest(removed.frame)) return;
+            rawDevices = rawDevices.filter((item: any) => item.deviceId !== removed.device.deviceId);
+            handle.update(rawDevices.map(mapHidDevice));
+          };
+          targetSession.on('hid-device-added', onAdded);
+          targetSession.on('hid-device-removed', onRemoved);
+          handle.promise.then((deviceId) => {
+            targetSession.off('hid-device-added', onAdded);
+            targetSession.off('hid-device-removed', onRemoved);
+            const selected = rawDevices.find((item: any) => item.deviceId === deviceId);
+            if (selected && targetSession === this.view) {
+              this.rememberDevicePermission(target.pageUrl, 'hid', selected);
+            }
+            const callbackContents = target.sourceWebContents || target.sourceView.webContents;
+            if (!callbackContents || callbackContents.isDestroyed()) return;
+            try {
+              callback(selected ? deviceId : undefined);
+            } catch (error) {
+              console.error('[hid] chooser callback failed', error);
+            }
+          });
+        },
+      );
+    };
+    attachHidChooser(this.view);
+    attachHidChooser(this.viewIncognito);
+
+    const attachUsbChooser = (targetSession: Electron.Session) => {
+      (targetSession as any).on('select-usb-device', (event: any, details: any, callback: any) => {
+        event.preventDefault();
+        const target = this.resolveChooserTarget(details.frame);
+        if (!target) {
+          callback();
+          return;
+        }
+        let rawDevices = Array.isArray(details.deviceList) ? [...details.deviceList] : [];
+        const handle = requestHidDevice(target.owner.win, target.tabId, target.pageUrl, rawDevices.map(mapUsbDevice), 'usb');
+        const onAdded = (_event: Electron.Event, device: Electron.USBDevice, contents: Electron.WebContents) => {
+          if (!target.sourceWebContents || contents.id !== target.sourceWebContents.id) return;
+          rawDevices = rawDevices.filter((item: any) => item.deviceId !== device.deviceId);
+          rawDevices.push(device);
+          handle.update(rawDevices.map(mapUsbDevice));
+        };
+        const onRemoved = (_event: Electron.Event, device: Electron.USBDevice, contents: Electron.WebContents) => {
+          if (!target.sourceWebContents || contents.id !== target.sourceWebContents.id) return;
+          rawDevices = rawDevices.filter((item: any) => item.deviceId !== device.deviceId);
+          handle.update(rawDevices.map(mapUsbDevice));
+        };
+        targetSession.on('usb-device-added', onAdded);
+        targetSession.on('usb-device-removed', onRemoved);
+        handle.promise.then((deviceId) => {
+          targetSession.off('usb-device-added', onAdded);
+          targetSession.off('usb-device-removed', onRemoved);
+          const selected = rawDevices.find((item: any) => item.deviceId === deviceId);
+          if (selected && targetSession === this.view) this.rememberDevicePermission(target.pageUrl, 'usb', selected);
+          const callbackContents = target.sourceWebContents || target.sourceView.webContents;
+          if (!callbackContents || callbackContents.isDestroyed()) return;
+          callback(selected ? deviceId : undefined);
+        });
+      });
+    };
+    attachUsbChooser(this.view);
+    attachUsbChooser(this.viewIncognito);
+
+    const attachSerialChooser = (targetSession: Electron.Session) => {
+      (targetSession as any).on('select-serial-port', (event: any, portList: any[], sourceWebContents: Electron.WebContents, callback: any) => {
+        event.preventDefault();
+        const target = this.resolveChooserTarget(null, sourceWebContents);
+        if (!target) {
+          callback('');
+          return;
+        }
+        const originKey = this.deviceOriginMapKey(targetSession, sourceWebContents.id, 'serial');
+        const pageUrl = this.pendingDeviceOrigins.get(originKey) || target.pageUrl;
+        this.pendingDeviceOrigins.delete(originKey);
+        let rawPorts = Array.isArray(portList) ? [...portList] : [];
+        const handle = requestHidDevice(target.owner.win, target.tabId, pageUrl, rawPorts.map(mapSerialPort), 'serial');
+        const onAdded = (_event: Electron.Event, port: Electron.SerialPort, contents: Electron.WebContents) => {
+          if (contents.id !== sourceWebContents.id) return;
+          rawPorts = rawPorts.filter((item: any) => item.portId !== port.portId);
+          rawPorts.push(port);
+          handle.update(rawPorts.map(mapSerialPort));
+        };
+        const onRemoved = (_event: Electron.Event, port: Electron.SerialPort, contents: Electron.WebContents) => {
+          if (contents.id !== sourceWebContents.id) return;
+          rawPorts = rawPorts.filter((item: any) => item.portId !== port.portId);
+          handle.update(rawPorts.map(mapSerialPort));
+        };
+        targetSession.on('serial-port-added', onAdded);
+        targetSession.on('serial-port-removed', onRemoved);
+        handle.promise.then((deviceId) => {
+          targetSession.off('serial-port-added', onAdded);
+          targetSession.off('serial-port-removed', onRemoved);
+          const selected = rawPorts.find((item: any) => item.portId === deviceId);
+          if (selected && targetSession === this.view) this.rememberDevicePermission(pageUrl, 'serial', selected);
+          if (!sourceWebContents.isDestroyed()) callback(selected ? deviceId : '');
+        });
+      });
+    };
+    attachSerialChooser(this.view);
+    attachSerialChooser(this.viewIncognito);
+
+    const attachDisplayCapture = (targetSession: Electron.Session) => {
+      (targetSession as any).setDisplayMediaRequestHandler((request: any, callback: any) => {
+        let completed = false;
+        const complete = (streams: any) => {
+          if (completed) return;
+          completed = true;
+          try { callback(streams); } catch (error) {
+            console.warn('[display-capture] callback failed', error);
+          }
+        };
+        const target = this.resolveChooserTarget(request.frame);
+        if (!target) {
+          complete({});
+          return;
+        }
+        void requestDisplayCapture(
+          target.owner.win,
+          target.tabId,
+          request.securityOrigin || target.pageUrl,
+          request.videoRequested !== false,
+          request.audioRequested === true,
+        ).then((selection) => {
+          const callbackContents = target.sourceWebContents || target.sourceView.webContents;
+          if (!selection || !callbackContents || callbackContents.isDestroyed()) {
+            complete({});
+            return;
+          }
+          complete({
+            video: request.videoRequested === false ? undefined : {id: selection.id, name: selection.name},
+            audio: selection.shareAudio ? 'loopback' : undefined,
+          });
+        }).catch((error) => {
+          console.warn('[display-capture] chooser failed', error);
+          complete({});
+        });
+      }, {useSystemPicker: process.platform === 'darwin'});
+    };
+    attachDisplayCapture(this.view);
+    attachDisplayCapture(this.viewIncognito);
+
+    const attachWebauthnChooser = (targetSession: Electron.Session) => {
+      (targetSession as any).on('select-webauthn-account', async (event: any, details: any, callback: any) => {
+        event.preventDefault();
+        const target = this.resolveChooserTarget(details.frame, null, true);
+        if (!target || !details.accounts?.length) { callback(); return; }
+        const t = getMainTranslator(Application.instance.settings?.object?.language);
+        const labels = details.accounts.map((account: any) => account.displayName || account.name || 'Passkey');
+        try {
+          const result = await dialog.showMessageBox(target.owner.win, {
+            type: 'question',
+            title: t('ssPasskeyChoose'),
+            message: t('ssPasskeyRequest', {
+              site: details.relyingPartyId || t('ssThisSite'),
+            }),
+            buttons: [...labels, t('cancel')],
+            cancelId: labels.length,
+            defaultId: labels.length,
+            noLink: true,
+          });
+          const account = details.accounts[result.response];
+          callback(account?.credentialId);
+        } catch {
+          callback();
+        }
+      });
+    };
+    attachWebauthnChooser(this.view);
+    attachWebauthnChooser(this.viewIncognito);
 
     const getDownloadItem = (
       item: Electron.DownloadItem,
@@ -1533,8 +2095,9 @@ export class SessionsService {
     });
 
     ipcMain.handle('load-extension-from-crx', async (e, id) => {
+      const t = getMainTranslator(Application.instance.settings?.object?.language);
       const dialogRes = await dialog.showOpenDialog({
-        filters: [{name: '选择 crx/zip 扩展程序文件', extensions: ['crx', 'zip']}],
+        filters: [{name: t('ssExtPackageFileFilter'), extensions: ['crx', 'zip']}],
       });
       try {
         if (dialogRes.canceled || !dialogRes.filePaths[0]) return null;
@@ -1554,8 +2117,9 @@ export class SessionsService {
     });
 
     ipcMain.handle('load-extension-from-dir', async (e, id) => {
+      const t = getMainTranslator(Application.instance.settings?.object?.language);
       const dialogRes = await dialog.showOpenDialog({
-        filters: [{name: '选择扩展程序文件夹', extensions: []}],
+        filters: [{name: t('ssExtDirFilter'), extensions: []}],
         properties: ['openDirectory'],
       });
       try {
@@ -1735,6 +2299,36 @@ export class SessionsService {
 
     ipcMain.handle('get-downloads', () => {
       return [...downloads, ...MediaDownloadManager.list()];
+    });
+
+    const getCompletedDownload = (id: unknown) => {
+      if (typeof id !== 'string' || !id || id.length > 128) return null;
+      const item =
+        downloads.find((download) => download.id === id) ||
+        MediaDownloadManager.list().find((download) => download.id === id);
+      return item?.completed && item.savePath ? item : null;
+    };
+
+    ipcMain.handle('download-open', async (_event, id: unknown) => {
+      const item = getCompletedDownload(id);
+      if (!item) return {ok: false};
+      try {
+        const error = await Electron.shell.openPath(item.savePath);
+        return error ? {ok: false, error} : {ok: true};
+      } catch {
+        return {ok: false};
+      }
+    });
+
+    ipcMain.handle('download-show-in-folder', (_event, id: unknown) => {
+      const item = getCompletedDownload(id);
+      if (!item) return {ok: false};
+      try {
+        Electron.shell.showItemInFolder(item.savePath);
+        return {ok: true};
+      } catch {
+        return {ok: false};
+      }
     });
 
     ipcMain.handle('download-clear-history', async () => {
@@ -2650,14 +3244,15 @@ export class SessionsService {
   }
 
   private extensionViewLabel(rawUrl: string) {
+    const t = getMainTranslator(Application.instance.settings?.object?.language);
     try {
       const pathname = decodeURIComponent(new URL(rawUrl).pathname)
         .replace(/^\/+/, '')
         .replace(/\/+$/, '');
-      if (pathname === '_generated_background_page.html') return '背景页';
-      return pathname || '扩展页面';
+      if (pathname === '_generated_background_page.html') return t('ssExtBackgroundPage');
+      return pathname || t('ssExtPage');
     } catch {
-      return '扩展页面';
+      return t('ssExtPage');
     }
   }
 
@@ -2696,10 +3291,11 @@ export class SessionsService {
     const manifest: any = extension.manifest;
     const serviceWorker = manifest?.background?.service_worker;
     if (manifest?.manifest_version === 3 && serviceWorker) {
+      const t = getMainTranslator(Application.instance.settings?.object?.language);
       views.push({
         id: 'service-worker',
         type: 'service-worker',
-        label: '服务工作进程',
+        label: t('ssExtServiceWorker'),
         url: `chrome-extension://${id}/${String(serviceWorker).replace(/^\/+/, '')}`,
       });
     }
@@ -2802,6 +3398,7 @@ export class SessionsService {
     target: Electron.WebContents,
     open: () => void,
   ): Promise<{ok: boolean; message?: string}> {
+    const t = getMainTranslator(Application.instance.settings?.object?.language);
     const key = `${extensionId}:${targetKey}`;
     const existing = this.extensionDevToolsWindows.get(key);
     if (existing && !existing.isDestroyed()) {
@@ -2854,7 +3451,7 @@ export class SessionsService {
         if (!devToolsWindow.isDestroyed()) devToolsWindow.destroy();
         return {
           ok: false,
-          message: '开发者工具窗口创建失败，请重新加载扩展后重试。',
+          message: t('ssDevToolsCreateFailed'),
         };
       }
 
@@ -2875,7 +3472,7 @@ export class SessionsService {
         if (!devToolsWindow.isDestroyed()) devToolsWindow.destroy();
       } catch {}
       console.error('extension devtools window failed', extensionId, targetKey, error);
-      return {ok: false, message: '打开独立开发者工具窗口失败。'};
+      return {ok: false, message: t('ssDevToolsOpenFailed')};
     }
   }
 
@@ -2926,9 +3523,10 @@ export class SessionsService {
   }
 
   public async inspectExtensionTarget(id: string, targetId: string) {
+    const t = getMainTranslator(Application.instance.settings?.object?.language);
     const extension = this.getLoadedExtension(id);
     if (!extension) {
-      return {ok: false, message: '扩展未启用或已经被卸载。'};
+      return {ok: false, message: t('ssExtNotEnabledOrRemoved')};
     }
 
     if (targetId.startsWith('web-contents:')) {
@@ -2937,26 +3535,26 @@ export class SessionsService {
         ? webContents.fromId(contentsId)
         : undefined;
       if (!target || !this.isExtensionWebContents(target, id)) {
-        return {ok: false, message: '该检查视图已经关闭，请稍后重试。'};
+        return {ok: false, message: t('ssInspectViewClosed')};
       }
       return this.openExtensionDevToolsWindow(
         id,
         targetId,
-        `${this.extensionViewLabel(target.getURL())} - 开发者工具`,
+        `${this.extensionViewLabel(target.getURL())} - ${t('shortcutDevTools')}`,
         target,
         () => target.openDevTools({mode: 'detach'}),
       );
     }
 
     if (targetId !== 'service-worker') {
-      return {ok: false, message: '无法识别该检查视图。'};
+      return {ok: false, message: t('ssInspectViewUnknown')};
     }
     const manifest: any = extension.manifest;
     if (
       manifest?.manifest_version !== 3 ||
       !manifest?.background?.service_worker
     ) {
-      return {ok: false, message: '此扩展没有声明服务工作进程。'};
+      return {ok: false, message: t('ssExtNoServiceWorker')};
     }
 
     try {
@@ -2977,15 +3575,14 @@ export class SessionsService {
         if (!(await runningPromise)) {
           return {
             ok: false,
-            message:
-              '服务工作进程在 20 秒内未能启动，开发者工具无法打开。请重新加载扩展后重试。',
+            message: t('ssServiceWorkerStartTimeout'),
           };
         }
       }
       return this.openExtensionDevToolsWindow(
         id,
         'service-worker',
-        `${extension.name || id} - 服务工作进程`,
+        `${extension.name || id} - ${t('ssExtServiceWorker')}`,
         owner,
         () => owner.inspectServiceWorker(),
       );
@@ -2993,7 +3590,7 @@ export class SessionsService {
       console.error('extension service worker inspect failed', id, error);
       return {
         ok: false,
-        message: '打开服务工作进程开发者工具失败，请重新加载扩展后重试。',
+        message: t('ssServiceWorkerDevToolsFailed'),
       };
     }
   }
@@ -3946,15 +4543,18 @@ export class SessionsService {
           ...(requested.origins || []),
         ];
         if (permissionNames.length === 0) return true;
+        const t = getMainTranslator(
+          Application.instance.settings?.object?.language,
+        );
         const owner =
           Application.instance.windows.current ||
           Application.instance.windows.lastFocused;
         const opts: Electron.MessageBoxOptions = {
           type: 'question',
-          title: '扩展权限请求',
-          message: `${extension.name} 请求以下权限`,
+          title: t('ssExtPermissionRequest'),
+          message: t('ssExtPermissionRequestMsg', {name: extension.name}),
           detail: permissionNames.join('\n'),
-          buttons: ['允许', '拒绝'],
+          buttons: [t('permOptAllow'), t('permOptDeny')],
           defaultId: 1,
           cancelId: 1,
           noLink: true,
@@ -4862,8 +5462,9 @@ export class SessionsService {
   ): Promise<IBrowserExtensionImportScan> {
     let customRoot: string | undefined;
     if (selectDirectory) {
+      const t = getMainTranslator(Application.instance.settings?.object?.language);
       const result = await dialog.showOpenDialog({
-        title: '选择 Chrome、Edge 数据目录或 Extensions 目录',
+        title: t('ssChooseBrowserDataDir'),
         properties: ['openDirectory'],
       });
       if (result.canceled || !result.filePaths[0]) {
@@ -4999,7 +5600,10 @@ export class SessionsService {
         path,
         manifest,
       );
-      if (!themeExtension) throw new Error('Chrome 主题清单无有效主题字段');
+      if (!themeExtension) {
+        const t = getMainTranslator(Application.instance.settings?.object?.language);
+        throw new Error(t('ssInvalidThemeManifest'));
+      }
       return themeExtension;
     }
 
@@ -5212,7 +5816,8 @@ export class SessionsService {
         return extension;
       }
 
-      throw new Error('ZIP 中未找到扩展目录或内嵌 crx 文件');
+      const t = getMainTranslator(Application.instance.settings?.object?.language);
+      throw new Error(t('ssZipNoExtensionFound'));
     } finally {
       try {
         await rf(tempRoot);
@@ -5277,7 +5882,10 @@ export class SessionsService {
         installPath,
         manifest,
       );
-      if (!themeExtension) throw new Error('Chrome 主题清单无有效主题字段');
+      if (!themeExtension) {
+        const t = getMainTranslator(Application.instance.settings?.object?.language);
+        throw new Error(t('ssInvalidThemeManifest'));
+      }
       return themeExtension;
     }
 

@@ -29,8 +29,7 @@ export const requestPermission = (
   return new Promise((resolve, reject) => {
     if (
       name === 'unknown' ||
-      (name === 'media' && details.mediaTypes.length === 0) ||
-      name === 'midiSysex'
+      (name === 'media' && (!Array.isArray(details.mediaTypes) || details.mediaTypes.length === 0))
     ) {
       return reject('Unknown permission');
     }

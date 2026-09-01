@@ -11,6 +11,8 @@ import {
 import { Header, SecondaryText, SettingIcon } from '../App/style';
 import store from '../../store';
 import { ipcRenderer } from '~/common/renderer-ipc';
+import { getSettingsTranslator } from '../../utils';
+import type { MessageKey, Translator } from '~/common/i18n';
 import { IPermissionRecord, ITheme } from '~/interfaces';
 import {
   getDomain,
@@ -439,8 +441,8 @@ interface RuleDefinition {
   permission: string;
   mediaTypes: string;
   kind: RuleKind;
-  title: string;
-  description: string;
+  titleKey: MessageKey;
+  descriptionKey: MessageKey;
 }
 
 const RULE_DEFINITIONS: RuleDefinition[] = [
@@ -449,96 +451,96 @@ const RULE_DEFINITIONS: RuleDefinition[] = [
     permission: EXTERNAL_NAVIGATION_PERMISSION,
     mediaTypes: '',
     kind: 'external-navigation',
-    title: '外链跳转',
-    description: '控制此网站跳转到其他主域时是否需要确认。',
+    titleKey: 'permExtNav',
+    descriptionKey: 'permExtNavDesc',
   },
   {
     id: 'all-links',
     permission: OPEN_LINKS_IN_NEW_PAGE_PERMISSION,
     mediaTypes: '',
     kind: 'links',
-    title: '所有跳转在新页面打开',
-    description: '拦截站内链接和表单，让普通页面跳转改为在新标签页打开。',
+    titleKey: 'searchLinksNewPage',
+    descriptionKey: 'permLinksDesc',
   },
   {
     id: 'popup-window',
     permission: OPEN_POPUPS_IN_NEW_TAB_PERMISSION,
     mediaTypes: '',
     kind: 'popup',
-    title: '弹窗在新标签页打开',
-    description: '仅处理网站通过 window.open 等方式请求的独立窗口。',
+    titleKey: 'searchPopupNewTab',
+    descriptionKey: 'permPopupDesc',
   },
   {
     id: 'notifications',
     permission: 'notifications',
     mediaTypes: '',
     kind: 'permission',
-    title: '通知',
-    description: '允许网站发送系统通知。',
+    titleKey: 'permNotifications',
+    descriptionKey: 'permNotificationsDesc',
   },
   {
     id: 'geolocation',
     permission: 'geolocation',
     mediaTypes: '',
     kind: 'permission',
-    title: '位置信息',
-    description: '允许网站获取当前位置。',
+    titleKey: 'permGeolocation',
+    descriptionKey: 'permGeolocationDesc',
   },
   {
     id: 'microphone',
     permission: 'media',
     mediaTypes: JSON.stringify(['audio']),
     kind: 'permission',
-    title: '麦克风',
-    description: '允许网站采集麦克风音频。',
+    titleKey: 'permMicrophone',
+    descriptionKey: 'permMicrophoneDesc',
   },
   {
     id: 'camera',
     permission: 'media',
     mediaTypes: JSON.stringify(['video']),
     kind: 'permission',
-    title: '摄像头',
-    description: '允许网站使用摄像头画面。',
+    titleKey: 'permCamera',
+    descriptionKey: 'permCameraDesc',
   },
   {
     id: 'sensors',
     permission: 'sensors',
     mediaTypes: '',
     kind: 'permission',
-    title: '运动与方向传感器',
-    description: '允许网站读取设备运动与方向信息。',
+    titleKey: 'permSensors',
+    descriptionKey: 'permSensorsDesc',
   },
   {
     id: 'screen-wake-lock',
     permission: 'screen-wake-lock',
     mediaTypes: '',
     kind: 'permission',
-    title: '保持屏幕常亮',
-    description: '允许网站阻止屏幕自动休眠。',
+    titleKey: 'permWakeLock',
+    descriptionKey: 'permWakeLockDesc',
   },
   {
     id: 'open-external',
     permission: 'openExternal',
     mediaTypes: '',
     kind: 'permission',
-    title: '打开外部链接',
-    description: '允许网站唤起系统应用或其他外部协议。',
+    titleKey: 'permOpenExternal',
+    descriptionKey: 'permOpenExternalDesc',
   },
   {
     id: 'ignore-certificate-errors',
     permission: IGNORE_CERTIFICATE_ERRORS_PERMISSION,
     mediaTypes: '',
     kind: 'permission',
-    title: '忽略证书错误',
-    description: '允许访问此站点时跳过证书校验错误。请仅为信任的站点启用。',
+    titleKey: 'permIgnoreCert',
+    descriptionKey: 'permIgnoreCertDesc',
   },
   {
     id: 'selection-panel',
     permission: SELECTION_PANEL_PERMISSION,
     mediaTypes: '',
     kind: 'selection',
-    title: '文本选择面板',
-    description: '控制在此网站选中文本后是否显示操作面板。',
+    titleKey: 'permSelectionPanel',
+    descriptionKey: 'permSelectionPanelDesc',
   },
 ];
 
@@ -593,40 +595,45 @@ const ruleValue = (record?: IPermissionRecord): RuleValue => {
   return record.type === 1 ? 'allow' : record.type === 3 ? 'ask' : 'deny';
 };
 
-const optionsFor = (kind: RuleKind) => {
+interface RuleOption {
+  value: RuleValue;
+  labelKey: MessageKey;
+}
+
+const optionsFor = (kind: RuleKind): RuleOption[] => {
   if (kind === 'external-navigation') {
     return [
-      { value: 'default', label: '默认（允许）' },
-      { value: 'allow', label: '允许' },
-      { value: 'ask', label: '询问' },
-      { value: 'deny', label: '拒绝' },
+      { value: 'default', labelKey: 'permOptDefaultAllow' },
+      { value: 'allow', labelKey: 'permOptAllow' },
+      { value: 'ask', labelKey: 'permOptAsk' },
+      { value: 'deny', labelKey: 'permOptDeny' },
     ];
   }
   if (kind === 'links') {
     return [
-      { value: 'default', label: '默认' },
-      { value: 'allow', label: '新页面打开' },
-      { value: 'deny', label: '当前页面打开' },
+      { value: 'default', labelKey: 'permOptDefault' },
+      { value: 'allow', labelKey: 'permOptNewPage' },
+      { value: 'deny', labelKey: 'permOptSamePage' },
     ];
   }
   if (kind === 'popup') {
     return [
-      { value: 'default', label: '跟随全局' },
-      { value: 'allow', label: '新标签页' },
-      { value: 'deny', label: '独立窗口' },
+      { value: 'default', labelKey: 'permOptFollowGlobal' },
+      { value: 'allow', labelKey: 'permOptNewTab' },
+      { value: 'deny', labelKey: 'permOptWindow' },
     ];
   }
   if (kind === 'selection') {
     return [
-      { value: 'default', label: '默认' },
-      { value: 'allow', label: '显示' },
-      { value: 'deny', label: '隐藏' },
+      { value: 'default', labelKey: 'permOptDefault' },
+      { value: 'allow', labelKey: 'show' },
+      { value: 'deny', labelKey: 'hide' },
     ];
   }
   return [
-    { value: 'default', label: '使用默认设置' },
-    { value: 'allow', label: '允许' },
-    { value: 'deny', label: '拒绝' },
+    { value: 'default', labelKey: 'permOptUseDefault' },
+    { value: 'allow', labelKey: 'permOptAllow' },
+    { value: 'deny', labelKey: 'permOptDeny' },
   ];
 };
 
@@ -639,8 +646,36 @@ const recordQuery = (item: IPermissionRecord) =>
         mediaTypes: item.mediaTypes || '',
       };
 
+interface IDevicePermissionRecord {
+  id: string;
+  origin: string;
+  deviceType: 'hid' | 'usb' | 'serial';
+  name: string;
+}
+
+const deviceRecordHost = (item: IDevicePermissionRecord) => {
+  if (item.origin === 'file://') return 'file://';
+  try { return normalizeWebsite(new URL(item.origin).hostname); } catch { return ''; }
+};
+
+const deviceTypeKey = (
+  deviceType: IDevicePermissionRecord['deviceType'],
+): MessageKey =>
+  deviceType === 'usb'
+    ? 'permDeviceUsb'
+    : deviceType === 'serial'
+    ? 'permDeviceSerial'
+    : 'permDeviceHid';
+
+const deviceTypeText = (
+  deviceType: IDevicePermissionRecord['deviceType'],
+  t: Translator,
+) => t(deviceTypeKey(deviceType));
+
 export const Permissions = observer(() => {
+  const t = getSettingsTranslator();
   const [list, setList] = React.useState<IPermissionRecord[]>([]);
+  const [devicePermissions, setDevicePermissions] = React.useState<IDevicePermissionRecord[]>([]);
   const [selectedHost, setSelectedHost] = React.useState(() =>
     normalizeWebsite(
       new URLSearchParams(window.location.search).get('site') || '',
@@ -652,11 +687,12 @@ export const Permissions = observer(() => {
   const [busyId, setBusyId] = React.useState('');
 
   const load = React.useCallback(async () => {
-    const res = await ipcRenderer.invoke('storage-get', {
-      scope: 'permissions',
-      query: {},
-    });
+    const [res, devices] = await Promise.all([
+      ipcRenderer.invoke('storage-get', {scope: 'permissions', query: {}}),
+      ipcRenderer.invoke('device-permissions-list'),
+    ]);
     setList(Array.isArray(res) ? res : []);
+    setDevicePermissions(Array.isArray(devices) ? devices : []);
   }, []);
 
   React.useEffect(() => {
@@ -664,22 +700,29 @@ export const Permissions = observer(() => {
   }, [load]);
 
   const domains = React.useMemo(() => {
-    const grouped = new Map<string, IPermissionRecord[]>();
+    const grouped = new Map<string, number>();
     for (const item of list) {
       const host = recordHost(item);
       if (!host) continue;
-      const records = grouped.get(host) || [];
-      records.push(item);
-      grouped.set(host, records);
+      grouped.set(host, (grouped.get(host) || 0) + 1);
+    }
+    for (const item of devicePermissions) {
+      const host = deviceRecordHost(item);
+      if (!host) continue;
+      grouped.set(host, (grouped.get(host) || 0) + 1);
     }
     return [...grouped.entries()].sort(([a], [b]) =>
       a.localeCompare(b, 'zh-CN'),
     );
-  }, [list]);
+  }, [list, devicePermissions]);
 
   const siteRecords = React.useMemo(
     () => list.filter((item) => recordHost(item) === selectedHost),
     [list, selectedHost],
+  );
+  const siteDevicePermissions = React.useMemo(
+    () => devicePermissions.filter((item) => deviceRecordHost(item) === selectedHost),
+    [devicePermissions, selectedHost],
   );
 
   const removeRecords = async (records: IPermissionRecord[]) => {
@@ -702,7 +745,7 @@ export const Permissions = observer(() => {
     event.preventDefault();
     const host = normalizeWebsite(website);
     if (!host) {
-      setFormError('请输入有效的网站域名或网址');
+      setFormError(t('permSiteInvalid'));
       return;
     }
     setSelectedHost(host);
@@ -789,9 +832,20 @@ export const Permissions = observer(() => {
     setBusyId('__delete-site__');
     try {
       await removeRecords(siteRecords);
+      await ipcRenderer.invoke('device-permissions-revoke-site', selectedHost);
       ipcRenderer.send('selection-panel-rule-updated', selectedHost, false);
       await load();
       setSelectedHost('');
+    } finally {
+      setBusyId('');
+    }
+  };
+
+  const onRemoveDevicePermission = async (item: IDevicePermissionRecord) => {
+    setBusyId(item.id);
+    try {
+      await ipcRenderer.invoke('device-permission-revoke', item.id);
+      await load();
     } finally {
       setBusyId('');
     }
@@ -805,7 +859,7 @@ export const Permissions = observer(() => {
         <DetailHeader>
           <IconButton
             theme={store.theme}
-            title="返回网站列表"
+            title={t('permBackToSites')}
             onClick={() => setSelectedHost('')}
           >
             <ArrowLeft size={18} weight="bold" />
@@ -813,16 +867,14 @@ export const Permissions = observer(() => {
           <DetailTitle theme={store.theme}>{selectedHost}</DetailTitle>
           <DangerButton
             theme={store.theme}
-            disabled={siteRecords.length === 0 || busyId !== ''}
+            disabled={(siteRecords.length === 0 && siteDevicePermissions.length === 0) || busyId !== ''}
             onClick={onDeleteSite}
           >
-            删除此网站设置
+            {t('permDeleteSite')}
           </DangerButton>
         </DetailHeader>
         <Intro>
-          <SecondaryText>
-            分别配置页面跳转、窗口弹出和网站能力。未设置的项目使用全局或浏览器默认行为。
-          </SecondaryText>
+          <SecondaryText>{t('permDetailIntro')}</SecondaryText>
         </Intro>
 
         <Card theme={store.theme}>
@@ -831,28 +883,27 @@ export const Permissions = observer(() => {
               const record = siteRecords.find((item) =>
                 matchesDefinition(item, definition),
               );
+              const ruleTitle = t(definition.titleKey);
               return (
                 <RuleRow key={definition.id} theme={store.theme}>
                   <RuleMain>
-                    <RuleTitle theme={store.theme}>
-                      {definition.title}
-                    </RuleTitle>
+                    <RuleTitle theme={store.theme}>{ruleTitle}</RuleTitle>
                     <RuleDescription theme={store.theme}>
-                      {definition.description}
+                      {t(definition.descriptionKey)}
                     </RuleDescription>
                   </RuleMain>
                   <RuleSelect
                     theme={store.theme}
                     value={ruleValue(record)}
                     disabled={busyId !== ''}
-                    aria-label={`${definition.title}设置`}
+                    aria-label={t('permRuleAria', { rule: ruleTitle })}
                     onChange={(event) =>
                       onSetRule(definition, event.target.value as RuleValue)
                     }
                   >
                     {optionsFor(definition.kind).map((option) => (
                       <option key={option.value} value={option.value}>
-                        {option.label}
+                        {t(option.labelKey)}
                       </option>
                     ))}
                   </RuleSelect>
@@ -870,24 +921,49 @@ export const Permissions = observer(() => {
                     {getPermissionText(item.permission)}
                   </RuleTitle>
                   <RuleDescription theme={store.theme}>
-                    该权限由网站请求后保存，可恢复为默认设置。
+                    {t('permUnknownDesc')}
                   </RuleDescription>
                 </RuleMain>
                 <RuleSelect
                   theme={store.theme}
                   value={ruleValue(item)}
                   disabled={busyId !== ''}
-                  aria-label={`${getPermissionText(item.permission)}设置`}
+                  aria-label={t('permRuleAria', {
+                    rule: getPermissionText(item.permission),
+                  })}
                   onChange={(event) =>
                     onSetUnknownRule(item, event.target.value as RuleValue)
                   }
                 >
                   {optionsFor('permission').map((option) => (
                     <option key={option.value} value={option.value}>
-                      {option.label}
+                      {t(option.labelKey)}
                     </option>
                   ))}
                 </RuleSelect>
+              </RuleRow>
+            ))}
+
+            {siteDevicePermissions.map((item) => (
+              <RuleRow key={item.id} theme={store.theme}>
+                <RuleMain>
+                  <RuleTitle theme={store.theme}>
+                    {item.name || deviceTypeText(item.deviceType, t)}
+                  </RuleTitle>
+                  <RuleDescription theme={store.theme}>
+                    {t('permDeviceAllowed', {
+                      device: deviceTypeText(item.deviceType, t),
+                    })}
+                  </RuleDescription>
+                </RuleMain>
+                <DangerButton
+                  type="button"
+                  theme={store.theme}
+                  disabled={busyId !== ''}
+                  onClick={() => onRemoveDevicePermission(item)}
+                >
+                  {t('remove')}
+                </DangerButton>
               </RuleRow>
             ))}
           </RuleList>
@@ -898,17 +974,18 @@ export const Permissions = observer(() => {
 
   return (
     <Wrapper>
-      <SectionTitle theme={store.theme}>全局设置</SectionTitle>
+      <SectionTitle theme={store.theme}>{t('permGlobalSection')}</SectionTitle>
       <Card theme={store.theme}>
         <SettingRow onClick={onToggleGlobal}>
           <SettingIcon tone="orange">
             <ArrowSquareOut size={19} weight="fill" />
           </SettingIcon>
           <SettingMain>
-            <SettingTitle theme={store.theme}>弹窗在新标签页打开</SettingTitle>
+            <SettingTitle theme={store.theme}>
+              {t('searchPopupNewTab')}
+            </SettingTitle>
             <SettingDescription theme={store.theme}>
-              仅拦截网站通过 window.open
-              等方式请求的独立窗口，不改变普通页面跳转。
+              {t('permGlobalPopupDesc')}
             </SettingDescription>
           </SettingMain>
           <Switch value={store.settings.openPopupsInNewTab} />
@@ -917,7 +994,9 @@ export const Permissions = observer(() => {
 
       <Section>
         <SectionHeader>
-          <SectionTitle theme={store.theme}>网站权限</SectionTitle>
+          <SectionTitle theme={store.theme}>
+            {t('searchSitePermissions')}
+          </SectionTitle>
           <TextButton
             type="button"
             onClick={() => {
@@ -926,7 +1005,7 @@ export const Permissions = observer(() => {
             }}
           >
             <Plus size={15} weight="bold" />
-            添加权限
+            {t('permAddPermission')}
           </TextButton>
         </SectionHeader>
         <Card theme={store.theme}>
@@ -937,15 +1016,15 @@ export const Permissions = observer(() => {
                   autoFocus
                   theme={store.theme}
                   value={website}
-                  placeholder="输入域名或网址，例如 example.com"
-                  aria-label="网站域名或网址"
+                  placeholder={t('permSiteInputPlaceholder')}
+                  aria-label={t('permSiteInputAria')}
                   onChange={(event) => {
                     setWebsite(event.target.value);
                     setFormError('');
                   }}
                 />
                 <TextButton type="submit" disabled={!website.trim()}>
-                  继续
+                  {t('permContinue')}
                 </TextButton>
                 <QuietButton
                   type="button"
@@ -956,7 +1035,7 @@ export const Permissions = observer(() => {
                     setFormError('');
                   }}
                 >
-                  取消
+                  {t('cancel')}
                 </QuietButton>
               </AddForm>
               {formError ? (
@@ -966,10 +1045,10 @@ export const Permissions = observer(() => {
           ) : null}
 
           {domains.length === 0 ? (
-            <Empty theme={store.theme}>还没有单独配置的网站</Empty>
+            <Empty theme={store.theme}>{t('permNoSites')}</Empty>
           ) : (
             <SiteList>
-              {domains.map(([host, records]) => (
+              {domains.map(([host, recordCount]) => (
                 <SiteEntry
                   key={host}
                   theme={store.theme}
@@ -978,7 +1057,7 @@ export const Permissions = observer(() => {
                   <SiteMain>
                     <SiteName>{host}</SiteName>
                     <SiteMeta theme={store.theme}>
-                      已配置 {records.length} 项权限
+                      {t('permSiteMeta', { count: recordCount })}
                     </SiteMeta>
                   </SiteMain>
                   <CaretRight size={18} weight="bold" />

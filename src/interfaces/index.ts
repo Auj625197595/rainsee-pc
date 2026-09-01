@@ -15,4 +15,6 @@ export * from './bounds';
 export * from './extensions';
 export * from './permission';
 export * from './bluetooth';
+export * from './hid';
+export * from './display-capture';
 export * from './chrome-theme';

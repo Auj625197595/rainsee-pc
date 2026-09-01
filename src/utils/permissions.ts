@@ -57,6 +57,10 @@ export const getPermissionText = (permission: string) => {
     return '检测用户是否处于空闲状态';
   }
 
+  if (permission === 'midiSysex') {
+    return '使用 MIDI 系统专有消息';
+  }
+
   return '获取' + permission + '权限';
 };
 
