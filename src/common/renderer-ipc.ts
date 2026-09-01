@@ -1,4 +1,5 @@
 import type { IpcRenderer } from 'electron';
+import type {RainseeWebUIBridge} from './webui-bridge-policy';
 
 // Renderer pages with `nodeIntegration: false` (settings, history, bookmarks,
 // newtab, …) have no synchronous `require` on the page window. A static
@@ -17,8 +18,18 @@ import type { IpcRenderer } from 'electron';
 
 let cached: IpcRenderer | undefined;
 
+const bridgeListeners = new Map<
+  string,
+  Map<Function, {unsubscribe: () => void; wrapped: Function}>
+>();
+
+const getWebUIBridge = (): RainseeWebUIBridge | undefined => {
+  const bridge = (globalThis as any).rainseeWebUI;
+  return bridge && typeof bridge.invoke === 'function' ? bridge : undefined;
+};
+
 const getInvokeBridge = () => {
-  const invoke = (globalThis as any).ipcInvoke;
+  const invoke = getWebUIBridge()?.invoke;
   return typeof invoke === 'function' ? invoke : undefined;
 };
 
@@ -60,10 +71,56 @@ export const ipcRenderer: IpcRenderer = new Proxy({} as IpcRenderer, {
       return typeof value === 'function' ? value.bind(real) : value;
     }
 
-    // Sandboxed webui pages (settings/history/bookmarks/newtab) never receive
-    // the nested `electron` object across the world boundary, so `real` is
-    // undefined there. The view preload instead injects plain `ipcInvoke` /
-    // `ipcSend` bridge functions onto the page window — use those.
+    const bridge = getWebUIBridge();
+    if (bridge) {
+      if (prop === 'invoke') return bridge.invoke.bind(bridge);
+      if (prop === 'send') return bridge.send.bind(bridge);
+      if (prop === 'on' || prop === 'once') {
+        return (channel: string, callback: Function) => {
+          const wrapped = (...payload: any[]) => {
+            if (prop === 'once') {
+              const record = bridgeListeners.get(channel)?.get(callback);
+              record?.unsubscribe();
+              bridgeListeners.get(channel)?.delete(callback);
+            }
+            callback({}, ...payload);
+          };
+          const unsubscribe = (bridge.on as any)(channel, wrapped) as () => void;
+          let records = bridgeListeners.get(channel);
+          if (!records) {
+            records = new Map();
+            bridgeListeners.set(channel, records);
+          }
+          records.get(callback)?.unsubscribe();
+          records.set(callback, {unsubscribe, wrapped});
+          return ipcRenderer;
+        };
+      }
+      if (prop === 'removeListener') {
+        return (channel: string, callback: Function) => {
+          const records = bridgeListeners.get(channel);
+          records?.get(callback)?.unsubscribe();
+          records?.delete(callback);
+          if (records?.size === 0) bridgeListeners.delete(channel);
+          return ipcRenderer;
+        };
+      }
+      if (prop === 'removeAllListeners') {
+        return (channel?: string) => {
+          const channels = channel ? [channel] : Array.from(bridgeListeners.keys());
+          for (const name of channels) {
+            const records = bridgeListeners.get(name);
+            records?.forEach((record) => record.unsubscribe());
+            bridgeListeners.delete(name);
+          }
+          return ipcRenderer;
+        };
+      }
+    }
+
+    // Sandboxed WebUI pages expose only rainseeWebUI. The proxy keeps the
+    // existing ipcRenderer-shaped call sites while routing every operation
+    // through the host/channel policy in preload.
     if (prop === 'invoke') {
       const invoke = getInvokeBridge();
       if (invoke) return invoke;
@@ -78,12 +135,12 @@ export const ipcRenderer: IpcRenderer = new Proxy({} as IpcRenderer, {
             'ipcRenderer.invoke is not available after preload initialization',
           );
         }
-        return fn(...args);
+        return (fn as (...callArgs: any[]) => any)(...args);
       };
     }
 
     if (prop === 'send') {
-      const fn = (globalThis as any).ipcSend;
+      const fn = getWebUIBridge()?.send;
       if (typeof fn === 'function') return fn;
     }
 

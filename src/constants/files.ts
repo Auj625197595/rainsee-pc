@@ -1,21 +1,17 @@
 import { DEFAULT_SETTINGS } from './settings';
+export {
+  ERROR_PROTOCOL,
+  NETWORK_ERROR_HOST,
+  WEBUI_BASE_URL,
+  WEBUI_PROTOCOL,
+  WEBUI_URL_SUFFIX,
+} from './protocols';
+import {
+  WEBUI_BASE_URL,
+  WEBUI_PROTOCOL,
+} from './protocols';
 
 export const DIRECTORIES = ['adblock', 'extensions', 'storage'];
-
-export const WEBUI_PROTOCOL = 'yjllq';
-
-export const ERROR_PROTOCOL = 'yjllq-error';
-
-export const NETWORK_ERROR_HOST = 'network-error';
-
-export const WEBUI_BASE_URL =
-  process.env.NODE_ENV === 'development'
-    ? 'http://localhost:4444/'
-    : `${WEBUI_PROTOCOL}://`;
-
-export const WEBUI_URL_SUFFIX = WEBUI_BASE_URL.startsWith('http')
-  ? '.html'
-  : '';
 
 // koodoreader 支持的电子书格式(扩展名小写,无点)。
 // router/index.tsx 为每种格式注册了 /<ext> 路由(全部指向 HtmlReader),
