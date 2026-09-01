@@ -425,7 +425,13 @@ export const injectExtensionAPIs = () => {
     const connectionId = (contextBridge as any).executeInMainWorld({
       func: () => crypto.randomUUID(),
     })
-    invokeExtension(extensionId, 'runtime.connectNative', {}, connectionId, application)
+    // The main-process handler reports launch/configuration failures through
+    // the Port disconnect event. Also handle an IPC rejection here: otherwise
+    // a popup keeps a permanently buffered NativePort and every download waits
+    // for its request timeout with no visible feedback.
+    void invokeExtensionRaw(extensionId, 'runtime.connectNative', {}, connectionId, application).catch(
+      () => disconnect(),
+    )
     const onMessage = (_event: Electron.IpcRendererEvent, message: any) => {
       receive(message)
     }
@@ -1527,7 +1533,7 @@ export const injectExtensionAPIs = () => {
         shouldInject: () => true,
         factory: (base) => {
           // navigator.language reflects the app UI language (Chromium honors the
-          // forced --lang=zh-CN), so it's the correct immediate fallback when the
+          // app --lang preference), so it's the correct immediate fallback when the
           // catalog hasn't resolved yet — instead of hard-coding en-US.
           const navLang =
             (typeof navigator !== 'undefined' && navigator.language) || 'en-US'
@@ -3750,14 +3756,26 @@ export const injectExtensionAPIs = () => {
         // inbound event bridge in place. The factory has already captured the
         // original event objects, so listeners registered before this patch
         // remain reachable through the native portbroker merge.
-        if (!landed && apiName === 'runtime' && isWorkerContext) {
+        if (!landed && apiName === 'runtime') {
           const target = (chrome as any).runtime
-          for (const prop of [
-            'onMessage',
-            'onConnect',
-            'onMessageExternal',
-            'onConnectExternal',
-          ]) {
+          // Electron exposes chrome.runtime as a non-configurable native
+          // object in some extension pages (notably popups). In that case the
+          // whole namespace cannot be replaced, but the native
+          // connectNative/sendNativeMessage implementations are disabled and
+          // must be replaced with our IPC-backed implementations. Keep the
+          // regular messaging methods native and only patch the methods that
+          // are owned by this hosted runtime layer.
+          const runtimeMethods = [
+            'connectNative',
+            'sendNativeMessage',
+            'openOptionsPage',
+            'getPlatformInfo',
+          ]
+          const runtimeEvents = isWorkerContext
+            ? ['onMessage', 'onConnect', 'onMessageExternal', 'onConnectExternal']
+            : []
+          let runtimeNativePatched = false
+          for (const prop of [...runtimeMethods, ...runtimeEvents]) {
             const replacement = (value as any)?.[prop]
             if (!target || replacement == null) continue
             try {
@@ -3767,12 +3785,52 @@ export const injectExtensionAPIs = () => {
                 enumerable: true,
                 writable: true,
               })
+              if (prop === 'connectNative' && (target as any)[prop] === replacement) {
+                runtimeNativePatched = true
+              }
             } catch {
               try {
                 target[prop] = replacement
+                if (prop === 'connectNative' && (target as any)[prop] === replacement) {
+                  runtimeNativePatched = true
+                }
               } catch {
                 /* locked native event — readiness remains false */
               }
+            }
+          }
+          // This marker is intentionally narrower than __crxPatched. The
+          // latter records that injection completed, while a non-configurable
+          // native runtime may still reject every hosted method. Sandboxed
+          // extension-page shims use this marker to decide whether they must
+          // install their own fallback.
+          try {
+            Object.defineProperty(target, '__crxRuntimePatched', {
+              value: runtimeNativePatched,
+              configurable: true,
+              enumerable: false,
+              writable: true,
+            })
+          } catch {
+            try {
+              target.__crxRuntimePatched = runtimeNativePatched
+            } catch {
+              /* best effort */
+            }
+          }
+        } else if (apiName === 'runtime' && landed) {
+          try {
+            Object.defineProperty((chrome as any).runtime, '__crxRuntimePatched', {
+              value: true,
+              configurable: true,
+              enumerable: false,
+              writable: true,
+            })
+          } catch {
+            try {
+              ;(chrome as any).runtime.__crxRuntimePatched = true
+            } catch {
+              /* best effort */
             }
           }
         }

@@ -1,10 +1,25 @@
-import {clipboard, contextBridge, ipcRenderer, nativeImage, shell, webFrame, webUtils} from 'electron';
-import * as fs from 'fs';
-import * as path from 'path';
+import {
+  clipboard,
+  contextBridge,
+  ipcRenderer,
+  webFrame,
+  webUtils,
+} from './sandbox-bridge';
 
 import AutoComplete from './models/auto-complete';
 import {getTheme} from '~/utils/themes';
-import {ERROR_PROTOCOL, WEBUI_BASE_URL} from '~/constants/files';
+import {WEBUI_BASE_URL} from '~/constants/protocols';
+import {createTranslator, resolveAppLanguage} from '~/common/i18n';
+import {
+  AllowedWebUIEventChannel,
+  AllowedWebUIInvokeChannel,
+  AllowedWebUISendChannel,
+  getTrustedWebUIHost,
+  isAllowedWebUIChannelForHost,
+  WebUIContext,
+  RainseeWebUIErrorBridge,
+  WebUIChannelOperation,
+} from '~/common/webui-bridge-policy';
 import './selection-translate';
 import './profile-fingerprint';
 
@@ -13,6 +28,11 @@ import './profile-fingerprint';
 // `process` 在运行期将解析失败。因此本文件所有运行期 `process` 引用统一改走
 // __nodeProcess(webpack 的编译期 process.env.* 替换不受影响)。
 const __nodeProcess = process;
+// Capture the real document identity before page code can replace shared-world
+// globals such as URL. A cross-document navigation reruns the preload and gets
+// a fresh host; same-document navigation cannot change the origin.
+const preloadDocumentUrl = window.location.href;
+const trustedWebUIHost = getTrustedWebUIHost(preloadDocumentUrl);
 
 // ===== 对齐 Chrome 语义:普通网页上下文不得存在 Node 全局 =====================
 // Electron 在 sandbox:false + nodeIntegration:false 的渲染器里仍会给页面世界
@@ -25,18 +45,15 @@ const __nodeProcess = process;
 // js-sha256 等带 `process.type != 'renderer'` 防线的库不受影响,恰说明泄漏
 // 面 = window.process。
 //
-// 范围:仅普通网页(http/https/file 等远程内容)。例外:
-//   - 内部页(WEBUI/yjllq-error/about:blank)——打包产物自身可能探测环境;
+// 范围:所有标签页。唯一例外:
 //   - koodoreader(yjllq://web.koodoreader.com)——它依赖 window.process 判定
 //     isElectron 读本地文件(见下方 koodo-preload 段,会重设回来)。
 // 本 preload 自身一律改用顶部捕获的 __nodeProcess,不依赖页面全局。
 try {
   const href = window.location.href;
-  const isChromeSemanticExempt =
-    window.location.protocol === 'yjllq:' ||
-    href.startsWith(WEBUI_BASE_URL) ||
-    window.location.protocol === `${ERROR_PROTOCOL}:` ||
-    href === 'about:blank';
+  const isChromeSemanticExempt = href.startsWith(
+    'yjllq://web.koodoreader.com/',
+  );
   if (!isChromeSemanticExempt) {
     // window 上逐个 delete(configurable 属性可直接删;不可配置则 defineProperty
     // 覆写为 undefined,两种情况下 `typeof process` 均回到 'undefined')。
@@ -168,6 +185,50 @@ ipcRenderer.on('credentials-reload-page', () => {
   AutoComplete.loadForms();
 });
 
+let previousPickerInterface: unknown;
+let pickerBridgeActive = false;
+const disableAdblockPickerBridge = () => {
+  if (!pickerBridgeActive) return;
+  pickerBridgeActive = false;
+  if (previousPickerInterface === undefined) {
+    delete (window as any).JSInterface;
+  } else {
+    (window as any).JSInterface = previousPickerInterface;
+  }
+  previousPickerInterface = undefined;
+};
+
+ipcRenderer.on('adblock-picker-bridge-enable', () => {
+  if (!pickerBridgeActive) {
+    previousPickerInterface = (window as any).JSInterface;
+  }
+  pickerBridgeActive = true;
+  const normalizeRule = (value: unknown) =>
+    typeof value === 'string' && value.length <= 64 * 1024 ? value : '';
+  (window as any).JSInterface = {
+    onAdblockPickerEnter: () =>
+      ipcRenderer.send(`adblock-picker-state-${windowId}`, 'enter'),
+    onAdblockPickerCancel: () => {
+      ipcRenderer.send(`adblock-picker-state-${windowId}`, 'cancel');
+      disableAdblockPickerBridge();
+    },
+    onAdblockPickerSubmit: (rule: unknown) => {
+      ipcRenderer.send(
+        `adblock-picker-state-${windowId}`,
+        'submit',
+        normalizeRule(rule),
+      );
+      disableAdblockPickerBridge();
+    },
+    saveGeneratedAdblockRule: (rule: unknown) =>
+      ipcRenderer.send(
+        `save-adblock-rule-${windowId}`,
+        normalizeRule(rule),
+      ),
+  };
+});
+window.addEventListener('pagehide', disableAdblockPickerBridge);
+
 const nativeBlankPopupId = Number(
   __nodeProcess.argv
     .find((argument) => argument.startsWith('--rainsee-native-blank-popup='))
@@ -184,10 +245,13 @@ const isNativeBlankPopupBase = __nodeProcess.argv.includes(
 // renderer-side state even for native crashes.
 const reportRendererDiagnostic = (phase: string, detail = '') => {
   try {
+    const diagnosticUrl = new URL(window.location.href);
+    diagnosticUrl.search = '';
+    diagnosticUrl.hash = '';
     ipcRenderer.send('renderer-diagnostic', {
       phase,
       detail: String(detail || '').slice(0, 400),
-      url: window.location.href,
+      url: diagnosticUrl.toString(),
       readyState: document.readyState,
       visibility: document.visibilityState,
     });
@@ -294,12 +358,24 @@ window.addEventListener(
   () => handlePopupBridge('web-page-popup-close'),
   true,
 );
+window.addEventListener(
+  '__rainsee_window_close__',
+  () => {
+    if (isNativeBlankPopupOverlay) {
+      ipcRenderer.send('native-blank-popup-close', nativeBlankPopupId);
+    } else if (!isNativeBlankPopupBase) {
+      ipcRenderer.send('web-page-window-close');
+    }
+  },
+  true,
+);
 
 void webFrame.executeJavaScript(
   `(() => {
     if (window.__rainseeWindowOpenWrapped) return;
     window.__rainseeWindowOpenWrapped = true;
     const nativeWindowOpen = window.open.bind(window);
+    const nativeWindowClose = window.close.bind(window);
     let sequence = 0;
     const openerTabId = ${JSON.stringify(tabId)};
     const tokenAttr = ${JSON.stringify(POPUP_TOKEN_ATTR)};
@@ -315,6 +391,11 @@ void webFrame.executeJavaScript(
       root.removeAttribute(tokenAttr);
       root.removeAttribute(resultAttr);
       return handled;
+    };
+
+    window.close = function() {
+      window.dispatchEvent(new Event('__rainsee_window_close__'));
+      if (${isNativeBlankPopupBase ? 'true' : 'false'}) nativeWindowClose();
     };
 
     window.open = function(url, target, features) {
@@ -348,215 +429,156 @@ void webFrame.executeJavaScript(
   true,
 );
 
-const electronRenderer = {
-  clipboard,
-  ipcRenderer,
-  nativeImage,
-  shell,
-  webFrame,
-  webUtils,
+type WebUIListener = (...payload: any[]) => void;
+
+const isNewTabWebUI = trustedWebUIHost === 'newtab';
+const isSettingsWebUI = trustedWebUIHost === 'settings';
+const isExtensionsWebUI = trustedWebUIHost === 'extensions';
+
+const sanitizeWebUISettings = (value: unknown) => {
+  if (isSettingsWebUI || !value || typeof value !== 'object') return value;
+  const source = value as Record<string, any>;
+  const customLlmConfig = source.customLlmConfig;
+  return {
+    ...source,
+    downloadsPath: '',
+    downloaderPath: '',
+    customLlmConfig:
+      customLlmConfig && typeof customLlmConfig === 'object'
+        ? {...customLlmConfig, apiKey: ''}
+        : customLlmConfig,
+  };
 };
 
-const searchAnnotatorAnalyze = (payload: any) =>
-  ipcRenderer.invoke('search-annotator-analyze', payload);
+// Keep initial page data behind the same bridge as every other system call.
+// The object is frozen so shared-context pages cannot replace bridge metadata.
+const webUIContext: WebUIContext = Object.freeze({
+  settings: sanitizeWebUISettings(settings),
+  windowId,
+  appVersion: __nodeProcess.env.VERSION_CODE,
+  // 开源版:无账号/设备参数体系,仅保留无痕标记供本地新标签页判断。
+  ...(isNewTabWebUI
+    ? {
+        isIncognito: !!ipcRenderer.sendSync('is-newtab-incognito'),
+      }
+    : {}),
+});
 
-// 搜索标注气泡右上角齿轮 → 打开 设置-地址栏。
-const searchAnnotatorOpenSettings = () =>
-  ipcRenderer.invoke('search-annotator-open-settings');
-
-const canExposeNodeModules = (url: string) =>
-  url.startsWith('yjllq://web.koodoreader.com/');
-
-const canExposeRequire = (url: string) =>
-  canExposeNodeModules(url) ||
-  url.startsWith(WEBUI_BASE_URL) ||
-  url === 'about:blank' ||
-  url.startsWith(`${ERROR_PROTOCOL}:`);
-
-// 内置页打包后仍会通过 require('electron') 取用桥接能力；
-// koodoreader 额外需要 window.require('fs'/'path') 读取外部 PDF。
-// 为避免影响普通站点的环境探测,仅对受信任页面挂载 window.require。
-const requireShim = (id: string) => {
-  if (id === 'electron') {
-    return electronRenderer;
+const requireErrorBridge = () => {
+  if (trustedWebUIHost !== 'error') {
+    throw new Error('Error-page capabilities are not available for this host');
   }
-
-  const currentUrl = window.location.href;
-  if (canExposeNodeModules(currentUrl)) {
-    if (id === 'fs') return fs;
-    if (id === 'path') return path;
-  }
-
-  return undefined;
 };
 
-if (canExposeRequire(window.location.href)) {
-  try {
-    contextBridge.exposeInMainWorld('require', requireShim);
-  } catch (_) {
-    (window as any).require = requireShim;
-  }
-}
-(window as any).electron = electronRenderer;
-(window as any).getPathForFile = (file: File) => webUtils.getPathForFile(file);
-(window as any).searchAnnotatorAnalyze = searchAnnotatorAnalyze;
-(window as any).searchAnnotatorOpenSettings = searchAnnotatorOpenSettings;
-
-// Electron 42 + persist:view 扩展会话会把 file:// 页面引用的 SVG 子资源按
-// text/html 解码（直接打开 SVG 主文档则正常），导致 <img> naturalWidth=0。
-// 根因已在 protocol.ts 按扩展名直给 image/svg+xml，本逻辑是 belt-and-
-// suspenders：把页面目录内的本地 SVG 引用就地换成等价 data URL。PNG/JPEG 等
-// 不受影响；目录外/跨盘/符号链接逃逸一律放行原引用。
-const MAX_INLINED_SVG_BYTES = 2 * 1024 * 1024; // 超 2MB 不内联，避免主线程长读 + DOM 常驻大串
-const MEDIA_SELECTOR = 'img,source,embed,object';
-
-const installLocalSvgImageFallback = () => {
-  if (window.location.protocol !== 'file:') return;
-
-  // file:// URL → 本地路径（处理 UNC 主机名、Windows 盘符前导斜杠、正斜杠→sep）。
-  // decodeURIComponent 对含非法 % 序列的路径会抛 URIError，故调用方都包在 try 里。
-  const toLocalPath = (url: URL) => {
-    let pathname = decodeURIComponent(url.pathname);
-    if (url.hostname) {
-      return `\\\\${url.hostname}${pathname.replace(/\//g, '\\')}`;
-    }
-    if (/^\/[a-zA-Z]:\//.test(pathname)) pathname = pathname.slice(1);
-    return pathname.replace(/\//g, path.sep);
-  };
-
-  // realpath 页面目录：既解析符号链接，又作为后续路径围栏的基准。
-  let pageDirectory: string;
-  try {
-    pageDirectory = fs.realpathSync(
-      path.dirname(toLocalPath(new URL(window.location.href))),
-    );
-  } catch (_) {
-    return; // 页面 URL 解析失败（路径含非法 % 序列等）→ 不装 fallback
-  }
-
-  // realPath → data URL 的成功缓存：同一 SVG 多处引用 / observer 重入只读一次盘。
-  const dataUrlCache = new Map<string, string>();
-
-  const toDataUrl = (resourceUrl: URL): string | null => {
-    if (resourceUrl.protocol !== 'file:') return null;
-    if (!resourceUrl.pathname.toLowerCase().endsWith('.svg')) return null;
-    resourceUrl.hash = '';
-    resourceUrl.search = '';
-    let real: string;
-    try {
-      // realpathSync 顺带解析符号链接：用真实路径做围栏，防止目录内符号链接指向树外。
-      real = fs.realpathSync(path.resolve(toLocalPath(resourceUrl)));
-    } catch (_) {
-      return null;
-    }
-    // 路径围栏：真实路径必须在页面目录内（拒绝 ../、跨盘、目录本身）。
-    const rel = path.relative(pageDirectory, real);
-    if (
-      rel === '' ||
-      rel === '..' ||
-      rel.startsWith(`..${path.sep}`) ||
-      path.isAbsolute(rel)
-    ) {
-      return null;
-    }
-    const cached = dataUrlCache.get(real);
-    if (cached) return cached;
-    try {
-      const stat = fs.statSync(real);
-      if (stat.size > MAX_INLINED_SVG_BYTES) return null;
-      const dataUrl = `data:image/svg+xml;base64,${fs.readFileSync(real).toString('base64')}`;
-      dataUrlCache.set(real, dataUrl);
-      return dataUrl;
-    } catch (_) {
-      return null; // 文件不存在/无权限 → 保留原 URL，交还页面 error 处理
-    }
-  };
-
-  // 廉价预过滤：raw 显然不含 .svg 就直接跳过，避免每次 src/srcset 变更都构造 URL。
-  const resolveRaw = (raw: string): string | null => {
-    if (!raw || raw.startsWith('data:') || !raw.toLowerCase().includes('.svg')) {
-      return null;
-    }
-    try {
-      return toDataUrl(new URL(raw, window.location.href));
-    } catch (_) {
-      return null;
-    }
-  };
-
-  // srcset: "a.svg 1x, b.svg 2x"；逐候选 URL 替换其中的本地 SVG，保留描述符与空白。
-  const rewriteSrcset = (raw: string): string | null => {
-    let changed = false;
-    const out = raw.split(',').map((candidate) => {
-      const match = candidate.match(/^(\s*)(\S+)(\s.*)?$/);
-      if (!match) return candidate;
-      const dataUrl = resolveRaw(match[2]);
-      if (!dataUrl) return candidate;
-      changed = true;
-      return `${match[1]}${dataUrl}${match[3] || ''}`;
+const errorBridge: RainseeWebUIErrorBridge = {
+  getUrl: () => {
+    requireErrorBridge();
+    return ipcRenderer.invoke(`get-error-url-${tabId}`) as Promise<string>;
+  },
+  reload: () => {
+    requireErrorBridge();
+    return ipcRenderer.invoke(`reload-error-url-${tabId}`);
+  },
+  goHome: () => {
+    requireErrorBridge();
+    return ipcRenderer.invoke('web-contents-call', {
+      webContentsId: tabId,
+      method: 'home',
     });
-    return changed ? out.join(',') : null;
-  };
-
-  const replaceSvgReference = (element: Element) => {
-    const tag = element.tagName.toLowerCase();
-    const attrs = tag === 'object' ? ['data', 'srcset', 'src'] : ['src', 'srcset'];
-    for (const attr of attrs) {
-      const raw = element.getAttribute(attr);
-      if (!raw) continue;
-      if (attr === 'srcset') {
-        const next = rewriteSrcset(raw);
-        if (next) element.setAttribute('srcset', next);
-      } else {
-        const dataUrl = resolveRaw(raw);
-        if (dataUrl) element.setAttribute(attr, dataUrl);
+  },
+  checkNetwork: () => {
+    requireErrorBridge();
+    return ipcRenderer.invoke('check-network');
+  },
+  copyDiagnostics: (text: string) => {
+    requireErrorBridge();
+    clipboard.writeText(typeof text === 'string' ? text : '');
+  },
+  ignoreCertificateError: () => {
+    requireErrorBridge();
+    return ipcRenderer.invoke(`ignore-certificate-error-${tabId}`);
+  },
+  addAdblockWhitelist: async (domain?: string) => {
+    requireErrorBridge();
+    let targetDomain = typeof domain === 'string' ? domain.trim() : '';
+    if (!targetDomain) {
+      const failedUrl = await errorBridge.getUrl();
+      try {
+        targetDomain = new URL(failedUrl).hostname || '';
+      } catch {
+        targetDomain = '';
       }
     }
-  };
+    return ipcRenderer.invoke('adblock-add-whitelist', targetDomain);
+  },
+};
+const exposedErrorBridge = Object.freeze(errorBridge);
 
-  const scan = (root: ParentNode) => {
-    if (root instanceof Element && root.matches(MEDIA_SELECTOR)) {
-      replaceSvgReference(root);
-    }
-    root.querySelectorAll(MEDIA_SELECTOR).forEach(replaceSvgReference);
-  };
-
-  const start = () => {
-    scan(document);
-    new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        if (mutation.type === 'attributes') {
-          const target = mutation.target;
-          // tagName 门控：只处理媒体元素，忽略 script/iframe/video 等的 src 变更。
-          if (target instanceof Element && target.matches(MEDIA_SELECTOR)) {
-            replaceSvgReference(target);
-          }
-        } else {
-          mutation.addedNodes.forEach((node) => {
-            if (node instanceof Element) scan(node);
-          });
-        }
-      }
-    }).observe(document.documentElement, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['src', 'data', 'srcset'],
-    });
-  };
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', start, {once: true});
-  } else {
-    start();
+const requireWebUIChannel = (
+  channel: unknown,
+  operation: WebUIChannelOperation,
+) => {
+  if (
+    !isAllowedWebUIChannelForHost(
+      trustedWebUIHost,
+      channel,
+      operation,
+      windowId,
+    )
+  ) {
+    throw new Error(`WebUI IPC channel is not allowed: ${String(channel)}`);
   }
+  return channel as string;
 };
 
-installLocalSvgImageFallback();
-// 内置页(webui)需按窗口发 IPC(如书签管理器跑 bookmarklet 时的 add-tab-${windowId});
-// 仅对受信任内部页暴露,外部站点不暴露。
-if (canExposeRequire(window.location.href)) {
-  (window as any).windowId = windowId;
+const rainseeWebUI = {
+  invoke: (channel: AllowedWebUIInvokeChannel, ...args: any[]) =>
+    ipcRenderer.invoke(requireWebUIChannel(channel, 'invoke'), ...args),
+  send: (channel: AllowedWebUISendChannel, ...args: any[]) => {
+    ipcRenderer.send(requireWebUIChannel(channel, 'send'), ...args);
+  },
+  on: (channel: AllowedWebUIEventChannel, listener: WebUIListener) => {
+    const allowed = requireWebUIChannel(channel, 'event');
+    if (typeof listener !== 'function') {
+      throw new TypeError('WebUI IPC listener must be a function');
+    }
+    const wrapped = (_event: Electron.IpcRendererEvent, ...payload: any[]) => {
+      if (allowed === 'update-settings' && payload.length > 0) {
+        payload[0] = sanitizeWebUISettings(payload[0]);
+      }
+      listener(...payload);
+    };
+    ipcRenderer.on(allowed, wrapped);
+    return () => ipcRenderer.removeListener(allowed, wrapped);
+  },
+  getContext: (): WebUIContext => webUIContext,
+  getPathForFile: (file: File) => {
+    if (trustedWebUIHost !== 'extensions') {
+      throw new Error('getPathForFile is only available to the extensions page');
+    }
+    return webUtils.getPathForFile(file);
+  },
+  error: exposedErrorBridge,
+};
+
+const exposedWebUIBridge = Object.freeze(rainseeWebUI);
+
+if (trustedWebUIHost !== null) {
+  try {
+    contextBridge.exposeInMainWorld('rainseeWebUI', exposedWebUIBridge);
+  } catch (_) {
+    try {
+      Object.defineProperty(window, 'rainseeWebUI', {
+        configurable: false,
+        enumerable: true,
+        writable: false,
+        value: exposedWebUIBridge,
+      });
+    } catch {
+      // A pre-existing definition is left untouched; calls still use the
+      // preload-closed bridge internally.
+    }
+  }
 }
 
 let lastChromeHoverClear = 0;
@@ -2271,17 +2293,6 @@ if (__nodeProcess.env.ENABLE_AUTOFILL) {
   window.addEventListener('mousedown', AutoComplete.onWindowMouseDown);
 }
 
-const postMsg = (data: any, res: any) => {
-  window.postMessage(
-    {
-      id: data.id,
-      result: res,
-      type: 'result',
-    },
-    '*',
-  );
-};
-
 let hostname = window.location.href.substr(WEBUI_BASE_URL.length);
 window.addEventListener('DOMContentLoaded', () => {
   // 开源版：Edge 商店「下载到本浏览器」引导脚本已移除。
@@ -2348,222 +2359,44 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 //console.log("preload", window.location.href, hostname);
-if (window.location.href == "about:blank") {
-  hostname = "newtab";
-}
-if (
-  window.location.href.startsWith(WEBUI_BASE_URL) ||
-  window.location.protocol === `${ERROR_PROTOCOL}:` ||
-  window.location.href == "about:blank"
-) {
-  (async function () {
-    const w = await webFrame.executeJavaScript('window');
-    w.settings = settings;
-    if (canExposeRequire(window.location.href)) {
-      w.require = requireShim;
-    }
-    w.electron = electronRenderer;
-    // With `sandbox: true` the nested `electron` object above does not expose
-    // its methods across the world boundary, so pages can't call
-    // `window.electron.ipcRenderer.invoke/send`. Plain functions do transfer
-    // (same mechanism as `getHistory`/`getTopSites` below), so bridge the two
-    // IPC primitives the webui pages actually need.
-    w.ipcInvoke = (channel: string, ...args: any[]) =>
-      ipcRenderer.invoke(channel, ...args);
-    w.ipcSend = (channel: string, ...args: any[]) =>
-      ipcRenderer.send(channel, ...args);
-    w.getPathForFile = (file: File) => webUtils.getPathForFile(file);
-    w['supervideo-app-version'] = __nodeProcess.env.VERSION_CODE;
-
-    if (window.location.protocol === `${ERROR_PROTOCOL}:`) {
-      w.theme = getTheme(w.settings.theme);
-      w.errorURL = await ipcRenderer.invoke(`get-error-url-${tabId}`);
-      // Wired to the error page's buttons. Exposed as top-level functions (not a
-      // nested object) because, with `sandbox: true`, only plain functions
-      // transfer to the page world — methods on a nested object are lost (same
-      // reason ipcInvoke/ipcSend are bridged above).
-      w.errorReload = () => {
-        ipcRenderer
-          .invoke(`reload-error-url-${tabId}`)
-          .catch(() => undefined);
-      };
-      w.errorGoHome = () => {
-        ipcRenderer.invoke(`web-contents-call`, {
-          webContentsId: tabId,
-          method: 'home',
-        });
-      };
-      w.errorCheckNetwork = () => {
-        ipcRenderer.invoke('check-network').catch(() => undefined);
-      };
-      w.errorCopyDiagnostics = (text: string) => {
-        clipboard.writeText(typeof text === 'string' ? text : '');
-      };
-      w.errorIgnoreCertificateError = async () => {
-        const res = await ipcRenderer.invoke(`ignore-certificate-error-${tabId}`);
-        if (!res?.error) {
-          if (typeof res?.retryUrl === 'string' && res.retryUrl) {
-            window.location.replace(res.retryUrl);
-          } else if (w.errorURL) window.location.replace(w.errorURL);
-          else window.location.reload();
-        }
-        return res;
-      };
-      w.errorAddAdblockWhitelist = async (domain?: string) => {
-        let targetDomain = typeof domain === 'string' ? domain.trim() : '';
-        if (!targetDomain && w.errorURL) {
-          try {
-            targetDomain = new URL(w.errorURL).hostname || '';
-          } catch (e) {}
-        }
-        const res = await ipcRenderer.invoke('adblock-add-whitelist', targetDomain);
-        if (!res?.error || res.error === '该域名已在白名单') {
-          if (w.errorURL) window.location.replace(w.errorURL);
-          else window.location.reload();
-        }
-        return res;
-      };
-    } else {
-      w.getHistory = async () => {
-        return await ipcRenderer.invoke(`history-get`);
-      };
-      w.cloudDownloadHistory = async () => {
-        try {
-          await ipcRenderer.invoke('cloud-download-history');
-        } catch (e) {
-          // 云服务可选,失败不影响本地历史展示
-        }
-      };
-      w.removeHistory = (ids: string[]) => {
-        // ids 可能是 MobX observable 数组(Proxy),无法被 IPC 的 structuredClone 序列化,
-        // 展开成普通数组再发送。
-        ipcRenderer.send(`history-remove`, ids == null ? ids : [...ids]);
-      };
-      // 立即清除浏览数据(设置页 Privacy「清除」按钮)。webui 页面 nodeIntegration:false,
-      // 不能直接 import ipcRenderer(require 未定义),故由 preload 注入全局函数桥接。
-      w.clearBrowsingDataNow = async (items: {
-        cache: boolean;
-        cookies: boolean;
-        history: boolean;
-        searchHistory: boolean;
-      }) => {
-        return await ipcRenderer.invoke('clear-browsing-data-now', {items});
-      };
-      w.getTopSites = async (count: number) => {
-        return await ipcRenderer.invoke(`topsites-get`, count);
-      };
-
-      // 看图模式:ZIP 打包进度(主进程逐张拉取时上报,仅 image-viewer 页消费)。
-      ipcRenderer.on('image-viewer-zip-progress', async (_e, data) => {
-        const wp = await webFrame.executeJavaScript('window');
-        if (wp.imageViewerZipProgress) wp.imageViewerZipProgress(data);
-      });
-    }
-    if (window.location.href == "about:blank" && settings.doNotTrack) {
-      const w = await webFrame.executeJavaScript('window');
-      Object.defineProperty(w.navigator, 'doNotTrack', {value: 1});
-    }
-  })();
-} else {
-  (async function () {
-    if (settings.doNotTrack) {
-      const w = await webFrame.executeJavaScript('window');
-      Object.defineProperty(w.navigator, 'doNotTrack', {value: 1});
-    }
-  })();
+if (trustedWebUIHost !== null) {
+  // Error-page system actions are exposed as capabilities on rainseeWebUI;
+  // no functions are installed directly on the document window.
 }
 
-if (window.location.href.startsWith(WEBUI_BASE_URL) ||
-  window.location.href == "about:blank") {
+if (trustedWebUIHost !== null) {
+  // WebUI 标签页标题按当前语言即时翻译(每次广播重建翻译器,不缓存)。
+  const webuiTitleTranslator = (nextSettings: any = settings) =>
+    createTranslator(
+      resolveAppLanguage(nextSettings?.language, navigator.language),
+    );
+  const WEBUI_TITLES: [string, () => string][] = [
+    ['settings', () => webuiTitleTranslator()('settings')],
+    ['history', () => webuiTitleTranslator()('menuHistory')],
+    ['bookmarks', () => webuiTitleTranslator()('menuBookmarks')],
+    ['downloads', () => webuiTitleTranslator()('dlvTitle')],
+    ['extensions', () => webuiTitleTranslator()('sysExtensions')],
+    ['newtab', () => webuiTitleTranslator()('newTab')],
+    ['image-viewer', () => webuiTitleTranslator()('ivTitle')],
+  ];
+  const applyWebUILocale = (nextSettings: any = settings) => {
+    const appLocale = resolveAppLanguage(nextSettings?.language, navigator.language);
+    if (document.documentElement) document.documentElement.lang = appLocale;
+    if (typeof hostname === 'string') {
+      const hit = WEBUI_TITLES.find(([prefix]) => hostname.startsWith(prefix));
+      if (hit) document.title = hit[1]();
+    }
+  };
+
   window.addEventListener('DOMContentLoaded', () => {
     hostname = window.location.href.substr(WEBUI_BASE_URL.length);
-    if (hostname.startsWith('settings')) document.title = '设置';
-    else if (hostname.startsWith('history')) document.title = '历史记录';
-    else if (hostname.startsWith('bookmarks')) document.title = '书签';
-    else if (hostname.startsWith('downloads')) document.title = '下载管理';
-    else if (hostname.startsWith('extensions')) document.title = '扩展程序';
-    else if (hostname.startsWith('newtab')) {
-      document.title = '新标签页';
-    }
-    else if (hostname.startsWith('image-viewer')) {
-      document.title = '看图模式';
-    }
+    applyWebUILocale();
   });
 
-  window.addEventListener('message', async ({data}) => {
-    if (data.type === 'storage') {
-      const res = await ipcRenderer.invoke(`storage-${data.operation}`, {
-        scope: data.scope,
-        ...data.data,
-      });
-
-      postMsg(data, res);
-    } else if (data.type === 'credentials-get-password') {
-      const res = await ipcRenderer.invoke(
-        'credentials-get-password',
-        data.data,
-      );
-      postMsg(data, res);
-    } else if (data.type === 'save-settings') {
-      ipcRenderer.send('save-settings', {settings: data.data});
-    } else if (data.type === 'save-web-browsing-settings') {
-      ipcRenderer.send('save-web-browsing-settings', data.data);
-    } else if (data.type === 'show-adblock-rule') {
-      ipcRenderer.send(`show-adblock-rule-${windowId}`);
-    }
+  ipcRenderer.on('update-settings', (_event, data) => {
+    applyWebUILocale(data);
   });
 
-  ipcRenderer.on('update-settings', async (e, data) => {
-    const w = await webFrame.executeJavaScript('window');
-    if (w.updateSettings) {
-      w.updateSettings(data);
-    }
-  });
-
-  ipcRenderer.on('credentials-insert', (e, data) => {
-    window.postMessage(
-      {
-        type: 'credentials-insert',
-        data,
-      },
-      '*',
-    );
-  });
-
-  ipcRenderer.on('credentials-update', (e, data) => {
-    window.postMessage(
-      {
-        type: 'credentials-update',
-        data,
-      },
-      '*',
-    );
-  });
-
-  ipcRenderer.on('credentials-remove', (e, data) => {
-    window.postMessage(
-      {
-        type: 'credentials-remove',
-        data,
-      },
-      '*',
-    );
-  });
-
-  ipcRenderer.on('credentials-reload', () => {
-    window.postMessage({ type: 'credentials-reload' }, '*');
-  });
-  if(window.location.href == "about:blank") {
-    window.addEventListener('message', async ({data}) => {
-      if (data.type === 'supervideo-video-created') {
-        //console.log("supervideo-video-created message", data);
-        const tabId = ipcRenderer.sendSync('get-webcontents-id');
-        ipcRenderer.send(`supervideo-video-created-${tabId}`, {
-          url: data.src,
-        });
-      }
-    });
-  }
 } else {
   window.addEventListener('message', async ({data}) => {
     if (data.type === 'supervideo-video-created') {
@@ -2575,3 +2408,45 @@ if (window.location.href.startsWith(WEBUI_BASE_URL) ||
     }
   });
 }
+
+if (settings.doNotTrack) {
+  void webFrame.executeJavaScript(
+    "Object.defineProperty(navigator, 'doNotTrack', {value: '1', configurable: true})",
+    true,
+  );
+}
+
+// ===== [RSZ] 最小化/还原 resize 排查探针(临时,定位后移除) ====================
+// 页面世界抓真实的 resize / visibilitychange,经 IPC 回传主进程统一落日志。
+// 判读法:若 page#N resize 出现但主进程同一时刻没有 view#N setBounds,则该
+// resize 是 Chromium 直发;若有,则来自我们的布局链(fixBounds APPLY)。
+try {
+  // 标识事件来自顶层帧还是子帧:若还原瞬间的 resize 来自 sub,则是页面自己
+  // 重建 iframe 的 relayout;来自 top 才是浏览器/Chromium 侧的视口变化。
+  const rszIsTop = (() => {
+    try {
+      return window.top === window;
+    } catch {
+      return false;
+    }
+  })();
+  const rszReport = (kind: string, extra?: Record<string, unknown>) => {
+    try {
+      ipcRenderer.send('rsz-page-resize', {
+        kind,
+        frame: rszIsTop ? 'top' : 'sub',
+        w: window.innerWidth,
+        h: window.innerHeight,
+        dpr: window.devicePixelRatio,
+        ...extra,
+      });
+    } catch {}
+  };
+  rszReport('init');
+  window.addEventListener('resize', () => rszReport('resize'));
+  document.addEventListener('visibilitychange', () =>
+    rszReport('visibility', {state: document.visibilityState}),
+  );
+} catch {}
+
+reportRendererDiagnostic('preload-ready');

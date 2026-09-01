@@ -863,6 +863,11 @@ export class DeclarativeNetRequestAPI {
     return this.ruleIndexes[stage].all.length > 0
   }
 
+  /** True when at least one rule can affect an onBeforeRequest decision. */
+  hasRules(): boolean {
+    return this.ruleIndexes.beforeRequest.all.length > 0
+  }
+
   private recordPerf(stage: RuleStage, candidateCount: number, elapsedMs: number) {
     if (!CRX_PERF) return
     const bucket = this.perf[stage]

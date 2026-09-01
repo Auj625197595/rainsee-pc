@@ -307,9 +307,22 @@ export class WebRequestAPI {
       let response: any = {}
       try {
         const dnr = this.ctx.declarativeNetRequest
-        if (dnr?.hasHeaderRules('request') && isNetworkUrl(details.url)) {
+        // DNR block/allow/redirect rules are before-request rules and must be
+        // evaluated independently of request-header modification rules.
+        // Script managers commonly register only a redirect rule here.
+        const hasBeforeRequestRules =
+          typeof dnr?.hasRules === 'function'
+            ? dnr.hasRules()
+            : dnr?.hasHeaderRules('request')
+        if (hasBeforeRequestRules && isNetworkUrl(details.url)) {
           const verdict = dnr.matchBeforeRequest(details as any)
-          if (verdict) response = verdict
+          if (verdict?.cancel) {
+            response = { cancel: true }
+          } else if (verdict?.redirectUrl) {
+            // The internal DNR result follows Chrome's `redirectUrl` spelling;
+            // Electron's webRequest callback uses `redirectURL`.
+            response = { redirectURL: verdict.redirectUrl }
+          }
         }
       } catch (err) {
         d('DNR onBeforeRequest error: %O', err)

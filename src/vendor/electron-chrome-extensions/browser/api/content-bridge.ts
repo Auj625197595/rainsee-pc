@@ -579,7 +579,7 @@ export function buildContentScriptBridge(
         } catch (e) {
           _cat = {};
         }
-        // navigator.language reflects the forced app UI language (--lang=zh-CN);
+        // navigator.language reflects the app UI language selected with --lang;
         // use it instead of hard-coding en-US when the catalog is unavailable.
         const navLang =
           (typeof navigator !== 'undefined' && navigator.language) || 'en-US';

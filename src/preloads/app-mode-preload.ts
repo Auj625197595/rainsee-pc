@@ -1,4 +1,5 @@
 import { ipcRenderer } from 'electron';
+import { createLocaleTranslator } from '~/common/i18n';
 
 // 独立 PWA 的 Electron 壳层 preload。这里只渲染窗口头部，网页本身运行在
 // 下方单独的 BrowserView 中，因此第三方站点不会覆盖或影响这些控件。
@@ -83,15 +84,18 @@ const install = () => {
   icon.id = 'rainsee-pwa-icon';
   icon.alt = '';
 
+  // 壳层文案按 --lang 基线(navigator.language)翻译;每次 install 重建,不缓存。
+  const t = createLocaleTranslator(undefined);
+
   const title = document.createElement('div');
   title.id = 'rainsee-pwa-title';
-  title.textContent = document.title || '应用';
+  title.textContent = document.title || t('iaAppFallback');
 
   const more = document.createElement('button');
   more.id = 'rainsee-pwa-more';
   more.type = 'button';
-  more.title = '更多';
-  more.setAttribute('aria-label', '更多应用选项');
+  more.title = t('stMore');
+  more.setAttribute('aria-label', t('amMoreOptions'));
   more.innerHTML =
     '<svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><circle cx="3.5" cy="9" r="1.25" fill="currentColor"/><circle cx="9" cy="9" r="1.25" fill="currentColor"/><circle cx="14.5" cy="9" r="1.25" fill="currentColor"/></svg>';
   more.addEventListener('click', () => {

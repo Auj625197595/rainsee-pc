@@ -1,7 +1,12 @@
-import { ipcRenderer } from 'electron';
-
 import { IFormFillData } from '~/interfaces';
-import { windowId } from '../view-preload';
+import {rendererCapabilities} from '../sandbox-bridge';
+import {createLocaleTranslator} from '~/common/i18n';
+
+const windowId = rendererCapabilities.lifecycle.getWindowId();
+
+// 注入面板的可见文案按 --lang 基线(navigator.language)即时翻译;关键词表(KW_*)是
+// 匹配语料而非 UI,保持中英混合不动。
+const acTranslator = () => createLocaleTranslator(undefined);
 
 // 字段分类关键词表(中英文),对齐鸿蒙 AutoFillUtil.inject 注入脚本的 m 表。
 // 命中任意一个属性值即归类。顺序:password 最强,其次 login_name。
@@ -638,7 +643,7 @@ class Dropdown {
     } as any);
 
     const name = document.createElement('span');
-    name.textContent = c.username || '(无用户名)';
+    name.textContent = c.username || acTranslator()('ffNoUsername');
     Object.assign(name.style, {
       fontWeight: '500',
       color: '#333',
@@ -663,7 +668,7 @@ class Dropdown {
     // 右侧:删除按钮
     const del = document.createElement('span');
     del.innerHTML = '&times;';
-    del.title = '删除这条记录';
+    del.title = acTranslator()('acDeleteRecord');
     Object.assign(del.style, {
       color: '#bbb',
       fontSize: '18px',
@@ -678,7 +683,7 @@ class Dropdown {
     del.addEventListener('mousedown', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      if (window.confirm('确定要删除这条记录吗?')) {
+      if (window.confirm(acTranslator()('acDeleteRecordConfirm'))) {
         this.onDelete(c);
       }
     });
@@ -696,7 +701,7 @@ class Dropdown {
   // 页脚:「去管理」(替换原 power by 文案),点击打开 设置-密码填充
   private makeFooter() {
     const li = document.createElement('li');
-    li.textContent = '去管理';
+    li.textContent = acTranslator()('acGoManage');
     Object.assign(li.style, {
       padding: '9px 10px',
       marginTop: '4px',
@@ -754,7 +759,7 @@ class AutoCompleteEngine {
   private lastSentAt = 0;
 
   public constructor() {
-    ipcRenderer.on('credentials-saved', (_event, data: IFormFillData) => {
+    rendererCapabilities.credentials.onSaved((data: IFormFillData) => {
       if (!data || !data.fields) return;
       const next: Credential = {
         id: data._id || '',
@@ -768,14 +773,14 @@ class AutoCompleteEngine {
       this.filled = next;
       this.pendingCredential = null;
     });
-    ipcRenderer.on('credentials-prompt-dismissed', () => {
+    rendererCapabilities.credentials.onPromptDismissed(() => {
       this.pendingCredential = null;
     });
 
     // 下拉删除/去管理回调
     this.dropdown.onDelete = (c) => this.deleteCred(c);
     this.dropdown.onManage = () => {
-      ipcRenderer.send(`open-password-settings-${windowId}`);
+      rendererCapabilities.credentials.openSettings(windowId);
     };
 
     document.addEventListener('mousedown', (e) => {
@@ -879,8 +884,8 @@ class AutoCompleteEngine {
     try {
       // 把页面 hostname 作为参数传入:主进程据此匹配,不再依赖 viewManager.selected,
       // 避免后台标签 / load 瞬间 selected 尚未切换导致取到别的页面 hostname。
-      const res = await ipcRenderer.invoke(
-        `find-form-fill-update-${windowId}`,
+      const res = await rendererCapabilities.credentials.findForHost(
+        windowId,
         window.location.hostname,
       );
       const list: IFormFillData[] = Array.isArray(res) ? res : res ? [res] : [];
@@ -1000,7 +1005,7 @@ class AutoCompleteEngine {
   // 删除某条候选:本地列表移除 + 通知主进程删库,下拉同步刷新
   private deleteCred(c: Credential) {
     if (c.id) {
-      ipcRenderer.send(`credentials-delete-${windowId}`, c.id);
+      rendererCapabilities.credentials.remove(windowId, c.id);
     }
     this.creds = this.creds.filter((x) => x !== c);
     if (this.filled === c) this.filled = null;
@@ -1064,7 +1069,7 @@ class AutoCompleteEngine {
       this.lastSentSignature = signature;
       this.lastSentAt = now;
 
-      ipcRenderer.send(`credentials-show-${windowId}`, {
+      rendererCapabilities.credentials.showPrompt(windowId, {
         username: u,
         password: p,
         url,

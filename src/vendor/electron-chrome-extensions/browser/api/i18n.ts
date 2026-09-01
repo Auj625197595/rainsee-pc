@@ -23,7 +23,7 @@ export interface I18nCatalog {
 
 /**
  * The browser UI language. Mirrors app.getLocale(), which the host forces to
- * zh-CN via `--lang` (see src/main/application.ts). Extension UIs follow the
+ * app locale via `--lang` (see src/main/index.ts). Extension UIs follow the
  * browser UI language so they stay consistent with the rest of the app.
  */
 export function getAppUILocale(): string {

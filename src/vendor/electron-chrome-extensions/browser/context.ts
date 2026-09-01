@@ -91,6 +91,8 @@ export interface ExtensionContext {
    * import cycle (declarative-net-request.ts imports this context).
    */
   declarativeNetRequest?: {
+    /** Whether any block/allow/redirect rules are active for onBeforeRequest. */
+    hasRules?(): boolean
     hasHeaderRules(kind: 'request' | 'response'): boolean
     matchBeforeRequest(details: {
       url: string

@@ -21,7 +21,10 @@ const d = debug('electron-chrome-extensions:proxy')
  * fallbackProxy / bypassList) while Electron wants a `proxyRules` string, so we
  * flatten it. SOCKS proxies become `socks5://` / `socks4://` URIs. Best-effort:
  * the common omega cases (single HTTP/SOCKS proxy, PAC, per-scheme, bypass list)
- * are covered; exotic combos fall back gracefully.
+ * are covered; exotic combos fall back gracefully.  In particular, preserve
+ * an `https` proxy scheme: some VPN extensions use a TLS-encrypted proxy
+ * endpoint, and silently converting it to `host:port` makes Chromium speak
+ * plaintext HTTP to a TLS socket, so every connection check fails.
  */
 export class ProxyAPI {
   /** Last-applied value, echoed by `get` (mirrors Chrome returning current settings). */
@@ -74,12 +77,15 @@ function proxyUri(p: any): string | undefined {
   const host = String(p.host)
   const port = p.port != null && p.port !== '' ? ':' + p.port : ''
   switch (p.scheme) {
+    case 'https':
+      // Electron accepts an HTTPS proxy URI for TLS-wrapped proxy endpoints.
+      return 'https://' + host + port
     case 'socks5':
       return 'socks5://' + host + port
     case 'socks4':
       return 'socks4://' + host + port
     default:
-      // http / https / quic → a plain host:port acts as an HTTP proxy in Electron
+      // http / quic → a plain host:port acts as an HTTP proxy in Electron
       return host + port
   }
 }

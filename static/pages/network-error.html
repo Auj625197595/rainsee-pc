@@ -270,13 +270,14 @@
             : info.n + (code ? '  ·  ' + code : '')
         );
 
-        // 按钮(errorReload/GoHome/CheckNetwork 由 view-preload 注入)
+        // System actions are provided by the restricted rainseeWebUI bridge.
+        var errorBridge = window.rainseeWebUI && window.rainseeWebUI.error;
         if (isRendererCrash) {
           var networkBtn = byId('btn-network');
           if (networkBtn) networkBtn.hidden = true;
 
           var copyBtn = byId('btn-copy-diagnostics');
-          if (copyBtn && typeof window.errorCopyDiagnostics === 'function') {
+          if (copyBtn && errorBridge && typeof errorBridge.copyDiagnostics === 'function') {
             copyBtn.hidden = false;
             copyBtn.addEventListener('click', function () {
               var diagnostic = [
@@ -291,7 +292,7 @@
                 '错误: RENDERER_PROCESS_GONE'
               ].join('\n');
               try {
-                window.errorCopyDiagnostics(diagnostic);
+                errorBridge.copyDiagnostics(diagnostic);
                 copyBtn.textContent = '已复制';
                 setTimeout(function () {
                   copyBtn.textContent = '复制诊断信息';
@@ -314,13 +315,13 @@
           ignoreCertificateBtn &&
           ((numericCode <= -200 && numericCode >= -299) ||
             isHttpsProtocolError) &&
-          typeof window.errorIgnoreCertificateError === 'function'
+          errorBridge && typeof errorBridge.ignoreCertificateError === 'function'
         ) {
           ignoreCertificateBtn.hidden = false;
           ignoreCertificateBtn.addEventListener('click', async function () {
             ignoreCertificateBtn.disabled = true;
             try {
-              var result = await window.errorIgnoreCertificateError();
+              var result = await errorBridge.ignoreCertificateError();
               if (result && result.error) ignoreCertificateBtn.disabled = false;
             } catch (e) {
               ignoreCertificateBtn.disabled = false;
@@ -331,7 +332,7 @@
         if (
           whitelistBtn &&
           code === '-20' &&
-          typeof window.errorAddAdblockWhitelist === 'function'
+          errorBridge && typeof errorBridge.addAdblockWhitelist === 'function'
         ) {
           whitelistBtn.hidden = false;
           whitelistBtn.addEventListener('click', async function () {
@@ -339,7 +340,7 @@
             var originalText = whitelistBtn.textContent;
             whitelistBtn.textContent = '正在添加...';
             try {
-              var result = await window.errorAddAdblockWhitelist();
+              var result = await errorBridge.addAdblockWhitelist();
               if (result && result.error && result.error !== '该域名已在白名单') {
                 whitelistBtn.disabled = false;
                 whitelistBtn.textContent = originalText;
@@ -351,15 +352,15 @@
           });
         }
         byId('btn-reload').addEventListener('click', function () {
-          if (window.errorReload) window.errorReload();
+          if (errorBridge && errorBridge.reload) errorBridge.reload();
           else if (failedUrl) location.replace(failedUrl);
           else location.reload();
         });
         byId('btn-network').addEventListener('click', function () {
-          if (window.errorCheckNetwork) window.errorCheckNetwork();
+          if (errorBridge && errorBridge.checkNetwork) errorBridge.checkNetwork();
         });
         byId('btn-home').addEventListener('click', function () {
-          if (window.errorGoHome) window.errorGoHome();
+          if (errorBridge && errorBridge.goHome) errorBridge.goHome();
         });
       })();
     </script>

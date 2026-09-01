@@ -911,6 +911,23 @@ const SHIM_BODY = (
       } catch (_) {}
     }
   } catch (_) {}` +
+  // FluxDown's popup uses runtime.connectNative directly. When Electron
+  // co-sites that popup with the MV3 worker, the sandbox renderer can skip
+  // crx-preload and Chromium's native connectNative reports the misleading
+  // administrator-disabled error. Proxy this one known host through the
+  // extension background instead. The background already owns a healthy
+  // NativeMessagingHost and exposes the corresponding runtime message
+  // handlers, so the popup still gets a Chrome-shaped Port without needing
+  // ipcRenderer in the sandbox.
+  `var FDG=(typeof globalThis!=='undefined'&&globalThis)||(typeof self!=='undefined'&&self)||this;var FDC=FDG.chrome;var FDP=(typeof location!=='undefined'&&location&&location.protocol)||'';` +
+  `if(typeof window!=='undefined'&&FDC&&FDC.runtime&&FDC.runtime.id==='meleenglfggcmcajknpeeeiobnpfmahc'&&FDP==='chrome-extension:'&&(!FDC.__crxPatched||FDC.runtime.__crxRuntimePatched!==true)&&!FDC.runtime.__crxFluxDownNativeProxy){` +
+  `var FDHOST='com.fluxdown.nmh',FDO=FDC.runtime.connectNative,FDS=FDC.runtime.sendMessage;` +
+  `var FDA=function(a){var L=[];return{addListener:function(f){if(typeof f==='function'&&L.indexOf(f)<0)L.push(f)},removeListener:function(f){var i=L.indexOf(f);if(i>=0)L.splice(i,1)},hasListener:function(f){return L.indexOf(f)>=0},dispatch:function(v){var A=L.slice();for(var i=0;i<A.length;i++)try{A[i](v)}catch(_){}},_list:L}};` +
+  `var FDR=function(m){var a=m&&m.action,r={};if(a==='ping')r={action:'checkConnection'};else if(a==='tasks')r={type:'nmh-tasks'};else if(a==='task_op')r={type:'nmh-task-op',op:m.op,taskId:m.taskId};else if(a==='open_file')r={type:'nmh-open-file',taskId:m.taskId};else if(a==='reveal_file')r={type:'nmh-reveal-file',taskId:m.taskId};else if(a==='warmup')r={type:'nmh-warmup'};else if(a==='download')r={action:'downloadResource',url:m.url,referrer:m.referrer,filename:m.filename,fileSize:m.fileSize,mimeType:m.mimeType,audioUrl:m.audioUrl};else if(a==='batch_download')r={action:'batchDownload',items:m.items};else return null;return r};` +
+  `var FDNMAKE=function(application){var ml=FDA(),dl=FDA(),closed=false;var close=function(){if(closed)return;closed=true;dl.dispatch({})};var port={name:application,onMessage:{addListener:ml.addListener,removeListener:ml.removeListener,hasListener:ml.hasListener},onDisconnect:{addListener:dl.addListener,removeListener:dl.removeListener,hasListener:dl.hasListener},postMessage:function(msg){if(closed)return;var req=FDR(msg);if(!req||typeof FDS!=='function'){setTimeout(function(){ml.dispatch({msg_id:msg&&msg.msg_id,success:false,message:'native_messaging_unavailable'})},0);return}try{Promise.resolve(FDS.call(FDC.runtime,req)).then(function(v){if(closed)return;var r=v||{};if(msg&&msg.action==='ping')r={success:!!r.connected,message:r.connected?'pong':'not_connected'};else if(msg&&msg.action==='tasks')r={success:!!r.ok,tasks:r.tasks||[],message:r.message};else if(r&&r.ok!==undefined)r={success:!!r.ok,message:r.message};r.msg_id=msg&&msg.msg_id;ml.dispatch(r)},function(){if(!closed)ml.dispatch({msg_id:msg&&msg.msg_id,success:false,message:'native_messaging_unavailable'})})}catch(_){ml.dispatch({msg_id:msg&&msg.msg_id,success:false,message:'native_messaging_unavailable'})}},disconnect:close};return port};` +
+  `var FDN=function(application){if(application!==FDN._name)return typeof FDO==='function'?FDO.call(FDC.runtime,application):null;return FDNMAKE(application)};FDN._name=FDHOST;` +
+  `try{Object.defineProperty(FDC.runtime,'connectNative',{value:FDN,configurable:true,writable:true});Object.defineProperty(FDC.runtime,'__crxFluxDownNativeProxy',{value:true,configurable:true})}catch(_){try{FDC.runtime.connectNative=FDN}catch(_){}}` +
+  `try{if(FDC.runtime.connectNative!==FDN){/* native runtime is locked; leave the normal preload path untouched */}}catch(_){} } ` +
   // Sandboxed ext-page i18n fallback (popup/options whose renderer boots
   // sandboxed when co-sited with the MV3 SW host, or after a render-process-
   // gone rebuild). In that state crx-preload never runs, so chrome.i18n

@@ -1,21 +1,19 @@
-import { ipcRenderer } from 'electron';
+import {
+  rendererCapabilities,
+  SelectionTranslateConfig,
+} from './sandbox-bridge';
+import { createLocaleTranslator, Translator } from '~/common/i18n';
 
-interface SelCfg {
-  panelEnabled: boolean;
-  wordCountEnabled: boolean;
-  translateEnabled: boolean;
-  target: string;
-}
+type SelCfg = SelectionTranslateConfig;
 
-const tabId = ipcRenderer.sendSync('get-webcontents-id');
-let config: SelCfg = ipcRenderer.sendSync(
-  'get-selection-translate-config-sync',
-) || {
+const tabId = rendererCapabilities.lifecycle.getTabId();
+let config: SelCfg = rendererCapabilities.selection.getConfig() || {
   panelEnabled: true,
   wordCountEnabled: true,
   translateEnabled: true,
   target: 'zh-CN',
 };
+let t: Translator = createLocaleTranslator(config.language);
 let siteHidden = false;
 let siteStateReady = false;
 
@@ -115,19 +113,19 @@ const ensureCard = () => {
   root.appendChild(style);
   card = document.createElement('div');
   card.className = 'rst-card rst-hidden';
-  card.innerHTML = `<div class="rst-body rst-loading">翻译中…</div><div class="rst-actions">
-    <button class="rst-btn" data-act="copy">复制</button><button class="rst-btn" data-act="search">搜索</button>
-    <span class="rst-more"><button class="rst-btn" data-act="more">更多</button></span>
-    <span class="rst-hide"><button class="rst-btn" data-act="hide">隐藏</button><span class="rst-hide-menu"><button class="rst-more-item" data-act="site-hide">仅此网站隐藏</button><button class="rst-more-item" data-act="global-hide">全局隐藏</button></span></span><span class="rst-spacer"></span><button class="rst-count" data-act="word-count-settings" aria-label="选中文字数设置" title="字数显示设置"></button></div>`;
+  card.innerHTML = `<div class="rst-body rst-loading">${t('stTranslating')}</div><div class="rst-actions">
+    <button class="rst-btn" data-act="copy">${t('stCopy')}</button><button class="rst-btn" data-act="search">${t('stSearch')}</button>
+    <span class="rst-more"><button class="rst-btn" data-act="more">${t('stMore')}</button></span>
+    <span class="rst-hide"><button class="rst-btn" data-act="hide">${t('stHide')}</button><span class="rst-hide-menu"><button class="rst-more-item" data-act="site-hide">${t('stSiteHide')}</button><button class="rst-more-item" data-act="global-hide">${t('stGlobalHide')}</button></span></span><span class="rst-spacer"></span><button class="rst-count" data-act="word-count-settings" aria-label="${t('stWordCountAria')}" title="${t('stWordCountTitle')}"></button></div>`;
   root.appendChild(card);
   bodyEl = card.querySelector('.rst-body');
   copyBtn = card.querySelector('[data-act="copy"]');
   const copy = card.querySelector('[data-act="copy"]') as HTMLButtonElement;
   const showCopyFailure = () => {
-    copy.textContent = '复制失败';
+    copy.textContent = t('stCopyFailed');
     window.setTimeout(() => {
       if (copyBtn === copy) {
-        copy.textContent = '复制';
+        copy.textContent = t('stCopy');
         copy.disabled = false;
       }
     }, 1200);
@@ -141,7 +139,7 @@ const ensureCard = () => {
     copy.disabled = true;
     const text = selectedText;
     try {
-      const copied = await ipcRenderer.invoke('selection-panel-copy', text);
+      const copied = await rendererCapabilities.selection.copy(text);
       if (copied) {
         hideCard();
       } else {
@@ -156,20 +154,17 @@ const ensureCard = () => {
   copy.addEventListener('pointerdown', copySelection);
   copy.addEventListener('click', copySelection);
   card.querySelector('[data-act="search"]')!.addEventListener('click', () => {
-    ipcRenderer.send('selection-panel-search', selectedText);
+    rendererCapabilities.selection.search(selectedText);
     hideCard();
   });
   card.querySelector('[data-act="more"]')!.addEventListener('click', () => {
-    ipcRenderer.send('selection-panel-more', selectedText);
+    rendererCapabilities.selection.more(selectedText);
     hideCard();
   });
   card
     .querySelector('[data-act="word-count-settings"]')!
     .addEventListener('click', () => {
-      ipcRenderer.invoke(
-        'selection-translate-open-settings',
-        'selectionWordCount',
-      );
+      rendererCapabilities.selection.openSettings('selectionWordCount');
       hideCard();
     });
   card
@@ -180,17 +175,41 @@ const ensureCard = () => {
   card
     .querySelector('[data-act="site-hide"]')!
     .addEventListener('click', () => {
-      ipcRenderer.invoke('selection-panel-hide-site');
+      rendererCapabilities.selection.hideSite();
       hideCard();
     });
   card
     .querySelector('[data-act="global-hide"]')!
     .addEventListener('click', () => {
-      ipcRenderer.invoke('selection-panel-hide-global');
+      rendererCapabilities.selection.hideGlobal();
       hideCard();
     });
   (document.body || document.documentElement).appendChild(host);
   return { card, body: bodyEl!, copy: copyBtn! };
+};
+
+const refreshCardLabels = () => {
+  if (!card) return;
+  const labels: Record<string, string> = {
+    copy: t('stCopy'),
+    search: t('stSearch'),
+    more: t('stMore'),
+    hide: t('stHide'),
+    'site-hide': t('stSiteHide'),
+    'global-hide': t('stGlobalHide'),
+  };
+  for (const [action, label] of Object.entries(labels)) {
+    const element = card.querySelector(`[data-act="${action}"]`);
+    if (element) element.textContent = label;
+  }
+  const count = card.querySelector('[data-act="word-count-settings"]');
+  if (count) {
+    count.setAttribute('aria-label', t('stWordCountAria'));
+    count.setAttribute('title', t('stWordCountTitle'));
+  }
+  if (bodyEl?.classList.contains('rst-loading')) {
+    bodyEl.textContent = t('stTranslating');
+  }
 };
 
 const positionCard = (rect: DOMRect, withTranslation: boolean) => {
@@ -220,7 +239,7 @@ const showPanel = (rect: DOMRect, text: string, translating: boolean) => {
   const actions = el.querySelector('.rst-actions') as HTMLDivElement;
   const count = el.querySelector('.rst-count') as HTMLButtonElement | null;
   if (count) {
-    count.textContent = `字数 ${Array.from(text).length}`;
+    count.textContent = t('stWordCount', { count: Array.from(text).length });
     count.style.display = config.wordCountEnabled ? '' : 'none';
   }
   actions.style.display = config.panelEnabled ? 'flex' : 'none';
@@ -269,8 +288,8 @@ const requestTranslate = (text: string, rect: DOMRect) => {
   showPanel(rect, text, true);
   const { body } = ensureCard();
   body.className = 'rst-body rst-loading';
-  body.textContent = '翻译中…';
-  ipcRenderer.send('selection-translate-request', {
+  body.textContent = t('stTranslating');
+  rendererCapabilities.selection.request({
     id,
     text,
     target: config.target || 'zh-CN',
@@ -279,9 +298,9 @@ const requestTranslate = (text: string, rect: DOMRect) => {
   });
 };
 
-ipcRenderer.on(
-  `selection-translate-result-${tabId}`,
-  (_e, p: { id: number; ok: boolean; text?: string; error?: string }) => {
+rendererCapabilities.selection.onResult(
+  tabId,
+  (p: { id: number; ok: boolean; text?: string; error?: string }) => {
     if (!p || p.id !== currentReqId) return;
     const { body } = ensureCard();
     if (p.ok && p.text) {
@@ -289,21 +308,26 @@ ipcRenderer.on(
       body.textContent = p.text;
     } else {
       body.className = 'rst-body rst-error';
-      body.textContent = p.error ? `翻译失败:${p.error}` : '翻译服务暂不可用';
+      body.textContent = p.error
+        ? t('stTranslationFailed', { error: p.error })
+        : t('stServiceUnavailable');
     }
     if (currentRect) positionCard(currentRect, true);
   },
 );
 
-ipcRenderer.on('selection-translate-config-changed', (_e, cfg: SelCfg) => {
-  if (cfg && typeof cfg === 'object') config = cfg;
+rendererCapabilities.selection.onConfigChanged((cfg: SelCfg) => {
+  if (cfg && typeof cfg === 'object') {
+    config = cfg;
+    t = createLocaleTranslator(config.language);
+    refreshCardLabels();
+  }
   if (!config.panelEnabled && !config.translateEnabled) hideCard();
   else if (siteStateReady) checkSelection();
 });
 
-ipcRenderer.on(
-  'selection-panel-site-rule-changed',
-  (_e, hostName: string, hidden: boolean) => {
+rendererCapabilities.selection.onSiteRuleChanged(
+  (hostName: string, hidden: boolean) => {
     if (hostName === '*' || hostName === location.hostname) {
       siteHidden = !!hidden;
       if (siteHidden) hideCard();
@@ -372,8 +396,8 @@ document.addEventListener(
 window.addEventListener('scroll', hideCard, true);
 window.addEventListener('pagehide', hideCard);
 
-ipcRenderer
-  .invoke('selection-panel-site-state')
+rendererCapabilities.selection
+  .getSiteState()
   .then((hidden) => {
     siteHidden = !!hidden;
     siteStateReady = true;

@@ -31,7 +31,8 @@ export const injectChromeWebstoreInstallButton = () => {
             console.log(newUrl);
             window.open(newUrl, "_blank");
           }
-          btn.children[0].innerText = "安装";
+          // 替换文案跟随应用语言基线(--lang),中文商店页面在英文 UI 下也不再显示中文按钮。
+          btn.children[0].innerText = (navigator.language || "").toLowerCase().startsWith("zh") ? "安装" : "Install";
         }
       }
     } catch (e) {

@@ -1,5 +1,5 @@
 // 导入 makeId 函数，用于生成唯一标识符
-import { makeId } from '~/utils/string';
+import {ipcRenderer} from '~/common/renderer-ipc';
 
 // 定义泛型接口 IAction，用于描述数据库操作的动作
 interface IAction<T> {
@@ -23,31 +23,9 @@ export class PreloadDatabase<T> {
     operation: 'get' | 'get-one' | 'update' | 'insert' | 'remove', // 操作类型
     data: IAction<T>, // 操作所需的数据
   ): Promise<any> {
-    return new Promise((resolve) => {
-      // 生成唯一标识符
-      const id = makeId(32);
-
-      // 发送消息给窗口，执行数据库操作
-      window.postMessage(
-        {
-          type: 'storage', // 消息类型为存储操作
-          scope: this.scope, // 数据库范围
-          operation, // 操作类型
-          data, // 操作所需的数据
-          id, // 唯一标识符
-        },
-        '*',
-      );
-
-      // 监听窗口消息，等待操作结果
-      window.addEventListener('message', (e) => {
-        const { data } = e;
-
-        // 如果收到操作结果的消息，并且消息的唯一标识符与之前发送的一致，则解析结果并返回
-        if (data.type === 'result' && data.id === id) {
-          resolve(data.result);
-        }
-      });
+    return ipcRenderer.invoke(`storage-${operation}`, {
+      scope: this.scope,
+      ...data,
     });
   }
 
