@@ -128,6 +128,7 @@
     "webpack-merge": "^5.8.0"
   },
   "dependencies": {
-    "electron-updater": "^4.6.5"
+    "electron-updater": "^4.6.5",
+    "mux.js": "^6.3.0"
   }
 }

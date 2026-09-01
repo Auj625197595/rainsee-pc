@@ -137,6 +137,20 @@ export const recordUrlRequest = (details: Electron.OnBeforeSendHeadersListenerDe
 
 // 疑似视频的判定：仅用于控制诊断日志的量(只对疑似请求打印，避免每个 xhr 都刷屏)。
 const videoishExts = [".m3u8", ".mp4", ".ts", ".flv", ".m4s", ".webm", ".mov", ".mpd", "video", "playlist", "/media"]
+const sniffLogAt = new Map<string, number>();
+const shouldLogSniff = (kind: string, url: string, intervalMs = 5000): boolean => {
+  const key = `${kind}:${url}`;
+  const now = Date.now();
+  const previous = sniffLogAt.get(key) || 0;
+  if (now - previous < intervalMs) return false;
+  sniffLogAt.set(key, now);
+  // Keep repeated live-playlist polling from growing the map forever.
+  if (sniffLogAt.size > 4096) {
+    const first = sniffLogAt.keys().next().value;
+    if (first) sniffLogAt.delete(first);
+  }
+  return true;
+}
 const looksVideoish = (url: string, contentType: string): boolean => {
   const lower = (url || "").toLowerCase();
   if (videoishExts.some((e) => lower.includes(e))) return true;
@@ -168,7 +182,16 @@ export const filterVideo = (details: OnHeadersReceivedListenerDetails) => {
   try {
     const {webContentsId, url, frame, referrer, resourceType, responseHeaders} = details;
     const view = findViewById(webContentsId);
-    const requestHeaders = view?.requestRecord.get(url);
+    const requestHeaders = {...(view?.requestRecord.get(url) || {})};
+    // Some Chromium/adblock paths expose the response but omit the matching
+    // request-header event. Keep the page referrer as a usable anti-hotlink
+    // header instead of passing an empty header set to the player/downloader.
+    if (
+      referrer &&
+      !Object.keys(requestHeaders).some((key) => key.toLowerCase() === 'referer')
+    ) {
+      requestHeaders.Referer = referrer;
+    }
     // onBeforeSendHeaders records every request so media responses can reuse
     // their headers. Consume every completed response instead of retaining
     // non-media and whitelisted requests until eviction.
@@ -176,7 +199,7 @@ export const filterVideo = (details: OnHeadersReceivedListenerDetails) => {
     const contentType = readContentType(responseHeaders);
     // 诊断日志：对疑似视频请求打印 resourceType / contentType，
     // 用来定位 m3u8 为何没命中（resourceType 被闸掉 / content-type 不是 mpegurl / url 不含 .m3u8 等）。
-    if (looksVideoish(url, contentType)) {
+    if (looksVideoish(url, contentType) && shouldLogSniff('seen', url)) {
       console.log("[video-sniff] seen", JSON.stringify({resourceType, contentType, url}));
     }
     if (resourceType == 'xhr' || resourceType == "object" || resourceType == "media" || resourceType == "other") {
@@ -201,7 +224,9 @@ export const filterVideo = (details: OnHeadersReceivedListenerDetails) => {
           mediaType,
           addedAt: Date.now(),
         };
-        console.log("[video-sniff] matched", JSON.stringify({mediaType, contentType, url}));
+        if (shouldLogSniff('matched', url)) {
+          console.log("[video-sniff] matched", JSON.stringify({mediaType, contentType, url}));
+        }
         view.addNetVideoRequest(request);
       }
     }

@@ -1,14 +1,33 @@
 import {app, BrowserWindow, clipboard, ipcMain, session, shell, WebContents} from 'electron';
+import {promises as fs} from 'fs';
 import {basename, extname, join} from 'path';
 import {pathToFileURL} from 'url';
 import {Application} from '../application';
+import {getMainTranslator} from '../i18n';
 import {setupMediaDownloader} from '../services/media-downloader';
 
 // 智能播放器窗口：屏幕中央独立窗口(点外不消失)，承载本地静态播放器页面。
 // 每个窗口使用独立的临时 session，避免多开时互相覆盖 Referer/Cookie 等播放请求头。
 
-const WIDTH = 980;
+const WIDTH = 1200;
 const HEIGHT = 720;
+const PLAYER_PROXY_ROOT = '/.rainsee-media-player/';
+const PLAYER_ENTRY_PATH = `${PLAYER_PROXY_ROOT}pages/media-player.html`;
+
+const PLAYER_ASSETS: Record<string, {path: string; contentType: string}> = {
+  [PLAYER_ENTRY_PATH]: {
+    path: 'pages/media-player.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+  [`${PLAYER_PROXY_ROOT}vendor/hls.min.js`]: {
+    path: 'vendor/hls.min.js',
+    contentType: 'text/javascript; charset=utf-8',
+  },
+  [`${PLAYER_PROXY_ROOT}vendor/dplayer.min.js`]: {
+    path: 'vendor/dplayer.min.js',
+    contentType: 'text/javascript; charset=utf-8',
+  },
+};
 
 type HeaderRule = {
   host: string;
@@ -22,6 +41,10 @@ type MediaPlayerInstance = {
   subscribedTabId: number;
   localVideoPath: string;
   ownerWindowId: number | null;
+  sourceOrigin: string;
+  playerPageUrl: string;
+  failedSourceOrigin: string;
+  handledSchemes: string[];
 };
 
 const playerInstances = new Map<number, MediaPlayerInstance>();
@@ -30,6 +53,23 @@ let registered = false;
 
 const createPartition = () =>
   `media-player-${process.pid}-${Date.now()}-${++playerSequence}`;
+
+const getLocalPlayerPath = () =>
+  join(app.getAppPath(), 'static/pages/media-player.html');
+
+const getHttpOrigin = (url: string): string => {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+      ? parsed.origin
+      : '';
+  } catch (e) {
+    return '';
+  }
+};
+
+const buildProxiedPlayerUrl = (origin: string) =>
+  new URL(PLAYER_ENTRY_PATH, `${origin}/`).toString();
 
 const getInstanceByWindow = (win: BrowserWindow | null) => {
   if (!win) return null;
@@ -75,10 +115,111 @@ const ensureSessionHook = (instance: MediaPlayerInstance) => {
   });
 };
 
+// 把播放器静态页面挂到当前网页的 HTTP(S) origin 下。专用路径返回本地文件，
+// 其余请求绕过自定义处理器后继续走 Chromium 网络栈。
+const installSourceOriginProxy = (instance: MediaPlayerInstance) => {
+  const ses = session.fromPartition(instance.partition);
+  const handler = async (request: Request): Promise<Response> => {
+    let requestUrl: URL | null = null;
+    try {
+      requestUrl = new URL(request.url);
+    } catch (e) {
+    }
+
+    const asset = requestUrl && requestUrl.origin === instance.sourceOrigin
+      ? PLAYER_ASSETS[requestUrl.pathname]
+      : undefined;
+    if (asset) {
+      try {
+        const data = await fs.readFile(join(app.getAppPath(), 'static', asset.path));
+        return new Response(data as any, {
+          status: 200,
+          headers: {
+            'Content-Type': asset.contentType,
+            'Cache-Control': 'no-store',
+          },
+        });
+      } catch (e) {
+        console.log('[media-player] failed to read proxied asset', asset.path, e);
+        return new Response('Not Found', {status: 404});
+      }
+    }
+
+    return ses.fetch(request, {bypassCustomProtocolHandlers: true});
+  };
+
+  for (const scheme of ['http', 'https']) {
+    ses.protocol.handle(scheme, handler);
+    instance.handledSchemes.push(scheme);
+  }
+};
+
+const uninstallSourceOriginProxy = (instance: MediaPlayerInstance) => {
+  const ses = session.fromPartition(instance.partition);
+  for (const scheme of instance.handledSchemes) {
+    try {
+      ses.protocol.unhandle(scheme);
+    } catch (e) {
+    }
+  }
+  instance.handledSchemes = [];
+};
+
+const loadLocalPlayerPage = (
+  instance: MediaPlayerInstance,
+  failedSourceOrigin: string = '',
+) => {
+  const localPath = getLocalPlayerPath();
+  instance.sourceOrigin = '';
+  instance.failedSourceOrigin = failedSourceOrigin;
+  instance.playerPageUrl = pathToFileURL(localPath).toString();
+  return instance.win.loadFile(localPath);
+};
+
+// 返回 true 表示已触发一次页面加载，调用方应等待 did-finish-load 后再推数据。
+const ensurePlayerPage = (instance: MediaPlayerInstance, pageUrl: string): boolean => {
+  const sourceOrigin = getHttpOrigin(pageUrl);
+  if (sourceOrigin && sourceOrigin !== instance.failedSourceOrigin) {
+    const playerPageUrl = buildProxiedPlayerUrl(sourceOrigin);
+    if (instance.playerPageUrl === playerPageUrl) return false;
+
+    instance.sourceOrigin = sourceOrigin;
+    instance.failedSourceOrigin = '';
+    instance.playerPageUrl = playerPageUrl;
+    instance.win.loadURL(playerPageUrl).catch((e) => {
+      if (instance.win.isDestroyed() || instance.playerPageUrl !== playerPageUrl) return;
+      console.log('[media-player] source-origin page failed, falling back to file', e);
+      loadLocalPlayerPage(instance, sourceOrigin).catch(() => undefined);
+    });
+    return true;
+  }
+
+  const localPageUrl = pathToFileURL(getLocalPlayerPath()).toString();
+  if (instance.playerPageUrl === localPageUrl) return false;
+  loadLocalPlayerPage(instance).catch(() => undefined);
+  return true;
+};
+
+const isAllowedPlayerNavigation = (instance: MediaPlayerInstance, url: string) => {
+  try {
+    const expected = new URL(instance.playerPageUrl);
+    const candidate = new URL(url);
+    return candidate.protocol === expected.protocol
+      && candidate.host === expected.host
+      && candidate.pathname === expected.pathname
+      && candidate.search === expected.search;
+  } catch (e) {
+    return false;
+  }
+};
+
 const subscribeTab = (instance: MediaPlayerInstance, appWindow: any) => {
   const view = appWindow?.viewManager?.selected;
   instance.subscribedTabId = view ? view.id : -1;
 };
+
+const hasHeader = (headers: Record<string, string>, name: string) =>
+  Object.keys(headers).some((key) => key.toLowerCase() === name.toLowerCase());
 
 // 解析播放器当前订阅的 view(优先按 subscribedTabId 跨窗口查找，回退到所属窗口当前选中)。
 const resolveView = (instance: MediaPlayerInstance) => {
@@ -115,7 +256,7 @@ const pushVideoData = (instance: MediaPlayerInstance, appWindow?: any) => {
     instance.win.webContents.send('media-player-data', {
       items: [{
         url: pathToFileURL(instance.localVideoPath).toString(),
-        host: '本地文件',
+        host: getMainTranslator(Application.instance.settings?.object?.language)('mpLocalFile'),
         contentType: contentTypes[ext] || 'video/*',
         mediaType: ext || 'video',
         addedAt: Date.now(),
@@ -132,11 +273,27 @@ const pushVideoData = (instance: MediaPlayerInstance, appWindow?: any) => {
   const view = resolveView(instance) || appWindow?.viewManager?.selected;
   if (!view) return;
 
+  // 同一 tab 导航到另一站后，播放器也切换到新页面的 origin。
+  if (ensurePlayerPage(instance, view.url)) return;
+
   const items = view.getVideoItems();
 
   const rules: HeaderRule[] = [];
   for (const item of items) {
     const headers = view.getPlaybackHeaders(item.url);
+    // The response metadata always carries the page referrer, while the
+    // request-header cache can be empty when a request was observed before
+    // the session hook was installed. Preserve that anti-hotlink signal as a
+    // fallback for both player playback and main-process downloads.
+    if (!hasHeader(headers, 'Referer') && item.referrer) {
+      headers.Referer = item.referrer;
+    }
+    if (!hasHeader(headers, 'Origin') && item.referrer) {
+      try {
+        headers.Origin = new URL(item.referrer).origin;
+      } catch (e) {
+      }
+    }
     let host = '';
     try {
       host = new URL(item.url).hostname;
@@ -180,7 +337,7 @@ export const showMediaPlayer = (parent: BrowserWindow, filePath?: string) => {
     minimizable: true,
     maximizable: true,
     skipTaskbar: false,
-    title: '智能播放器',
+    title: getMainTranslator(Application.instance.settings?.object?.language)('mpWindowTitle'),
     backgroundColor: '#0B1020',
     webPreferences: {
       partition,
@@ -198,10 +355,15 @@ export const showMediaPlayer = (parent: BrowserWindow, filePath?: string) => {
     subscribedTabId: -1,
     localVideoPath: filePath || '',
     ownerWindowId: parent?.id || null,
+    sourceOrigin: '',
+    playerPageUrl: '',
+    failedSourceOrigin: '',
+    handledSchemes: [],
   };
 
   playerInstances.set(playerWindow.id, instance);
   ensureSessionHook(instance);
+  installSourceOriginProxy(instance);
   require('@electron/remote/main').enable(playerWindow.webContents);
 
   // 居中于父窗口
@@ -221,6 +383,14 @@ export const showMediaPlayer = (parent: BrowserWindow, filePath?: string) => {
     return {action: 'deny'};
   });
 
+  // 此窗口启用了 Node，只允许主框架停留在本地播放器对应的虚拟 URL。
+  playerWindow.webContents.on('will-navigate', (event, url) => {
+    if (!isAllowedPlayerNavigation(instance, url)) event.preventDefault();
+  });
+  playerWindow.webContents.on('will-redirect', (event, url) => {
+    if (!isAllowedPlayerNavigation(instance, url)) event.preventDefault();
+  });
+
   if (instance.localVideoPath) {
     instance.subscribedTabId = -1;
   } else {
@@ -235,15 +405,29 @@ export const showMediaPlayer = (parent: BrowserWindow, filePath?: string) => {
     pushVideoData(instance, appWindow);
   });
 
+  // 窗口级全屏状态同步到页面，支持按钮、Esc 和系统快捷键退出。
+  playerWindow.on('enter-full-screen', () => {
+    if (!playerWindow.isDestroyed()) playerWindow.webContents.send('media-player-fullscreen-state', true);
+  });
+  playerWindow.on('leave-full-screen', () => {
+    if (!playerWindow.isDestroyed()) playerWindow.webContents.send('media-player-fullscreen-state', false);
+  });
+
   playerWindow.on('closed', () => {
     playerInstances.delete(playerWindow.id);
+    uninstallSourceOriginProxy(instance);
     instance.headerRules = [];
     instance.subscribedTabId = -1;
     instance.localVideoPath = '';
+    instance.sourceOrigin = '';
+    instance.playerPageUrl = '';
+    instance.failedSourceOrigin = '';
   });
 
-  playerWindow.loadFile(join(app.getAppPath(), 'static/pages/media-player.html'))
-    .catch(() => undefined);
+  const initialView = instance.localVideoPath
+    ? null
+    : resolveView(instance) || appWindow?.viewManager?.selected;
+  ensurePlayerPage(instance, initialView?.url || '');
 };
 
 // 应用启动时注册一次：播放器页面的 IPC(关闭/外部播放/复制/请求最新数据)。
@@ -269,6 +453,21 @@ export const setupMediaPlayer = () => {
   ipcMain.on('media-player-minimize', (e) => {
     const instance = getInstanceBySender(e.sender);
     if (instance && !instance.win.isDestroyed()) instance.win.minimize();
+  });
+
+  // 切换最大化状态，供无边框标题栏使用。
+  ipcMain.on('media-player-toggle-maximize', (e) => {
+    const instance = getInstanceBySender(e.sender);
+    if (!instance || instance.win.isDestroyed()) return;
+    if (instance.win.isMaximized()) instance.win.unmaximize();
+    else instance.win.maximize();
+  });
+
+  // “网页全屏”同时切换视频和播放器窗口，视频、资源栏和标题栏同步进入全屏。
+  ipcMain.on('media-player-toggle-fullscreen', (e) => {
+    const instance = getInstanceBySender(e.sender);
+    if (!instance || instance.win.isDestroyed()) return;
+    instance.win.setFullScreen(!instance.win.isFullScreen());
   });
 
   // 复制到剪贴板
