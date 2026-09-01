@@ -19,12 +19,14 @@ import {SidePanelManager} from '../side-panel/side-panel-manager';
 import {SecondarySearchPanelManager} from '../secondary-search/secondary-search-manager';
 import {SidebarResizer} from '../sidebar/sidebar-resizer';
 import {attachWhiteScreenDetector} from '../whitescreen-detector';
+import {getMainTranslator} from '../i18n';
 import {ensureIncognitoIcon, INCOGNITO_AUMID} from '../services/incognito-icon';
 import {performClearOnExit, ClearItems} from '../services/clear-on-exit';
 import {consumePendingPageClose} from '../page-close-guard';
 import {RightGestureOverlay} from './right-gesture-overlay';
 import {startupMark, startupTimer} from '../timing';
 import {TrackedIpcMain} from '../services/tracked-ipc';
+import {getNavigationContext} from '../utils/navigation-context';
 import {
   getWindowStateFileNames,
   loadWindowState,
@@ -66,7 +68,6 @@ const INSTALL_IMMERSIVE_PAGE_INDICATOR = `(() => {
 const REMOVE_IMMERSIVE_PAGE_INDICATOR = `(() => {
   document.getElementById('${IMMERSIVE_PAGE_INDICATOR_ID}')?.remove();
 })()`;
-const F11_IMMERSIVE_TOAST_MESSAGE = '已开启浸润浏览，再次按F11退出';
 
 const logImmersiveHeader = (...args: any[]) => {
   if (
@@ -811,9 +812,13 @@ export class AppWindow {
       }, 2400);
     };
 
+    // toast 文案注入页面显示,按当前设置语言即时翻译。
+    const t = getMainTranslator(
+      Application.instance.settings?.object?.language,
+    );
     selected.webContents
       .executeJavaScript(
-        `(${toast.toString()})(${JSON.stringify(F11_IMMERSIVE_TOAST_MESSAGE)})`,
+        `(${toast.toString()})(${JSON.stringify(t('notifImmersiveEnabled'))})`,
         true,
       )
       .catch(() => undefined);
@@ -1160,6 +1165,33 @@ export class AppWindow {
       this.syncImmersiveHeaderBounds();
     });
 
+    // ===== [RSZ] 最小化/还原 resize 排查日志(临时,定位后移除) ==================
+    // 窗口事件时间线:contentBounds + 最大化/最小化状态。已知怪癖(实验复现):
+    // 无边框窗口在 Windows 上、最大化态最小化的瞬间会发一次 content=0x0 的
+    // resize 且 isMaximized() 翻 false;还原时上报的 content 高度可能与最大化
+    // 时相差 1px(911 vs 912),该漂移会经 fixBounds 传导成页面 1px resize。
+    const logRszWinEvent = (name: string) => {
+      if (this.win.isDestroyed()) return;
+      const b = this.win.getContentBounds();
+      console.log(
+        `[RSZ] win:${name} content=${b.width}x${b.height}@(${b.x},${b.y})` +
+          ` max=${this.win.isMaximized()} min=${this.win.isMinimized()}`,
+      );
+    };
+    (
+      [
+        'resize',
+        'minimize',
+        'restore',
+        'maximize',
+        'unmaximize',
+        'show',
+        'hide',
+        'focus',
+        'blur',
+      ] as const
+    ).forEach((name) => this.win.on(name, () => logRszWinEvent(name)));
+
     // 沉浸悬浮头部随主窗可见性/前台状态挂载或移除 BrowserView。延迟一拍读取
     // 焦点状态，避免切换窗口过程中错误恢复头部。
     this.win.on('minimize', () => this.updateImmersiveOverlayVisibility());
@@ -1213,12 +1245,14 @@ export class AppWindow {
       // 出现「只开 1 个标签却提示有 2 个打开的标签页」。
       const tabCount = this.viewManager.rendererTabCount;
       if (settings.warnOnQuit && tabCount > 1) {
+        const t = getMainTranslator(settings.language);
+        const quitTitle = t('winQuitConfirmTitle', {name: app.name});
         const answer = dialog.showMessageBoxSync(null, {
           type: 'question',
-          title: `退出 ${app.name}?`,
-          message: `退出 ${app.name}?`,
-          detail: `有 ${tabCount} 打开的标签页.`,
-          buttons: ['关闭', '取消'],
+          title: quitTitle,
+          message: quitTitle,
+          detail: t('winQuitConfirmDetail', {count: tabCount}),
+          buttons: [t('close'), t('cancel')],
         });
 
         if (answer === 1) {
@@ -1280,7 +1314,15 @@ export class AppWindow {
 
     // 拦截主窗口的文件拖拽导航(绕过 BrowserView)
     this.webContents.on('will-navigate', (e, url) => {
-      const flagsUrl = resolveInternalFlagsUrl(url, getWebUIURL('flags'));
+      const navigation = getNavigationContext(e, url);
+      // A child frame (including extension content UI) owns its own
+      // navigation; never promote it to a top-level browser tab.
+      if (!navigation.isMainFrame) return;
+
+      const flagsUrl = resolveInternalFlagsUrl(
+        navigation.url,
+        getWebUIURL('flags'),
+      );
       if (flagsUrl) {
         e.preventDefault();
         this.viewManager.create({
@@ -1291,8 +1333,8 @@ export class AppWindow {
       }
 
       // 检测是否是 file:// 协议的电子书文件
-      if (url.startsWith('file:///')) {
-        const path = filePathFromFileUrl(url);
+      if (navigation.url.startsWith('file:///')) {
+        const path = filePathFromFileUrl(navigation.url);
         const koodoUrl = buildKoodoReaderUrl(path);
         if (koodoUrl) {
           console.log('[file-nav] main-window will-navigate redirect to koodoreader:', koodoUrl);

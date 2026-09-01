@@ -31,6 +31,8 @@ import {EventEmitter} from 'events';
 import {Application} from './application';
 // 开源版：AI 面板 / 订阅面板 / 账号云模块已移除。
 import {getWebUIURL} from '~/common/webui-main';
+import {getViewSecurityKind, isPdfUrl} from './view-web-preferences';
+import {getNavigationContext} from './utils/navigation-context';
 import {SIDEBAR_RESIZER_WIDTH} from './sidebar/sidebar-resizer';
 import {SIDE_PANEL_HEADER_HEIGHT} from './side-panel/side-panel-view';
 import {SECONDARY_SEARCH_HEADER_HEIGHT} from './secondary-search/secondary-search-panel';
@@ -340,8 +342,9 @@ export class ViewManager extends EventEmitter {
     wc.on('before-input-event', onBeforeInput);
     wc.once('destroyed', cleanup);
     wc.once('did-finish-load', () => setTimeout(cleanup, 400));
-    wc.once('did-start-navigation', (_e, url, _isInPlace, isMainFrame) => {
-      if (isMainFrame && !this.isBlankNewTabUrl(url)) {
+    wc.once('did-start-navigation', (event, url, isInPlace, isMainFrame) => {
+      const navigation = getNavigationContext(event, url, isInPlace, isMainFrame);
+      if (navigation.isMainFrame && !this.isBlankNewTabUrl(navigation.url)) {
         cleanup();
       }
     });
@@ -387,6 +390,29 @@ export class ViewManager extends EventEmitter {
     this.incognito = incognito;
     this.warmIncognito = incognito;
     window.win.once('closed', () => this.ipc.dispose());
+
+    // ===== [RSZ] 最小化/还原 resize 排查(临时,定位后随 [RSZ] 一并移除) ========
+    // 页面世界(view-preload 探针)抓到的真实 resize/visibilitychange 从这里回传,
+    // 与下方 fixBounds / View.setBounds 的 [RSZ] 日志对照,即可区分页面收到的
+    // resize 是我们布局链 setBounds 发出的,还是 Chromium 自身直发的。
+    this.ipc.on('rsz-page-resize', (e, payload: any) => {
+      if (e.sender.isDestroyed()) return;
+      let tabId = -1;
+      for (const [id, view] of this.views) {
+        if (!view.webContents.isDestroyed() && view.webContents.id === e.sender.id) {
+          tabId = id;
+          break;
+        }
+      }
+      // senderFrame.url 是权威帧来源(preload 的 frame 字段是自报,二者对照)。
+      let frameUrl = '?';
+      try {
+        frameUrl = (e.senderFrame?.url || '').slice(0, 100);
+      } catch {}
+      console.log(
+        `[RSZ] page#${tabId} src=${frameUrl} ${JSON.stringify(payload ?? {})}`,
+      );
+    });
 
     const {id} = window.win;
     this.ipc.handle(`view-create-${id}`, (e, details) => {
@@ -436,6 +462,7 @@ export class ViewManager extends EventEmitter {
     });
 
     this.ipc.on(`add-tab-${id}`, (e, details) => {
+      if (!this.ownsIpcSender(e.sender)) return;
       // bookmarklet(javascript: 脚本):不开新标签,改为在当前网页执行。
       // 渲染端书签栏/溢出浮层都经此咽喉,故在此统一识别。
       const bookmarklet = parseBookmarklet(details?.url);
@@ -724,9 +751,13 @@ export class ViewManager extends EventEmitter {
     url: string,
     incognito: boolean,
     loadOptions?: LoadURLOptions,
+    pdfCompat = false,
   ): View {
     const warm = this.warmView;
+    const targetKind = getViewSecurityKind(url);
     if (
+      targetKind === 'sandboxed' &&
+      !pdfCompat &&
       warm &&
       !warm.webContents.isDestroyed() &&
       incognito === this.warmIncognito
@@ -737,7 +768,11 @@ export class ViewManager extends EventEmitter {
       setImmediate(() => this.ensureWarmView());
       return warm;
     }
-    const reason = !warm
+    const reason = targetKind !== 'sandboxed'
+      ? `security kind ${targetKind}`
+      : pdfCompat
+      ? 'PDF compatibility view'
+      : !warm
       ? 'pool empty'
       : warm.webContents.isDestroyed()
         ? 'warm view destroyed'
@@ -745,6 +780,7 @@ export class ViewManager extends EventEmitter {
     console.log(`[warm] MISS  new View → ${url}  (${reason})`);
     return new View(this.window, url, incognito, {
       ...(loadOptions ? {loadOptions} : {}),
+      ...(pdfCompat ? {pdfCompat: true} : {}),
       deferLoad: true,
     });
   }
@@ -799,7 +835,8 @@ export class ViewManager extends EventEmitter {
     // 透传 POST 表单 target=_blank 等场景的 loadURL options(postData + Content-Type)。
     const internalDetails = details as any;
     const loadOptions = internalDetails.loadOptions as LoadURLOptions | undefined;
-    const view = this.acquireView(details.url, incognito, loadOptions);
+    const pdfCompat = isPdfUrl(details.url || '');
+    const view = this.acquireView(details.url, incognito, loadOptions, pdfCompat);
 
     // Make sure the renderer-side tab carries the same flag for styling and
     // history/startup-tab guards.
@@ -905,10 +942,22 @@ export class ViewManager extends EventEmitter {
       url,
       incognito,
       childTarget instanceof BrowserView
-        ? {deferLoad: true, adoptedBrowserView: childTarget}
+        ? {
+            deferLoad: true,
+            adoptedBrowserView: childTarget,
+            ...(isPdfUrl(url) ? {pdfCompat: true} : {}),
+          }
         : childTarget instanceof WebContentsView
-          ? {deferLoad: true, adoptedContentView: childTarget}
-          : {deferLoad: true, adoptedWebContents: childTarget},
+          ? {
+              deferLoad: true,
+              adoptedContentView: childTarget,
+              ...(isPdfUrl(url) ? {pdfCompat: true} : {}),
+            }
+          : {
+              deferLoad: true,
+              adoptedWebContents: childTarget,
+              ...(isPdfUrl(url) ? {pdfCompat: true} : {}),
+            },
     );
 
     const {webContents} = view;
@@ -1277,6 +1326,16 @@ export class ViewManager extends EventEmitter {
     // 拖拽可能在异步 DOM 测量期间开始，丢弃这份已经过期的结果。
     if (this.sidebarResizeActive) return;
 
+    // [RSZ] 排查日志(临时):只记首测(count=0),启动期 anchor 未就绪的 25ms
+    // 重试不刷屏;最终是否应用见函数末尾的 APPLY/SKIP 日志。
+    if (count === 0) {
+      console.log(
+        `[RSZ] fixBounds measure content=${width}x${height}` +
+          ` anchor=${anchor.x},${anchor.y},${anchor.width},${anchor.height}` +
+          ` min=${this.window.win.isDestroyed() ? '?' : this.window.win.isMinimized()}`,
+      );
+    }
+
     const toolbarContentHeight = anchor.y;
     if (toolbarContentHeight <= 0 && count < 40) {
       this.timer = setTimeout(() => {
@@ -1407,16 +1466,48 @@ export class ViewManager extends EventEmitter {
       }
     }
 
-    if (
+    // 同值守卫同时比对「账本 bounds」与「原生真实 bounds」:历史上 autoResize 会
+    // 绕过 View.setBounds 直接改原生 bounds,导致账本说没变而真实尺寸早已漂移
+    // (最小化/还原后页面卡在还原态宽度)。读真实值保证任何来源的漂移都会在下一
+    // 次 fixBounds 被纠正。
+    let realBounds: Electron.Rectangle | null = null;
+    try {
+      realBounds = view.browserView?.getBounds?.() ?? null;
+    } catch {
+      realBounds = null;
+    }
+    const differsFromLedger =
       !view.bounds ||
       newBounds.x !== view.bounds.x ||
       newBounds.y !== view.bounds.y ||
       newBounds.width !== view.bounds.width ||
-      newBounds.height !== view.bounds.height
-    ) {
+      newBounds.height !== view.bounds.height;
+    const differsFromReal =
+      !realBounds ||
+      newBounds.x !== realBounds.x ||
+      newBounds.y !== realBounds.y ||
+      newBounds.width !== realBounds.width ||
+      newBounds.height !== realBounds.height;
+
+    if (differsFromLedger || differsFromReal) {
+      // [RSZ] 排查日志(临时):fixBounds 决定改写页面 view 尺寸的时刻。
+      const prev = view.bounds
+        ? `${view.bounds.width}x${view.bounds.height}@${view.bounds.x},${view.bounds.y}`
+        : 'null';
+      console.log(
+        `[RSZ] fixBounds APPLY view=${view.id} ${prev} real=${realBounds ? `${realBounds.width}x${realBounds.height}` : '?'} -> ` +
+          `${newBounds.width}x${newBounds.height}@${newBounds.x},${newBounds.y}` +
+          ` min=${this.window.win.isDestroyed() ? '?' : this.window.win.isMinimized()}`,
+      );
       view.setBounds(newBounds);
       // 缓存最新内容区矩形,供下次 select() 同步预定位新视图(见 select())。
       this.lastContentBounds = newBounds;
+    } else {
+      // [RSZ] 排查日志(临时):同值守卫命中(尺寸没变,不该触发页面 resize)。
+      console.log(
+        `[RSZ] fixBounds SKIP view=${view.id} unchanged ` +
+          `${newBounds.width}x${newBounds.height}@${newBounds.x},${newBounds.y}`,
+      );
     }
   }
 
@@ -1441,6 +1532,9 @@ export class ViewManager extends EventEmitter {
 
     this.window.webContents.on('ipc-message', (e, message) => {
       if (message === 'resize-height') {
+        // [RSZ] 排查日志(临时):UI renderer 的 ResizeObserver 测到 #view-anchor
+        // 尺寸变化(注意 rAF 门控:最小化期间 rAF 暂停,可能到还原后才送达)。
+        console.log('[RSZ] resize-height IPC(UI anchor 变化)');
         this.fixBounds();
       }
     });

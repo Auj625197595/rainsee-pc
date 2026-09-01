@@ -28,6 +28,8 @@ import {
   IPermissionRecord,
   IBluetoothDevice,
   IBluetoothRequestInfo,
+  IHidRequestInfo,
+  IDisplayCaptureRequestInfo,
 } from '~/interfaces';
 import {
   ERROR_PROTOCOL,
@@ -78,18 +80,36 @@ import {resolveExtensionIconDataUrl} from "./services/chrome-extension-resources
 // 开源版：AI 面板图床上传能力已移除。
 import {buildGestureCode} from "./services/gesture-subframe";
 import {buildGestureConfig} from "./menus/gesture-actions";
+import {getMainTranslator} from "./i18n";
+
+// 手势配置快照:绑定按当前设置解析,标签按当前语言即时翻译(不缓存翻译器)。
+const viewGestureConfig = () => buildGestureConfig(
+  Application.instance.settings.object,
+  getMainTranslator(Application.instance.settings.object.language),
+);
 import {NativeRightGesture} from './services/native-right-gesture';
 import type {NativeRightGestureVisualUpdate} from './services/native-right-gesture';
 import {detectFlashRequirement} from './services/flash';
 // 开源版：Chrome 主题新标签页注入已随云端 NTP 一并移除。
 import {beginPageClose, expirePageClose} from './page-close-guard';
 import {requestCredentialPrompt} from './services/credential-prompt';
-// 开源版：账号/登录弹窗已移除。
-import {createViewWebPreferences} from './view-web-preferences';
+import {
+  ViewSecurityKind,
+  createViewWebPreferences,
+  getViewPreloadFilename,
+  getViewSecurityKind,
+  isBuiltinPdfViewerUrl,
+  isPdfUrl,
+  isCrossViewSecurityNavigation,
+  logSandboxedTabsMode,
+} from './view-web-preferences';
 import {requestPermission} from './dialogs/permissions';
 import {requestBluetoothDevice, cancelBluetoothRequest} from './dialogs/bluetooth';
+import {cancelHidRequest} from './dialogs/hid';
+import {cancelDisplayCaptureRequest} from './dialogs/display-capture';
 import {showPageToast} from './menus/common-actions';
 import {getExternalNavigationDetails} from './services/external-navigation';
+import {getNavigationContext} from './utils/navigation-context';
 import {
   getGreasyforkDisplayUrl,
   getGreasyforkMirrorUrl,
@@ -340,6 +360,11 @@ export class View {
   // 由 setWindowOpenHandler.createWindow 收养的原生目标。目标既可能由
   // WebContentsView 承载，也可能由官方 createWindow 示例使用的 BrowserView 承载。
   private nativeWindowOpenTarget = false;
+  // PDF compatibility is fixed at WebContents creation time. A PDF View must
+  // be replaced before it is reused for a normal document, because Electron
+  // cannot toggle sandbox on an existing WebContents.
+  private pdfCompat = false;
+  private pendingPdfReplacement: {url: string; loadOptions?: LoadURLOptions} | null = null;
 
   // 只处理 `window.open('about:blank')` 后的第二次脚本导航。直接
   // `window.open(url)` 已由 Chromium/Electron 的 createWindow 完整建立原生
@@ -366,6 +391,7 @@ export class View {
 
   public isNewTab = false;
   public homeUrl: string;
+  public readonly securityKind: ViewSecurityKind;
   public favicon = '';
   // 当前已选 favicon 候选的评分。DOM 探测(did-finish-load)若发现更高分候选
   // (且超过阈值)则覆盖,保证最终用上页面声明的高清图标而非首个低清候选。
@@ -380,6 +406,12 @@ export class View {
   // 每次显式 load 都递增；扩展主页等待完成时只恢复仍属于同一次导航的标签。
   private loadSequence = 0;
 
+  private pendingCrossSecurityNavigation?: {
+    url: string;
+    loadOptions?: LoadURLOptions;
+    stopCurrent: boolean;
+  };
+
   // bejson 快捷格式化请求的代际令牌,避免旧页面加载完成后覆盖新导航。
   private bejsonRequestSequence = 0;
   private bejsonLoadCleanup?: () => void;
@@ -390,6 +422,13 @@ export class View {
   public thumbnail = '';
 
   public errorURL = '';
+
+  // Certificate recovery is bounded: the user authorizes the HTTPS retry,
+  // then at most one automatic HTTP downgrade is allowed. Public loads reset
+  // these markers; internal retries use webContents.loadURL directly.
+  private certificateRecoveryUrl = '';
+  private certificateIgnoreRetried = false;
+  private certificateDowngradeRetried = false;
 
   private hasError = false;
 
@@ -464,6 +503,9 @@ export class View {
   public requestedPermission: any;
   // Web Bluetooth chooser:数据由 dialogs/bluetooth.ts 挂载,tabAssociation 推送用。
   public requestedBluetooth: IBluetoothRequestInfo | null = null;
+  // WebHID chooser request data is associated with the logical tab.
+  public requestedHid: IHidRequestInfo | null = null;
+  public requestedDisplayCapture: IDisplayCaptureRequestInfo | null = null;
   // 进行中的 select-bluetooth-device 请求:持续触发时只更新列表,完成时调 Chromium callback。
   private bluetoothChooser: {
     callback: Function;
@@ -483,6 +525,14 @@ export class View {
   // The next Greasy Fork navigation that was already checked by load(). This
   // prevents its did-start-navigation event from starting a second check.
   private approvedGreasyforkNavigationUrl = '';
+
+  // Chromium caps a redirect chain at 20 hops. The session webRequest path is
+  // normally responsible for that limit; keep an equivalent guard for the
+  // synchronous View fallback, which supersedes a navigation with loadURL().
+  private extensionDnrRedirectUrls = new Set<string>();
+  private extensionDnrRedirectCount = 0;
+  private extensionDnrRedirectLastTarget = '';
+  private extensionDnrRedirectLastAt = 0;
 
   private historyQueue = new Queue();
 
@@ -779,12 +829,29 @@ export class View {
    * This is a generic extension-platform fallback: no extension id, userscript
    * suffix or vendor install page is encoded here.
    */
-  private handleExtensionDnrNavigation(url: string) {
+  private handleExtensionDnrNavigation(
+    url: string,
+    method = 'GET',
+    loadOptions?: LoadURLOptions,
+  ) {
     if (!/^(https?|ftp):\/\//i.test(url || '')) return false;
+
+    const now = Date.now();
+    if (
+      now - this.extensionDnrRedirectLastAt > 10_000 ||
+      (this.extensionDnrRedirectLastTarget &&
+        url !== this.extensionDnrRedirectLastTarget &&
+        !this.extensionDnrRedirectUrls.has(url))
+    ) {
+      this.extensionDnrRedirectUrls.clear();
+      this.extensionDnrRedirectCount = 0;
+      this.extensionDnrRedirectLastTarget = '';
+    }
 
     const verdict = Application.instance.sessions?.decideExtensionNavigation(
       url,
       this.webContents,
+      method,
     );
     if (!verdict || verdict.action === 'none' || verdict.action === 'allow') {
       return false;
@@ -801,12 +868,29 @@ export class View {
 
     const target = verdict.redirectUrl;
     if (!target || target === url) return false;
+    if (
+      this.extensionDnrRedirectCount >= 20 ||
+      this.extensionDnrRedirectUrls.has(target)
+    ) {
+      tlog(
+        `[crx-dnr] redirect chain stopped tab=${this.id} count=${this.extensionDnrRedirectCount} url=${url} target=${target}`,
+      );
+      this.extensionDnrRedirectUrls.clear();
+      this.extensionDnrRedirectCount = 0;
+      this.extensionDnrRedirectLastTarget = '';
+      return false;
+    }
+    this.extensionDnrRedirectUrls.add(url);
+    this.extensionDnrRedirectUrls.add(target);
+    this.extensionDnrRedirectCount++;
+    this.extensionDnrRedirectLastTarget = target;
+    this.extensionDnrRedirectLastAt = now;
     tlog(
       `[crx-dnr] redirected main-frame navigation tab=${this.id} ${url} -> ${target}`,
     );
     const loadTarget = () => {
       if (this.webContents.isDestroyed()) return;
-      this.webContents.loadURL(target).catch((error) => {
+      this.webContents.loadURL(target, loadOptions).catch((error) => {
         console.log('[crx-dnr] failed to load redirected navigation:', target, error);
       });
     };
@@ -1031,9 +1115,10 @@ export class View {
     }
 
     if (this.externalNavigationRule === 2) {
+      const t = getMainTranslator(Application.instance.settings.object.language);
       showPageToast(
         this.webContents,
-        '已跟随权限管理进行拦截，如有修改请前往权限管理修改',
+        t('vwPermBlockedNotice'),
       );
       return true;
     }
@@ -1107,12 +1192,13 @@ export class View {
         pageStillCurrent &&
         Application.instance.sessions.claimRuffleInstallNotice()
       ) {
+        const t = getMainTranslator(Application.instance.settings.object.language);
         const result = await dialog.showMessageBox(this.window.win, {
           type: 'info',
-          title: 'Flash 支持',
-          message: '检测到网页正在使用 Flash，Flash 兼容插件已安装。',
-          detail: '点击“确认并刷新”让兼容插件在当前页面生效。',
-          buttons: ['确认并刷新', '设置', '稍后'],
+          title: t('vwFlashTitle'),
+          message: t('vwFlashDetected'),
+          detail: t('vwFlashConfirmReload'),
+          buttons: [t('vwConfirmReload'), t('settings'), t('vwLater')],
           defaultId: 0,
           cancelId: 2,
           noLink: true,
@@ -1146,9 +1232,16 @@ export class View {
       adoptedBrowserView?: BrowserView;
       adoptedContentView?: WebContentsView;
       adoptedWebContents?: WebContents;
+      /** Use the Electron 43 PDF-compatible non-sandboxed renderer. */
+      pdfCompat?: boolean;
     } = {},
   ) {
-    const preload = `${app.getAppPath()}/build/view-preload.bundle.js`;
+    this.securityKind = getViewSecurityKind(url);
+    this.pdfCompat = opts.pdfCompat === true;
+    logSandboxedTabsMode();
+    const preload = `${app.getAppPath()}/build/${getViewPreloadFilename(
+      this.securityKind,
+    )}`;
     const viewSession = incognito
       ? Application.instance.sessions.viewIncognito
       : Application.instance.sessions.view;
@@ -1178,7 +1271,13 @@ export class View {
       this.nativeWindowOpenTarget = true;
     } else {
       this.browserView = new BrowserView({
-        webPreferences: createViewWebPreferences(viewSession, preload, incognito),
+        webPreferences: createViewWebPreferences(
+          viewSession,
+          preload,
+          incognito,
+          this.securityKind,
+          opts.pdfCompat === true,
+        ),
       });
     }
     this.tabId = this.browserView.webContents.id;
@@ -1208,8 +1307,7 @@ export class View {
     }
 
     // 拦截 BrowserView 上的文件导航(koodoreader 支持的格式重定向到阅读器)
-    const handleFileNavigation = (e: any, url: string, isMainFrame: boolean) => {
-      if (!isMainFrame) return;
+    const handleFileNavigation = (e: any, url: string) => {
       if (url.startsWith('file:///')) {
         const path = filePathFromFileUrl(url);
         const koodoUrl = buildKoodoReaderUrl(path);
@@ -1224,16 +1322,19 @@ export class View {
     };
 
     this.browserView.webContents.on('will-navigate', (e, url) => {
-      this.syncUserAgentForURL(url);
-      handleFileNavigation(e, url, true);
+      const navigation = getNavigationContext(e, url);
+      if (!navigation.isMainFrame) return;
+      this.syncUserAgentForURL(navigation.url);
+      handleFileNavigation(e, navigation.url);
     });
 
     this.browserView.webContents.on('did-start-navigation', (e, url, isInPlace, isMainFrame) => {
       // did-start-navigation 没有 preventDefault,要用 stop() 中止导航。
       // 但绝不能在回调里同步 stop()——会触发 Chromium CHECK 硬崩主进程
       // (见上方 crx-dnr 重定向的同款注释)。必须等事件回栈后,在微任务里中止原请求、再开 koodoreader。
-      if (isMainFrame && !isInPlace && url.startsWith('file:///')) {
-        const path = filePathFromFileUrl(url);
+      const navigation = getNavigationContext(e, url, isInPlace, isMainFrame);
+      if (navigation.isMainFrame && !navigation.isSameDocument && navigation.url.startsWith('file:///')) {
+        const path = filePathFromFileUrl(navigation.url);
         const koodoUrl = buildKoodoReaderUrl(path);
         if (koodoUrl) {
           console.log('[file-nav] did-start-navigation stopping, opening koodoreader:', koodoUrl);
@@ -1246,6 +1347,18 @@ export class View {
       }
     });
 
+    try {
+      const preferences = (this.browserView.webContents as any)
+        .getLastWebPreferences?.();
+      console.log(
+        `[view-security] view=${this.browserView.webContents.id} kind=${
+          this.securityKind
+        } pdfCompat=${opts.pdfCompat === true} sandbox=${!!preferences?.sandbox} contextIsolation=${!!preferences?.contextIsolation}`,
+      );
+    } catch {
+      // Diagnostics must not affect view construction.
+    }
+
     // 注:chromeExtensions.addTab 不在构造时调用——预热 View(warm 模式)停在 about:blank,
     // 此时注册会被 store.addTab 设为窗口 active tab,污染扩展系统的 onActivated/active 标签。
     // 注册推迟到 load()(acquire 后首次),由 this.extensionsRegistered 守卫。
@@ -1257,7 +1370,7 @@ export class View {
     this.homeUrl = url;
 
     this.nativeRightGesture = new NativeRightGesture(
-      () => buildGestureConfig(Application.instance.settings.object),
+      () => viewGestureConfig(),
       (actionId) => {
         if (!this.destroying && this.isSelected) {
           Application.instance.dispatchGesture(actionId, this.webContents.id);
@@ -1333,13 +1446,14 @@ export class View {
       return this.errorURL;
     });
     this.ipc.handle(`reload-error-url-${this.id}`, async (e) => {
+      const t = getMainTranslator(Application.instance.settings.object.language);
       if (e.sender.id !== this.webContents.id) {
-        return {error: '无权重新加载该页面'};
+        return {error: t('vwNoReloadPermission')};
       }
 
       const targetUrl = this.errorURL;
       if (!targetUrl || targetUrl.startsWith(`${ERROR_PROTOCOL}://`)) {
-        return {error: '无法获取待重试的网址'};
+        return {error: t('vwNoRetryUrl')};
       }
 
       // 崩溃恢复页中的 renderer 内导航可能失效，由主进程重新导航。
@@ -1347,59 +1461,12 @@ export class View {
       return {success: true};
     });
     this.ipc.handle(`ignore-certificate-error-${this.id}`, async (e) => {
+      const t = getMainTranslator(Application.instance.settings.object.language);
       if (e.sender.id !== this.webContents.id) {
-        return {error: '无权忽略该证书错误'};
+        return {error: t('vwNoCertIgnore')};
       }
 
-      // A server may be speaking plain HTTP on an HTTPS endpoint. Chromium
-      // reports that mismatch as ERR_SSL_PROTOCOL_ERROR (-107), which is not a
-      // certificate validation failure and therefore cannot be bypassed. Retry
-      // the same endpoint over HTTP so this recovery works for local and remote
-      // development/test servers alike.
-      try {
-        const url = new URL(this.errorURL);
-        if (url.protocol === 'https:') {
-          url.protocol = 'http:';
-          return {success: true, retryUrl: url.toString()};
-        }
-      } catch {}
-
-      const host = getCertificateErrorHost(this.errorURL);
-      if (!host) {
-        return {error: '无法获取当前域名'};
-      }
-
-      if (!this.incognito) {
-        const existing = await Application.instance.storage.findOne<IPermissionRecord>({
-          scope: 'permissions',
-          query: {
-            url: host,
-            permission: IGNORE_CERTIFICATE_ERRORS_PERMISSION,
-            mediaTypes: '',
-          },
-        });
-
-        if (existing?._id) {
-          await Application.instance.storage.update({
-            scope: 'permissions',
-            query: {_id: existing._id},
-            value: {type: 1, mediaTypes: ''},
-          });
-        } else {
-          await Application.instance.storage.insert({
-            scope: 'permissions',
-            item: {
-              url: host,
-              permission: IGNORE_CERTIFICATE_ERRORS_PERMISSION,
-              type: 1,
-              mediaTypes: '',
-            },
-          });
-        }
-      }
-
-      allowCertificateErrorHost(host);
-      return {success: true};
+      return this.advanceCertificateRecovery(this.errorURL);
     });
     this.ipc.on(`supervideo-video-created-${this.id}`, async (e, data) => {
       console.log("supervideo-video-created", data);
@@ -1445,7 +1512,8 @@ export class View {
           // 解析注册表查询结果，提取Potplayer的安装路径
           const match = stdout.match(/ProgramPath\s+REG_SZ\s+(.+)/i);
           if (!match || match.length < 2) {
-            reject(new Error('未找到PotPlayer的安装路径'));
+            const t = getMainTranslator(Application.instance.settings.object.language);
+            reject(new Error(t('vwPotPlayerNotFound')));
             return;
           }
           const installPath = match[1];
@@ -1511,11 +1579,12 @@ export class View {
         if (existsSync(path)) {
           callPotPlayer(path, url, headers);
         } else {
+          const t = getMainTranslator(Application.instance.settings.object.language);
           dialog.showMessageBox({
             type: 'warning',
-            title: '温馨提示',
-            message: '请确认你有安装PotPlayer，安装后才能唤起播放视频',
-            buttons: ['确定']
+            title: t('vwFriendlyNotice'),
+            message: t('vwPotPlayerMissing'),
+            buttons: [t('confirm')]
           });
         }
       };
@@ -1573,36 +1642,52 @@ export class View {
       this.updateURL(this.webContents.getURL());
     });
 
-    this.webContents.on('will-navigate', (e, nextUrl) => {
-      if (this.handleGreasyforkNavigation(nextUrl)) {
-        e.preventDefault();
-      } else if (this.handleKtllqNavigation(nextUrl)) {
-        e.preventDefault();
-      } else if (this.handleInternalFlagsNavigation(nextUrl)) {
-        e.preventDefault();
-      } else if (this.handleExtensionDnrNavigation(nextUrl)) {
-        e.preventDefault();
-      } else if (this.handleExternalNavigation(nextUrl)) {
-        e.preventDefault();
-      } else if (this.shouldDivertNativeWindowOpenNavigation(nextUrl)) {
-        e.preventDefault();
-        const targetUrl = nextUrl;
-        // 先让 Chromium 完整退出 will-navigate 回调，再建立覆盖 BrowserView。
-        // 在该回调里同步创建/加载视图会造成导航控制器重入。
-        queueMicrotask(() => this.openWindowOpenNavigationOverlay(targetUrl));
-      }
-    });
+    this.webContents.on(
+      'will-navigate',
+      (e, nextUrl, _isInPlace, isMainFrame) => {
+        // Electron's legacy will-navigate signature includes isMainFrame as the
+        // fourth argument. A few Chromium paths can surface a subframe
+        // navigation here (notably extension iframes such as Bitwarden's inline
+        // autofill menu). Cross-security rerouting is only valid for the tab's
+        // main document; routing a child frame would replace the whole tab.
+        const navigation = getNavigationContext(e, nextUrl, _isInPlace, isMainFrame);
+        if (!navigation.isMainFrame) return;
+        if (this.openCrossSecurityNavigation(navigation.url)) {
+          e.preventDefault();
+        } else if (this.handleGreasyforkNavigation(navigation.url)) {
+          e.preventDefault();
+        } else if (this.handleKtllqNavigation(navigation.url)) {
+          e.preventDefault();
+        } else if (this.handleInternalFlagsNavigation(navigation.url)) {
+          e.preventDefault();
+        } else if (this.handleExternalNavigation(navigation.url)) {
+          e.preventDefault();
+        } else if (this.shouldDivertNativeWindowOpenNavigation(navigation.url)) {
+          e.preventDefault();
+          const targetUrl = navigation.url;
+          // 先让 Chromium 完整退出 will-navigate 回调，再建立覆盖 BrowserView。
+          // 在该回调里同步创建/加载视图会造成导航控制器重入。
+          queueMicrotask(() => this.openWindowOpenNavigationOverlay(targetUrl));
+        }
+      },
+    );
 
     this.webContents.on('will-redirect', (e, nextUrl) => {
-      if (this.handleGreasyforkNavigation(nextUrl)) {
+      // Redirects can originate from subframes as well. They must never be
+      // promoted to a top-level security-container navigation.
+      const navigation = getNavigationContext(e, nextUrl);
+      if (!navigation.isMainFrame) return;
+      if (this.openCrossSecurityNavigation(navigation.url)) {
         e.preventDefault();
-      } else if (this.handleKtllqNavigation(nextUrl)) {
+      } else if (this.handleGreasyforkNavigation(navigation.url)) {
         e.preventDefault();
-      } else if (this.handleInternalFlagsNavigation(nextUrl)) {
+      } else if (this.handleKtllqNavigation(navigation.url)) {
         e.preventDefault();
-      } else if (this.handleExtensionDnrNavigation(nextUrl)) {
+      } else if (this.handleInternalFlagsNavigation(navigation.url)) {
         e.preventDefault();
-      } else if (this.handleExternalNavigation(nextUrl)) {
+      } else if (this.handleExtensionDnrNavigation(navigation.url)) {
+        e.preventDefault();
+      } else if (this.handleExternalNavigation(navigation.url)) {
         e.preventDefault();
       }
     });
@@ -1687,6 +1772,11 @@ export class View {
       Application.instance.nativeBlankPopups.manage(
         this.webContents,
         popupWindow,
+        (url) => {
+          if (!this.window.win.isDestroyed()) {
+            this.window.viewManager.create({url, active: true});
+          }
+        },
       );
     });
     this.webContents.setWindowOpenHandler((details) => {
@@ -1694,6 +1784,17 @@ export class View {
       // 分支、后台 load 以及 ViewManager 必须使用同一个归一化 URL，不能一处
       // 当空串、一处当 about:blank。
       const targetUrl = details.url || 'about:blank';
+      const initiatingFrame = (details as any).initiatingFrame;
+      const isSubframeRequest =
+        !!initiatingFrame && initiatingFrame !== this.webContents.mainFrame;
+      if (this.isCrossSecurityNavigation(targetUrl) && !isSubframeRequest) {
+        queueMicrotask(() => {
+          if (!this.window.win.isDestroyed()) {
+            this.window.viewManager.create({url: targetUrl, active: true});
+          }
+        });
+        return {action: 'deny'};
+      }
       if (
         this.handleGreasyforkNavigation(
           targetUrl,
@@ -1777,7 +1878,13 @@ export class View {
         // Electron's sandboxed defaults and never loads view-preload, leaving
         // USER_SCRIPT worlds without the runtime messaging relay.
         overrideBrowserWindowOptions: {
-          webPreferences: createViewWebPreferences(viewSession, preload, incognito),
+          webPreferences: createViewWebPreferences(
+            viewSession,
+            preload,
+            incognito,
+            getViewSecurityKind(targetUrl),
+            isPdfUrl(targetUrl),
+          ),
         },
         createWindow: (options) => {
           if (isBlankTarget) {
@@ -1866,12 +1973,54 @@ export class View {
       this.updateNavigationState();
       this.emitEvent('loading', true);
       this.updateURL(this.webContents.getURL());
-      this.webContents.executeJavaScript(hookClickCode, true);
+      this.webContents
+        .executeJavaScript(hookClickCode, true)
+        .catch(() => undefined);
     });
 
     this.webContents.addListener('did-start-navigation', async (e, ...args) => {
-      tlog(`view ${this.id}: did-start-navigation url=${args[0]}`);
-      if (args[2] && !args[1]) this.syncUserAgentForURL(args[0]);
+      // Electron 43 exposes navigation metadata on the event object. The
+      // deprecated positional arguments are inconsistent for extension
+      // subframes in some Chromium paths (Bitwarden's menu iframe was reported
+      // as a main frame), so prefer the structured fields whenever present.
+      const navigation = getNavigationContext(e, args[0], args[1], args[2]);
+      const navigationUrl = navigation.url;
+      const navigationIsInPlace = navigation.isSameDocument;
+      const navigationIsMainFrame = navigation.isMainFrame;
+
+      tlog(`view ${this.id}: did-start-navigation url=${navigationUrl}`);
+      // did-start-navigation is emitted for every frame. The rest of this
+      // listener updates tab-level state (favicon, loading, translation and
+      // dark-mode lifecycle), so subframes must not enter it at all.
+      if (!navigationIsMainFrame) return;
+      if (
+        !navigationIsInPlace &&
+        this.pdfCompat &&
+        !isPdfUrl(navigationUrl) &&
+        !isBuiltinPdfViewerUrl(navigationUrl)
+      ) {
+        this.replacePdfView(navigationUrl);
+        return;
+      }
+      if (
+        !navigationIsInPlace &&
+        this.openCrossSecurityNavigation(navigationUrl, undefined, true)
+      ) {
+        this.updateNavigationState();
+        this.favicon = '';
+        this.faviconScore = 0;
+        if (this.translateActive) {
+          this.translateActive = false;
+          this.emitEvent('translate-state', false, '');
+        }
+        // Keep tab-side navigation state in sync even though this navigation
+        // is discarded and replaced by a new security container.
+        this.emitEvent('load-commit', ...args);
+        return;
+      }
+      if (!navigationIsInPlace) {
+        this.syncUserAgentForURL(navigationUrl);
+      }
       this.updateNavigationState();
 
       this.favicon = '';
@@ -1882,7 +2031,7 @@ export class View {
 
       // 暗色模式:主帧真实导航开始即隐藏内容 view,直到暗色样式就绪再挂回。
       // args: [url, isInPlace, isMainFrame, ...]
-      if (args[2] && !args[1]) {
+      if (!navigationIsInPlace) {
         // 导航可能正是手势触发的。停止轨迹但保留一次菜单抑制，避免新文档
         // 在 mouseUp 后收到旧手势产生的 contextMenu。
         this.nativeRightGesture.reset(true);
@@ -1890,39 +2039,37 @@ export class View {
         this.pageGestureDrawing = false;
         this.webDarkModeNavigationId++;
         this.webDarkModeInjectPromise = null;
-        this.hideForLoading(args[0]);
+        this.hideForLoading(navigationUrl);
       }
 
       // 主帧开始导航:先清掉翻译状态,等 did-finish-load 重新探测,避免上一页图标残留。
-      if (args[2]) {
-        if (!args[1]) this.flashProbeGen++;
-        this.emitEvent('can-translate', false, '');
-        // 切语言触发的 reload:消耗标记,保持 active;真正跳转则关闭翻译。
-        if (this.translateReloadingForLang) {
-          this.translateReloadingForLang = false;
-        } else if (this.translateActive) {
-          // 同 URL reload 或同文档(SPA isInPlace)导航:保留翻译态,让 did-finish-load
-          // (reload 完成)重驱动接管。仅真正跳转到不同页才关闭翻译。
-          // 否则站点一 reload 就把 translateActive 置 false,did-finish-load 不会再驱动,
-          // 翻译永远跑不完(zhso.org 这类会 reload 的站点)。
-          const newUrl = args[0] || '';
-          let curUrl = '';
-          try { curUrl = this.webContents.getURL(); } catch {}
-          const isSameUrl = !!newUrl && !!curUrl && newUrl === curUrl;
-          console.log(`[translate] did-start-navigation | url=${newUrl} isInPlace=${!!args[1]} curUrl=${curUrl} sameUrl=${isSameUrl} → ${isSameUrl || args[1] ? '保留翻译态' : '关闭翻译'}`);
-          if (!isSameUrl && !args[1]) {
-            this.translateActive = false;
-            this.emitEvent('translate-state', false, '');
-          }
+      if (!navigationIsInPlace) this.flashProbeGen++;
+      this.emitEvent('can-translate', false, '');
+      // 切语言触发的 reload:消耗标记,保持 active;真正跳转则关闭翻译。
+      if (this.translateReloadingForLang) {
+        this.translateReloadingForLang = false;
+      } else if (this.translateActive) {
+        // 同 URL reload 或同文档(SPA isInPlace)导航:保留翻译态,让 did-finish-load
+        // (reload 完成)重驱动接管。仅真正跳转到不同页才关闭翻译。
+        // 否则站点一 reload 就把 translateActive 置 false,did-finish-load 不会再驱动,
+        // 翻译永远跑不完(zhso.org 这类会 reload 的站点)。
+        const newUrl = navigationUrl;
+        let curUrl = '';
+        try { curUrl = this.webContents.getURL(); } catch {}
+        const isSameUrl = !!newUrl && !!curUrl && newUrl === curUrl;
+        console.log(`[translate] did-start-navigation | url=${newUrl} isInPlace=${navigationIsInPlace} curUrl=${curUrl} sameUrl=${isSameUrl} → ${isSameUrl || navigationIsInPlace ? '保留翻译态' : '关闭翻译'}`);
+        if (!isSameUrl && !navigationIsInPlace) {
+          this.translateActive = false;
+          this.emitEvent('translate-state', false, '');
         }
-        // PWA:清掉上一页的可安装/已安装态。不在此 bump pwaGen——主帧 did-start-navigation
-        // 可能在同一页内多次触发(reload / SPA history / 重定向),bump 会误判在途探测为
-        // 过期。仅 did-finish-load 启动新探测时 bump(见下),完成时按"不同站点才丢弃"判定。
-        this.canInstallPwa = false;
-        this.pwaManifest = null;
-        this.pwaInstalled = false;
-        this.emitEvent('pwa-installable', false, null, false);
       }
+      // PWA:清掉上一页的可安装/已安装态。不在此 bump pwaGen——主帧 did-start-navigation
+      // 可能在同一页内多次触发(reload / SPA history / 重定向),bump 会误判在途探测为
+      // 过期。仅 did-finish-load 启动新探测时 bump(见下),完成时按"不同站点才丢弃"判定。
+      this.canInstallPwa = false;
+      this.pwaManifest = null;
+      this.pwaInstalled = false;
+      this.emitEvent('pwa-installable', false, null, false);
     });
 
     // `will-navigate` only fires for renderer-initiated navigations (link
@@ -1932,25 +2079,30 @@ export class View {
     this.webContents.on(
       'did-start-navigation',
       (e, url, isInPlace, isMainFrame) => {
-        if (!isMainFrame || isInPlace) return;
-        if (this.approvedGreasyforkNavigationUrl === url) {
+        const navigation = getNavigationContext(e, url, isInPlace, isMainFrame);
+        if (!navigation.isMainFrame || navigation.isSameDocument) return;
+        if (this.approvedGreasyforkNavigationUrl === navigation.url) {
           this.approvedGreasyforkNavigationUrl = '';
           return;
         }
-        if (this.handleGreasyforkNavigation(url)) return;
-        if (!this.getInternalFlagsTarget(url)) return;
-        this.handleInternalFlagsNavigation(url);
+        if (this.handleGreasyforkNavigation(navigation.url)) return;
+        if (!this.getInternalFlagsTarget(navigation.url)) return;
+        this.handleInternalFlagsNavigation(navigation.url);
       },
     );
 
-    // Direct webContents.loadURL calls (for example chrome.tabs.update) bypass
-    // View.load and renderer will-navigate. Re-evaluate the same extension DNR
-    // rules here; a redirecting load supersedes the in-flight original request.
+    // Resolve extension DNR redirects at the navigation boundary. This event
+    // covers both renderer-initiated navigations and direct webContents.loadURL
+    // calls (for example chrome.tabs.update). Keeping DNR handling here avoids
+    // applying the same initial redirect again from will-navigate. The
+    // will-redirect handler remains active for later server redirects, which
+    // may not emit another did-start-navigation event.
     this.webContents.on(
       'did-start-navigation',
       (e, url, isInPlace, isMainFrame) => {
-        if (!isMainFrame || isInPlace) return;
-        this.handleExtensionDnrNavigation(url);
+        const navigation = getNavigationContext(e, url, isInPlace, isMainFrame);
+        if (!navigation.isMainFrame || navigation.isSameDocument) return;
+        this.handleExtensionDnrNavigation(navigation.url);
       },
     );
 
@@ -1998,6 +2150,7 @@ export class View {
         // 页面加载完成仍走同一门控;dom-ready 启动的注入完成后才会挂回。
         this.showAfterWebDarkModeReady();
         const pageUrl = this.webContents.getURL();
+        if (/^https?:/i.test(pageUrl)) this.resetCertificateRecovery();
         // about:blank / 空 URL(预热 View 静默态、真实标签重定向过渡态)跳过:
         // 否则 injectCosmeticForHost('')、detectTranslateState、detectPwaState、
         // fetchFaviconFromPage 会跑空(不崩但浪费 CPU、可能 favicon 闪烁)。
@@ -2013,13 +2166,6 @@ export class View {
           injectCosmeticForHost(this.webContents, this.hostname);
         } catch (e) {
           console.log("injectCosmeticForHost", e);
-        }
-        // Google 登录页必须使用 Chromium 原始 UA，不能再覆写 navigator。
-        if (!isGoogleURL(pageUrl)) {
-          this.webContents.executeJavaScript(`Object.defineProperty(navigator, 'userAgent', { value: '${ChromeUserAgent}' });Object.defineProperty(navigator, 'appVersion', { value: '${ChromeAppVersion}' });true`)
-            .catch(e => {
-              console.log("executeJavaScript1", e);
-            });
         }
         this.webContents.executeJavaScript(watchVideoCode, true).catch(e => {
           console.log("executeJavaScript2", e);
@@ -2111,15 +2257,6 @@ export class View {
         if (!isMainFrame) {
           const frame = webFrameMain.fromId(frameProcessId, frameRoutingId);
           if (frame) {
-            if (!isGoogleURL(frame.url)) {
-              try {
-                frame.executeJavaScript(`Object.defineProperty(navigator, 'userAgent', { value: '${ChromeUserAgent}' });Object.defineProperty(navigator, 'appVersion', { value: '${ChromeAppVersion}' });true`).catch(e => {
-                  console.log("executeJavaScript1", e);
-                });
-              } catch (e) {
-                console.log("executeJavaScript2", e);
-              }
-            }
             try {
               frame.executeJavaScript(watchVideoCode, true).catch(e => {
                 console.log("executeJavaScript", e);
@@ -2146,7 +2283,7 @@ export class View {
             // 鼠标手势:跨源子帧在此注入(view-preload 进不去),命中后 postMessage 顶层。
             try {
               const gCode = buildGestureCode(
-                buildGestureConfig(Application.instance.settings.object),
+                viewGestureConfig(),
               );
               frame.executeJavaScript(gCode, true).catch(() => undefined);
             } catch (_) {}
@@ -2161,7 +2298,9 @@ export class View {
     this.webContents.on('frame-created', (event, details) => {
       console.log('frame-created', details.frame.url);
       details.frame.executeJavaScript(this.getExtensionFrameTabBridgeCode(), true).catch(() => undefined);
-      details.frame.executeJavaScript(hookClickCode, true);
+      details.frame
+        .executeJavaScript(hookClickCode, true)
+        .catch(() => undefined);
       details.frame
         .executeJavaScript(
           buildOpenLinksInNewPageCode(this.openLinksInNewPageEnabled),
@@ -2172,7 +2311,7 @@ export class View {
       // 未覆盖的帧。版本戳保证后续正式注入令本次失效,不会重触发。
       try {
         details.frame.executeJavaScript(
-          buildGestureCode(buildGestureConfig(Application.instance.settings.object)),
+          buildGestureCode(viewGestureConfig()),
           true,
         ).catch(() => undefined);
       } catch (_) {}
@@ -2247,7 +2386,7 @@ export class View {
       const prefix = '__gesture_fire__:';
       const leftPrefix = '__left_gesture_fire__:';
       if (message.startsWith(leftPrefix)) {
-        const leftCfg = buildGestureConfig(Application.instance.settings.object);
+        const leftCfg = viewGestureConfig();
         if (!leftCfg.leftEnabled) return;
         try {
           const payload = JSON.parse(message.slice(leftPrefix.length));
@@ -2263,7 +2402,7 @@ export class View {
       const actionId = message.slice(prefix.length).trim();
       if (!actionId) return;
       // 值域校验:仅接受当前配置里真实绑定的 actionId,防伪造。
-      const cfg = buildGestureConfig(Application.instance.settings.object);
+      const cfg = viewGestureConfig();
       const rightEnabled = cfg.enabled && cfg.map && Object.values(cfg.map).includes(actionId);
       const sideEnabled = cfg.sideButtons && Object.values(cfg.sideButtons).includes(actionId);
       if (!rightEnabled && !sideEnabled) return;
@@ -2299,6 +2438,20 @@ export class View {
           }
 
           this.errorURL = validatedURL;
+
+          if (this.shouldAutoDowngradeCertificateRecovery(validatedURL)) {
+            const recovery = this.advanceCertificateRecovery(validatedURL);
+            if (recovery.retryUrl) {
+              console.warn('[certificate-recovery] retrying navigation', {
+                errorCode,
+                ignoreRetried: this.certificateIgnoreRetried,
+                downgradeRetried: this.certificateDowngradeRetried,
+                retryUrl: recovery.retryUrl,
+              });
+              this.retryCertificateRecovery(recovery.retryUrl);
+              return;
+            }
+          }
 
           this.hasError = true;
 
@@ -2455,10 +2608,18 @@ export class View {
       this.emitEvent('media-paused', true);
     });
 
+    // 注意:这里曾经开启 browserView.setAutoResize({width:true, height:true})。
+    // 必须保持关闭:它会随「窗口」尺寸变化直接改写 view 的原生 bounds,绕过
+    // ViewManager.fixBounds 布局链。最大化/最小化/还原时 Windows 会带出过渡
+    // 尺寸(如还原态窗口大小、含边框误差的 1721x785),autoResize 把这些瞬态
+    // 原样传导给页面 → 最小化再还原会触发多余的 onresize(真 Chrome 不会),
+    // 且与 fixBounds 的异步 setBounds 穿插后会把真实 bounds 与 View.bounds 账本
+    // 脱钩,fixBounds 同值守卫读账本误判「无变化」而永不纠正(实测卡死在
+    // 903x770)。布局唯一写入方 = fixBounds(anchor 测量)。
     if (this.browserView instanceof BrowserView) {
       this.browserView.setAutoResize({
-        width: true,
-        height: true,
+        width: false,
+        height: false,
         horizontal: false,
         vertical: false,
       });
@@ -2506,7 +2667,120 @@ export class View {
     }
   }
 
+  private resetCertificateRecovery() {
+    this.certificateRecoveryUrl = '';
+    this.certificateIgnoreRetried = false;
+    this.certificateDowngradeRetried = false;
+  }
+
+  private toHttpUrl(url: URL) {
+    const downgraded = new URL(url.toString());
+    downgraded.protocol = 'http:';
+    return downgraded.toString();
+  }
+
+  private enableCertificateErrorBypass(host: string) {
+    allowCertificateErrorHost(host);
+    if (this.incognito) return;
+
+    void Application.instance.storage
+      .findOne<IPermissionRecord>({
+        scope: 'permissions',
+        query: {
+          url: host,
+          permission: IGNORE_CERTIFICATE_ERRORS_PERMISSION,
+          mediaTypes: '',
+        },
+      })
+      .then((existing) => {
+        if (existing?._id) {
+          return Application.instance.storage.update({
+            scope: 'permissions',
+            query: {_id: existing._id},
+            value: {type: 1, mediaTypes: ''},
+          });
+        }
+
+        return Application.instance.storage.insert({
+          scope: 'permissions',
+          item: {
+            url: host,
+            permission: IGNORE_CERTIFICATE_ERRORS_PERMISSION,
+            type: 1,
+            mediaTypes: '',
+          },
+        });
+      })
+      .catch((error) => {
+        console.error('[certificate-recovery] failed to persist permission', error);
+      });
+  }
+
+  private advanceCertificateRecovery(url: string) {
+    const t = getMainTranslator(Application.instance.settings.object.language);
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return {error: t('vwNoDomain')};
+    }
+    if (parsed.protocol !== 'https:') {
+      return {error: t('vwNoDowngrade')};
+    }
+
+    const recoveryUrl = parsed.toString();
+    if (!this.certificateRecoveryUrl) {
+      this.certificateRecoveryUrl = recoveryUrl;
+    }
+
+    if (!this.certificateIgnoreRetried) {
+      const host = getCertificateErrorHost(recoveryUrl);
+      if (!host) return {error: t('vwNoDomain')};
+      this.certificateIgnoreRetried = true;
+      this.enableCertificateErrorBypass(host);
+      return {success: true, retryUrl: recoveryUrl};
+    }
+
+    if (!this.certificateDowngradeRetried) {
+      this.certificateDowngradeRetried = true;
+      return {success: true, retryUrl: this.toHttpUrl(parsed)};
+    }
+
+    return {error: t('vwCertRecoverFailed')};
+  }
+
+  private shouldAutoDowngradeCertificateRecovery(url: string) {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'https:') return false;
+    } catch {
+      return false;
+    }
+
+    return (
+      this.certificateIgnoreRetried && !this.certificateDowngradeRetried
+    );
+  }
+
+  private retryCertificateRecovery(url: string) {
+    setTimeout(() => {
+      if (this.webContents.isDestroyed()) return;
+      this.webContents.loadURL(url).catch((error) => {
+        tlog(
+          `view ${this.id}: certificate recovery loadURL rejected ${url}`,
+          error && error.code,
+        );
+      });
+    }, 0);
+  }
+
   public load(url: string, loadOptions?: LoadURLOptions) {
+    if (this.pdfCompat && !isPdfUrl(url)) {
+      this.replacePdfView(url, loadOptions);
+      return;
+    }
+    if (this.openCrossSecurityNavigation(url, loadOptions)) return;
+    this.resetCertificateRecovery();
     const sequence = ++this.loadSequence;
     this.homeUrl = url;
 
@@ -2517,19 +2791,29 @@ export class View {
     if (extensionReady) {
       this.isNewTab = true;
       const fallback = getNativeWebUIURL('newtab');
-      tlog(`view ${this.id}: extension newtab unavailable, using ${fallback}`);
-      this.loadResolvedUrl(fallback, loadOptions);
-      void extensionReady.then((ready) => {
+      tlog(
+        `view ${this.id}: extension newtab unavailable, replacing with ${fallback}`,
+      );
+      let fallbackViewId = 0;
+      queueMicrotask(() => {
         if (
-          !ready ||
           sequence !== this.loadSequence ||
           this.homeUrl !== url ||
-          this.webContents.isDestroyed()
-        ) {
-          return;
-        }
-
-        const currentUrl = this.webContents.getURL();
+          this.webContents.isDestroyed() ||
+          this.window.viewManager.getById(this.id) !== this
+        ) return;
+        const fallbackView = this.window.viewManager.create(
+          {url: fallback, active: true, incognito: this.incognito} as any,
+          true,
+        );
+        fallbackViewId = fallbackView.id;
+        this.window.viewManager.removeByTabId(this.id);
+      });
+      void extensionReady.then((ready) => {
+        if (!ready || !fallbackViewId || this.window.win.isDestroyed()) return;
+        const fallbackView = this.window.viewManager.getById(fallbackViewId);
+        if (!fallbackView || fallbackView.homeUrl !== fallback) return;
+        const currentUrl = fallbackView.webContents.getURL();
         if (
           currentUrl &&
           currentUrl !== 'about:blank' &&
@@ -2537,8 +2821,21 @@ export class View {
         ) {
           return;
         }
-        tlog(`view ${this.id}: extension newtab ready, restoring ${url}`);
-        this.load(url, loadOptions);
+        const active =
+          fallbackView.window.viewManager.selectedId === fallbackViewId;
+        tlog(
+          `view ${fallbackViewId}: extension newtab ready, replacing with ${url}`,
+        );
+        this.window.viewManager.create(
+          {
+            url,
+            active,
+            incognito: this.incognito,
+            ...(loadOptions ? {loadOptions} : {}),
+          } as any,
+          true,
+        );
+        this.window.viewManager.removeByTabId(fallbackViewId);
       });
       return;
     }
@@ -2546,6 +2843,46 @@ export class View {
     if (url.startsWith(getWebUIURL('newtab'))) this.isNewTab = true;
 
     this.loadResolvedUrl(url, loadOptions);
+  }
+
+  /** Replace a non-sandboxed PDF View before loading a regular document. */
+  private replacePdfView(url: string, loadOptions?: LoadURLOptions) {
+    if (this.pendingPdfReplacement?.url === url) return;
+    const request = {url, loadOptions};
+    this.pendingPdfReplacement = request;
+    setImmediate(() => {
+      if (this.pendingPdfReplacement !== request) return;
+      this.pendingPdfReplacement = null;
+      const manager = this.window.viewManager;
+      if (
+        this.destroying ||
+        this.window.win.isDestroyed() ||
+        manager.getById(this.id) !== this
+      ) {
+        // A PDF overlay is not registered as a top-level tab. Recreate the
+        // overlay through its owner so a popup cannot carry sandbox:false
+        // into a regular document.
+        const owner = this.windowOpenNavigationOwner;
+        if (owner && !owner.destroying) {
+          owner.closeWindowOpenNavigationOverlay(this);
+          owner.openWindowOpenNavigationOverlay(request.url);
+        }
+        return;
+      }
+      const active = manager.selectedId === this.id;
+      const contents = this.browserView?.webContents;
+      if (contents && !contents.isDestroyed()) contents.stop();
+      manager.create(
+        {
+          url: request.url,
+          active,
+          incognito: this.incognito,
+          ...(request.loadOptions ? {loadOptions: request.loadOptions} : {}),
+        } as any,
+        false,
+      );
+      manager.removeByTabId(this.id);
+    });
   }
 
   /** 导航到 bejson 并把剪贴板 JSON 注入 CodeMirror 后触发格式化。 */
@@ -2635,6 +2972,7 @@ export class View {
     sequence = this.loadSequence,
     greasyforkChecked = false,
   ) {
+    if (this.openCrossSecurityNavigation(url, loadOptions)) return;
     if (isGreasyforkUrl(url) && !greasyforkChecked) {
       void Application.instance.googleConnectivity
         .getIsCanGoogle()
@@ -2651,10 +2989,14 @@ export class View {
     }
 
     this.syncUserAgentForURL(url);
+    const navigationMethod =
+      loadOptions && Object.prototype.hasOwnProperty.call(loadOptions, 'postData')
+        ? 'POST'
+        : 'GET';
     if (
       !this.handleKtllqNavigation(url) &&
       !this.handleInternalFlagsNavigation(url) &&
-      !this.handleExtensionDnrNavigation(url)
+      !this.handleExtensionDnrNavigation(url, navigationMethod, loadOptions)
     ) {
       if (isGreasyforkUrl(url)) {
         this.approvedGreasyforkNavigationUrl = url;
@@ -2671,6 +3013,48 @@ export class View {
 
   public get webContents(): WebContents {
     return this.windowOpenNavigationOverlay?.webContents || this.browserView.webContents;
+  }
+
+  private isCrossSecurityNavigation(url: string) {
+    return isCrossViewSecurityNavigation(this.securityKind, url);
+  }
+
+  private openCrossSecurityNavigation(
+    url: string,
+    loadOptions?: LoadURLOptions,
+    stopCurrent = false,
+  ) {
+    if (!url || !this.isCrossSecurityNavigation(url)) return false;
+    const pending = this.pendingCrossSecurityNavigation;
+    if (pending && pending.url === url) {
+      pending.stopCurrent = pending.stopCurrent || stopCurrent;
+      return true;
+    }
+    const request = {url, loadOptions, stopCurrent};
+    this.pendingCrossSecurityNavigation = request;
+    setImmediate(() => {
+      if (this.pendingCrossSecurityNavigation !== request) return;
+      this.pendingCrossSecurityNavigation = undefined;
+      if (
+        this.window.win.isDestroyed() ||
+        this.window.viewManager.getById(this.id) !== this
+      ) return;
+      const contents = this.browserView?.webContents;
+      if (request.stopCurrent && contents && !contents.isDestroyed()) {
+        contents.stop();
+      }
+      this.window.viewManager.create({
+        url: request.url,
+        active: this.window.viewManager.selectedId === this.id,
+        ...(request.loadOptions ? {loadOptions: request.loadOptions} : {}),
+      } as any);
+    });
+    console.log(
+      `[view-security] reroute kind=${this.securityKind} targetKind=${
+        getViewSecurityKind(url)
+      }`,
+    );
+    return true;
   }
 
   /** Google 登录页保留 Electron 默认 UA；其余页面继续使用 Chrome UA。 */
@@ -2719,7 +3103,10 @@ export class View {
 
     this.windowOpenNavigationPending = true;
     try {
-      const overlay = new View(this.window, url, this.incognito, {deferLoad: true});
+      const overlay = new View(this.window, url, this.incognito, {
+        deferLoad: true,
+        pdfCompat: isPdfUrl(url),
+      });
       overlay.windowOpenNavigationOwner = this;
       this.windowOpenNavigationOverlay = overlay;
 
@@ -2837,6 +3224,22 @@ export class View {
 
   /** ViewManager 改用它同步组合 View 的两个 BrowserView 尺寸。 */
   public setBounds(bounds: Electron.Rectangle) {
+    // [RSZ] 排查日志(临时):页面 view 尺寸的每次真实变更 + 调用方栈,
+    // 用于定位最小化/还原时的意外 resize 来源(栈截断防刷屏)。
+    try {
+      const stack = (new Error().stack || '')
+        .split('\n')
+        .slice(2, 6)
+        .join(' | ')
+        .slice(0, 300);
+      const prev = this.bounds
+        ? `${this.bounds.width}x${this.bounds.height}@${this.bounds.x},${this.bounds.y}`
+        : 'null';
+      console.log(
+        `[RSZ] view#${this.id} setBounds ${prev} -> ` +
+          `${bounds.width}x${bounds.height}@${bounds.x},${bounds.y} via ${stack}`,
+      );
+    } catch {}
     this.browserView.setBounds(bounds);
     this.bounds = bounds;
     this.windowOpenNavigationOverlay?.setBounds(bounds);
@@ -3069,6 +3472,12 @@ export class View {
       this.requestedBluetooth = null;
       cancelBluetoothRequest();
     }
+    const hadHidRequest = !!this.requestedHid;
+    const hadDisplayCaptureRequest = !!this.requestedDisplayCapture;
+    this.requestedHid = null;
+    if (hadHidRequest) cancelHidRequest();
+    this.requestedDisplayCapture = null;
+    if (hadDisplayCaptureRequest) cancelDisplayCaptureRequest();
     this.ipc.dispose();
     this.translateAbort?.abort();
     this.translateAbort = undefined;
@@ -3359,7 +3768,7 @@ export class View {
       const mainFrame = (this.webContents as any).mainFrame;
       if (mainFrame && typeof mainFrame.executeJavaScript === 'function') {
         mainFrame.executeJavaScript(
-          buildGestureCode(buildGestureConfig(Application.instance.settings.object)),
+          buildGestureCode(viewGestureConfig()),
           true,
         ).catch((_: unknown): void => undefined);
         // 注入已受理:主帧手势代码与文档共存,页面从此自绘轨迹。
@@ -3424,7 +3833,7 @@ export class View {
   // 注入安全(仅最新一份生效)。
   public reinjectGesture() {
     try {
-      const code = buildGestureCode(buildGestureConfig(Application.instance.settings.object));
+      const code = buildGestureCode(viewGestureConfig());
       // 主帧
       this.injectMainFrameGesture();
       // 子帧

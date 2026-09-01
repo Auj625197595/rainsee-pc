@@ -23,6 +23,7 @@ import {
   getIconByUrlNet,
 } from '~/utils/url';
 import { SearchDialog } from '../dialogs/search';
+import {getNavigationContext} from '../utils/navigation-context';
 
 import * as bookmarkMenu from '../menus/bookmarks';
 import { printPage, showPageToast } from '../menus/common-actions';
@@ -52,6 +53,7 @@ import {
   PwaManifest,
 } from './pwa';
 import { showTabGroupDialog } from '../dialogs/tabgroup';
+import {getMainTranslator} from '../i18n';
 import { ShowBlockDialog } from '~/main/dialogs/show-block';
 import { ShareDialog } from '~/main/dialogs/share';
 import { ScreenshotDialog } from '~/main/dialogs/screenshot';
@@ -184,12 +186,121 @@ export const runMessagingService = (appWindow: AppWindow) => {
     | { type: 'profile'; name: string }
     | null = null;
   let quickPwaOpening = false;
+  let pickerArmedWebContentsId = 0;
+  let pickerArmedHost = '';
+  let pickerArmedUntil = 0;
+  let pickerArmTimer: NodeJS.Timeout | undefined;
+  let pickerArmNavigationCleanup: (() => void) | undefined;
 
   appWindow.win.once('closed', () => {
     ipcMain.dispose();
     pcSearchRequests.clear();
     installDialogContext = null;
+    clearPickerArm();
   });
+
+  const clearPickerArm = () => {
+    pickerArmedWebContentsId = 0;
+    pickerArmedHost = '';
+    pickerArmedUntil = 0;
+    if (pickerArmTimer) {
+      clearTimeout(pickerArmTimer);
+      pickerArmTimer = undefined;
+    }
+    pickerArmNavigationCleanup?.();
+    pickerArmNavigationCleanup = undefined;
+  };
+
+  const armPicker = (view: any) => {
+    clearPickerArm();
+    pickerArmedWebContentsId = view.webContents.id;
+    try {
+      pickerArmedHost = new URL(view.webContents.getURL()).hostname.toLowerCase();
+    } catch {
+      pickerArmedHost = '';
+    }
+    pickerArmedUntil = Date.now() + 60_000;
+    pickerArmTimer = setTimeout(clearPickerArm, 60_000);
+    pickerArmTimer.unref?.();
+    const webContents = view.webContents;
+    const onNavigation = (
+      event: Electron.Event,
+      url: string,
+      isInPlace: boolean,
+      isMainFrame: boolean,
+    ) => {
+      const navigation = getNavigationContext(event, url, isInPlace, isMainFrame);
+      if (navigation.isMainFrame && !navigation.isSameDocument) clearPickerArm();
+    };
+    webContents.on('did-start-navigation', onNavigation);
+    pickerArmNavigationCleanup = () => {
+      if (!webContents.isDestroyed()) {
+        webContents.removeListener('did-start-navigation', onNavigation);
+      }
+    };
+  };
+
+  const isPickerSender = (sender: Electron.WebContents) => {
+    const view = appWindow.viewManager.findViewByWebContentsId(sender.id);
+    return !!view &&
+      view.webContents.id === pickerArmedWebContentsId &&
+      Date.now() < pickerArmedUntil &&
+      appWindow.viewManager.selectedId === view.id;
+  };
+
+  const isPickerRuleAllowed = (rule: unknown, pageHost: string) => {
+    if (typeof rule !== 'string') return false;
+    const value = rule.trim();
+    // The renderer-side picker also caps its payload, but the main process
+    // must reject (rather than truncate) oversized or multi-line input. A
+    // truncated rule could otherwise hide an attacker-controlled suffix that
+    // the adblock parser interprets as a second rule.
+    if (
+      !value ||
+      value.length > 64 * 1024 ||
+      /[\r\n\u0000]/.test(value)
+    ) {
+      return false;
+    }
+    if (value.includes('@@')) return false;
+    const hostWithinPage = (ruleHost: string) => {
+      const normalizeHost = (rawHost: string) => {
+        let normalized = rawHost
+          .trim()
+          .toLowerCase()
+          .replace(/^\.+|\.+$/g, '');
+        // The picker uses location.host, which includes a port on local and
+        // non-default deployments. Keep the port syntax strict, then compare
+        // hostnames so a page cannot authorize a different domain.
+        const portMatch = /^([a-z0-9.-]+):(\d{1,5})$/i.exec(normalized);
+        if (portMatch) {
+          const port = Number(portMatch[2]);
+          if (port > 65535) return '';
+          normalized = portMatch[1];
+        }
+        if (!normalized || !/^[a-z0-9.-]+$/i.test(normalized)) return '';
+        return normalized;
+      };
+      const normalizedRuleHost = normalizeHost(ruleHost);
+      const normalizedPageHost = normalizeHost(pageHost);
+      if (
+        !normalizedRuleHost ||
+        !normalizedPageHost
+      ) {
+        return false;
+      }
+      return normalizedPageHost === normalizedRuleHost ||
+        normalizedPageHost.endsWith(`.${normalizedRuleHost}`);
+    };
+    const cosmeticIndex = value.indexOf('##');
+    if (cosmeticIndex >= 0) {
+      const host = value.slice(0, cosmeticIndex).trim();
+      const selector = value.slice(cosmeticIndex + 2).trim();
+      return !!host && !!selector && hostWithinPage(host);
+    }
+    const network = /^\|\|([^\/^|]+)(?:[\/^]|$)/.exec(value);
+    return !!network?.[1] && hostWithinPage(network[1]);
+  };
 
   const isSelectedNewTabSender = (sender: Electron.WebContents) => {
     const view = appWindow.viewManager.selected;
@@ -199,6 +310,11 @@ export const runMessagingService = (appWindow: AppWindow) => {
       view.webContents.getURL().startsWith(getWebUIURL('newtab'))
     );
   };
+
+  const ownsAppWindowSender = (sender: Electron.WebContents) =>
+    sender === appWindow.webContents ||
+    !!appWindow.viewManager.findViewByWebContentsId(sender.id) ||
+    BrowserWindow.fromWebContents(sender) === appWindow.win;
 
   const prunePcSearchRequests = () => {
     const now = Date.now();
@@ -707,16 +823,25 @@ export const runMessagingService = (appWindow: AppWindow) => {
   });
 
   // 在当前激活标签页注入并启动元素拾取器(标记广告)
-  ipcMain.on(`start-adblock-picker-${id}`, async () => {
+  ipcMain.on(`start-adblock-picker-${id}`, async (e) => {
+    if (!ownsAppWindowSender(e.sender)) return;
     const view = appWindow.viewManager.selected;
     if (!view || view.webContents.isDestroyed()) return;
+    armPicker(view);
     try {
       const { getAdblockPickerCode } = await import(
         /* webpackChunkName: "on-demand-adblock-picker" */
         '~/main/services/adblock-picker'
       );
-      if (view.webContents.isDestroyed()) return;
+      if (
+        view.webContents.isDestroyed() ||
+        appWindow.viewManager.getById(view.id) !== view
+      ) {
+        clearPickerArm();
+        return;
+      }
       view.webContents.focus();
+      view.webContents.send('adblock-picker-bridge-enable');
       view.webContents
         .executeJavaScript(getAdblockPickerCode(appWindow.win.id), true)
         .catch((err) => console.log('[adblock-picker] inject failed', err));
@@ -729,14 +854,19 @@ export const runMessagingService = (appWindow: AppWindow) => {
   ipcMain.on(
     `adblock-picker-state-${id}`,
     (e, state: string, rule?: string) => {
+      if (!isPickerSender(e.sender)) return;
       console.log('[adblock-picker] state', state, rule || '');
+      if (state === 'cancel' || state === 'submit') clearPickerArm();
     },
   );
 
   // picker 生成的规则: 持久化并即时生效
   ipcMain.on(`save-adblock-rule-${id}`, async (e, rule: string) => {
-    const view = appWindow.viewManager.selected;
+    if (!isPickerSender(e.sender)) return;
+    const view = appWindow.viewManager.findViewByWebContentsId(e.sender.id);
+    if (!view || !isPickerRuleAllowed(rule, pickerArmedHost)) return;
     await saveAdblockRule(rule, view);
+    clearPickerArm();
   });
 
   ipcMain.on(`show-adblock-rule-${id}`, (event) => {
@@ -1036,6 +1166,9 @@ export const runMessagingService = (appWindow: AppWindow) => {
       const info = getProfileShortcutDialogData(rawName);
       if (!info.ok || !info.name) return info;
 
+      const t = getMainTranslator(
+        Application.instance.settings?.object?.language,
+      );
       const installDialog = Application.instance.dialogs.getPersistent(
         'install-app',
       ) as InstallAppDialog;
@@ -1043,7 +1176,7 @@ export const runMessagingService = (appWindow: AppWindow) => {
       await installDialog.openCentered(appWindow.win, {
         mode: 'profile',
         name: info.name,
-        publisher: '小号快捷方式',
+        publisher: t('iaProfilePublisher'),
         iconUrl: info.iconUrl || '',
         fallbackIconUrl: '',
         installed: false,
@@ -1182,9 +1315,12 @@ export const runMessagingService = (appWindow: AppWindow) => {
         fallbackIconUrl,
         installing: false,
       };
+      const t = getMainTranslator(
+        Application.instance.settings?.object?.language,
+      );
       dialog.openCentered(appWindow.win, {
         mode: 'pwa',
-        name: manifest.name || manifest.shortName || '应用',
+        name: manifest.name || manifest.shortName || t('iaAppFallback'),
         publisher,
         iconUrl: manifest.icon?.src || fallbackIconUrl,
         fallbackIconUrl,
@@ -1222,9 +1358,12 @@ export const runMessagingService = (appWindow: AppWindow) => {
       fallbackIconUrl,
       installing: false,
     };
+    const t = getMainTranslator(
+      Application.instance.settings?.object?.language,
+    );
     dialog.open(appWindow.win, left, top, {
       mode: 'pwa',
-      name: m.name || m.shortName || '应用',
+      name: m.name || m.shortName || t('iaAppFallback'),
       publisher,
       iconUrl: m.icon?.src || fallbackIconUrl,
       fallbackIconUrl,
@@ -1237,15 +1376,18 @@ export const runMessagingService = (appWindow: AppWindow) => {
   // 安装弹窗本地图标选择:主进程打开系统文件选择器并校验图片可解码,
   // 仅把缩小后的 data URL 用于预览,安装时继续使用原始本地路径。
   ipcMain.handle(`pwa-install-select-icon-${id}`, async () => {
+    const t = getMainTranslator(
+      Application.instance.settings?.object?.language,
+    );
     const result = await dialog.showOpenDialog(appWindow.win, {
       title:
         installDialogContext?.type === 'profile'
-          ? '选择小号快捷方式图标'
-          : '选择应用图标',
+          ? t('iaChooseProfileIconTitle')
+          : t('iaChooseAppIconTitle'),
       properties: ['openFile'],
       filters: [
         {
-          name: '图片',
+          name: t('fileFilterImages'),
           extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'ico'],
         },
       ],
@@ -1271,12 +1413,15 @@ export const runMessagingService = (appWindow: AppWindow) => {
       _e,
       opts: { desktop: boolean; startMenu: boolean; localIconPath?: string },
     ) => {
+      const t = getMainTranslator(
+        Application.instance.settings?.object?.language,
+      );
       const context = installDialogContext;
       if (context?.type !== 'pwa') {
-        return { ok: false, message: '安装操作已失效，请重新打开安装窗口' };
+        return { ok: false, message: t('iaStaleInstallContext') };
       }
       if (context.installing) {
-        return { ok: false, message: '正在安装，请稍候' };
+        return { ok: false, message: t('iaInstallInProgress') };
       }
       context.installing = true;
       try {
@@ -1295,7 +1440,7 @@ export const runMessagingService = (appWindow: AppWindow) => {
         console.log('pwa install failed', e);
         return {
           ok: false,
-          message: '安装失败，请检查磁盘或快捷方式目录权限后重试',
+          message: t('iaInstallFailedCheckPerm'),
         };
       }
       // 持久弹窗可能在安装期间被另一页面重新打开。仅关闭本次请求对应的
@@ -1314,8 +1459,11 @@ export const runMessagingService = (appWindow: AppWindow) => {
   ipcMain.handle(
     `profile-shortcut-confirm-${id}`,
     async (_event, opts: IProfileShortcutOptions) => {
+      const t = getMainTranslator(
+        Application.instance.settings?.object?.language,
+      );
       if (installDialogContext?.type !== 'profile') {
-        return { ok: false, message: '小号快捷方式操作已失效' };
+        return { ok: false, message: t('iaProfileShortcutStale') };
       }
       const result = await createProfileShortcuts(
         installDialogContext.name,
@@ -1530,6 +1678,9 @@ export const runMessagingService = (appWindow: AppWindow) => {
           return;
         }
 
+        const t = getMainTranslator(
+          Application.instance.settings?.object?.language,
+        );
         const items = matched.map((record) => {
           let host = record.url || '';
           try {
@@ -1540,7 +1691,10 @@ export const runMessagingService = (appWindow: AppWindow) => {
             record.fields?.passLength || record.fields?.password?.length || 0;
           return {
             _id: record._id,
-            text: record.fields?.username || record.fields?.email || '无用户名',
+            text:
+              record.fields?.username ||
+              record.fields?.email ||
+              t('ffNoUsername'),
             passwordMask: '•'.repeat(Math.min(Math.max(passwordLength, 4), 12)),
             host,
           };
@@ -1611,6 +1765,9 @@ export const runMessagingService = (appWindow: AppWindow) => {
         matchedTargetCount: targets.length,
       });
       const ordered = await orderAutofillTargets(targets);
+      const t = getMainTranslator(
+        Application.instance.settings?.object?.language,
+      );
       const { buildAutofillPickerCode } = await import(
         /* webpackChunkName: "on-demand-autofill-picker" */
         '~/main/services/autofill-picker'
@@ -1638,7 +1795,7 @@ export const runMessagingService = (appWindow: AppWindow) => {
                 target: target.label,
                 attempt: attempt + 1,
               });
-              void showAutofillToast(view, '账号密码已填充');
+              void showAutofillToast(view, t('afCredentialsFilled'));
               return true;
             }
             // 网易 URS asynchronously mounts its inputs after the iframe
@@ -1663,7 +1820,7 @@ export const runMessagingService = (appWindow: AppWindow) => {
         matchedTargetCount: targets.length,
         attemptedTargets: ordered.map((target) => target.label),
       });
-      void showAutofillToast(view, '未识别到可填充的登录表单');
+      void showAutofillToast(view, t('afNoLoginForm'));
       return false;
     });
 
@@ -1717,7 +1874,10 @@ export const runMessagingService = (appWindow: AppWindow) => {
         return;
       }
       const view = appWindow.viewManager.selected;
-      let toastMessage = '当前网站没有可填充的账号密码';
+      const t = getMainTranslator(
+        Application.instance.settings?.object?.language,
+      );
+      let toastMessage = t('afNoCredentialsForSite');
 
       if (view && !view.webContents.isDestroyed()) {
         try {
@@ -1815,8 +1975,8 @@ export const runMessagingService = (appWindow: AppWindow) => {
                 filledAny = true;
                 toastMessage =
                   result.action === 'picker'
-                    ? '请选择要填充的账号'
-                    : '账号密码已填充';
+                    ? t('afPickAccount')
+                    : t('afCredentialsFilled');
                 break;
               }
             } catch (error) {
@@ -1825,12 +1985,12 @@ export const runMessagingService = (appWindow: AppWindow) => {
           }
           if (!filledAny) {
             toastMessage = hadCredentials
-              ? '未识别到可填充的登录表单'
-              : '当前网站没有可填充的账号密码';
+              ? t('afNoLoginForm')
+              : t('afNoCredentialsForSite');
           }
         } catch (err) {
           console.log('[autofill] check error', err);
-          toastMessage = '自动填充失败，请稍后重试';
+          toastMessage = t('afFillFailed');
         }
       }
 
@@ -2053,6 +2213,7 @@ export const runMessagingService = (appWindow: AppWindow) => {
       source: 'bar' | 'manager' = 'bar',
       barFolderId?: string,
     ) => {
+      if (!ownsAppWindowSender(event.sender)) return;
       bookmarkMenu
         .createMenu(appWindow, item, source, barFolderId)
         .popup({ window: appWindow.win });

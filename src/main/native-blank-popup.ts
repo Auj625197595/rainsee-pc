@@ -1,9 +1,16 @@
 import {app, BrowserView, BrowserWindow} from 'electron';
 import type {WebContents} from 'electron';
+import {
+  createViewWebPreferences,
+  getViewPreloadFilename,
+  getViewSecurityKind,
+} from './view-web-preferences';
+import {getNavigationContext} from './utils/navigation-context';
 
 interface NativeBlankPopupEntry {
   opener: WebContents;
   window: BrowserWindow;
+  openInTab: (url: string) => void;
   overlay?: BrowserView;
 }
 
@@ -26,18 +33,30 @@ export class NativeBlankPopupManager {
 
   private overlayOwners = new Map<number, number>();
 
-  public manage(opener: WebContents, popupWindow: BrowserWindow) {
+  public manage(
+    opener: WebContents,
+    popupWindow: BrowserWindow,
+    openInTab: (url: string) => void,
+  ) {
     const popupContents = popupWindow.webContents;
     const popupContentsId = popupContents.id;
     if (popupContents.isDestroyed() || this.entries.has(popupContentsId)) return;
 
-    const entry: NativeBlankPopupEntry = {opener, window: popupWindow};
+    const entry: NativeBlankPopupEntry = {opener, window: popupWindow, openInTab};
     this.entries.set(popupContentsId, entry);
 
     popupContents.on('will-navigate', (event, url) => {
-      if (!canLoadInOverlay(url) || popupWindow.isDestroyed()) return;
+      if (popupWindow.isDestroyed()) return;
+      const navigation = getNavigationContext(event, url);
+      if (!navigation.isMainFrame) return;
+      if (getViewSecurityKind(navigation.url) !== 'sandboxed') {
+        event.preventDefault();
+        queueMicrotask(() => entry.openInTab(navigation.url));
+        return;
+      }
+      if (!canLoadInOverlay(navigation.url)) return;
       event.preventDefault();
-      queueMicrotask(() => this.navigateOverlay(popupContentsId, url));
+      queueMicrotask(() => this.navigateOverlay(popupContentsId, navigation.url));
     });
 
     popupWindow.on('resize', () => this.resizeOverlay(entry));
@@ -91,26 +110,22 @@ export class NativeBlankPopupManager {
     if (!entry || entry.window.isDestroyed()) return;
 
     if (!entry.overlay || entry.overlay.webContents.isDestroyed()) {
-      const preload = `${app.getAppPath()}/build/view-preload.bundle.js`;
+      const securityKind = 'sandboxed' as const;
+      const preload = `${app.getAppPath()}/build/${getViewPreloadFilename(
+        securityKind,
+      )}`;
       const overlay = new BrowserView({
         webPreferences: {
+          ...createViewWebPreferences(
+            entry.window.webContents.session,
+            preload,
+            false,
+            securityKind,
+          ),
           session: entry.window.webContents.session,
-          preload,
           additionalArguments: [
             `--rainsee-native-blank-popup=${popupContentsId}`,
           ],
-          nodeIntegration: false,
-          nodeIntegrationInWorker: false,
-          nodeIntegrationInSubFrames: false,
-          allowRunningInsecureContent: true,
-          contextIsolation: false,
-          sandbox: false,
-          enableRemoteModule: false,
-          plugins: true,
-          nativeWindowOpen: true,
-          webSecurity: true,
-          javascript: true,
-          worldSafeExecuteJavaScript: true,
         },
       });
       entry.overlay = overlay;
@@ -119,6 +134,14 @@ export class NativeBlankPopupManager {
       overlay.webContents.once('destroyed', () => {
         this.overlayOwners.delete(overlayContentsId);
       });
+      const reroutePrivileged = (event: Electron.Event, targetUrl: string) => {
+        const navigation = getNavigationContext(event, targetUrl);
+        if (!navigation.isMainFrame || getViewSecurityKind(navigation.url) === 'sandboxed') return;
+        event.preventDefault();
+        queueMicrotask(() => entry.openInTab(navigation.url));
+      };
+      overlay.webContents.on('will-navigate', reroutePrivileged);
+      overlay.webContents.on('will-redirect', reroutePrivileged);
       require('@electron/remote/main').enable(overlay.webContents);
       entry.window.addBrowserView(overlay);
       this.resizeOverlay(entry);

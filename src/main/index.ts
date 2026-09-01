@@ -9,7 +9,10 @@ import { getLogDir } from './logger';
 // 必须在 ./application 之前 import:data-location 创建 migrationGate(Settings.load
 // 与 onReady 都 await 它)。文件复制已由 bootstrap-paths 在 ready 前完成,这里负责
 // ready 后放行 gate 与展示失败提示。
-import { runPendingMigrationIfAny, setupDataLocationIpc } from './data-location';
+import {
+  runPendingMigrationIfAny,
+  setupDataLocationIpc,
+} from './data-location';
 import { setupDataBackupIpc } from './data-backup';
 import {
   ipcMain,
@@ -47,10 +50,10 @@ if (process.env.NODE_ENV === 'development') {
 
 import { platform } from 'os';
 import { Application } from './application';
-import {getWebUIURL} from "~/common/webui-main";
+import { getWebUIURL } from '~/common/webui-main';
 import { startupMark, tlog } from './timing';
-import {setupSearchAnnotatorIpc} from './services/search-annotator';
-import {buildKoodoReaderUrl, filePathFromFileUrl} from '~/constants/files';
+import { setupSearchAnnotatorIpc } from './services/search-annotator';
+import { buildKoodoReaderUrl, filePathFromFileUrl } from '~/constants/files';
 import { getExternalProtocol } from '~/utils/url';
 import { applyPersistedFlagsBeforeReady, setupFlagsIpc } from './flags-service';
 // side-effect import:注册「立即清除」/「立即退出」IPC + performClearOnExit 编排。
@@ -63,6 +66,7 @@ import { setupProfilesIpc } from './profiles';
 import { setupProfileNetworkIpc } from './profile-network';
 import { normalizeAppLanguage, resolveAppLanguage } from '~/common/i18n';
 import { getMainTranslator } from './i18n';
+import { getNavigationContext } from './utils/navigation-context';
 
 // 兼容旧的 `import { isNightly } from '..'`(src/main/windows/app.ts)。
 export { isNightly };
@@ -128,7 +132,10 @@ app.commandLine.appendSwitch(
 // 复用了这个 spare 进程时,startupData 尚未通过 mojo 投递,sandbox bundle 解构
 // 即崩溃。SW 进入 stopping 后会新起一个带完整 startupData 的进程,故之后又正常。
 // 关掉 spare 预热,popup 窗口每次都新建进程并走完整初始化,消除该竞态。
-app.commandLine.appendSwitch('disable-features', 'SpareRendererForSitePerProcess');
+app.commandLine.appendSwitch(
+  'disable-features',
+  'SpareRendererForSitePerProcess',
+);
 
 // [内存节省] --process-per-site:把「同一站点」的所有页面塌进同一个渲染进程,
 // 而非默认的 process-per-site-instance。效果:同源 UI 页(app/search/preview/各弹窗)
@@ -166,15 +173,19 @@ app.on('session-created', applyGlobalUserAgent);
 // uncloneable payload). console.log 已由 logger.ts 安全接管，正式版若原始
 // stdout/stderr 已断开会自动降级为仅写文件，不再抛 EPIPE。
 process.on('unhandledRejection', (reason: any) => {
-  console.log('[unhandledRejection]', reason && reason.stack ? reason.stack : reason);
+  console.log(
+    '[unhandledRejection]',
+    reason && reason.stack ? reason.stack : reason,
+  );
 });
 
 ipcMain.setMaxListeners(0);
 
 ipcMain.on('startup-timing', (event, payload: any) => {
-  const phase = typeof payload?.phase === 'string'
-    ? payload.phase.replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 100)
-    : '';
+  const phase =
+    typeof payload?.phase === 'string'
+      ? payload.phase.replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 100)
+      : '';
   if (!phase) return;
   const details = payload?.details;
   startupMark(phase, {
@@ -339,9 +350,7 @@ ipcMain.on('view-clear-tab-hover', (e, tabId: number) => {
   for (const appWindow of Application.instance.windows?.list || []) {
     if (appWindow.viewManager.getById(tabId)) {
       appWindow.send('clear-tab-hover');
-      Application.instance.dialogs
-        .getExistingPersistent('preview')
-        ?.hide();
+      Application.instance.dialogs.getExistingPersistent('preview')?.hide();
       return;
     }
   }
@@ -351,8 +360,10 @@ ipcMain.handle(
   `web-contents-call`,
   async (e, { webContentsId, method, args = [] }) => {
     try {
-      const appWindow = Application.instance.windows.findByBrowserView(webContentsId);
-      const view = appWindow?.viewManager.findViewByWebContentsId(webContentsId);
+      const appWindow =
+        Application.instance.windows.findByBrowserView(webContentsId);
+      const view =
+        appWindow?.viewManager.findViewByWebContentsId(webContentsId);
       // window.open 覆盖标签保持原始 tab id；操作必须落到当前可见的 BrowserView。
       const wc = view?.webContents || webContents.fromId(webContentsId);
       // 地址栏与搜索建议通过 callViewMethod('loadURL') 进入这里。必须交给
@@ -361,14 +372,16 @@ ipcMain.handle(
         view.load(args[0], args[1]);
         return;
       }
-      if ("home" == method) {
+      if ('home' == method) {
         // 启动行为「打开特定页面」:主页按钮(及网络错误页"主页")前往配置网址,
         // 与 Ctrl+T / 新建标签页共用 settings.startupBehavior 同一真相源;否则回新标签页。
         const sb = Application.instance.settings.object.startupBehavior;
         const raw = sb.type === 'urls' && sb.url ? sb.url.trim() : '';
         const homeUrl = raw
-          ? raw.includes('://') ? raw : `http://${raw}`
-          : getWebUIURL("newtab");
+          ? raw.includes('://')
+            ? raw
+            : `http://${raw}`
+          : getWebUIURL('newtab');
         if (view) {
           view.load(homeUrl);
           return;
@@ -394,10 +407,15 @@ ipcMain.handle(
 // 保证 CodeMirror 异步挂载完成后再写入并触发格式化按钮。
 ipcMain.handle(
   'open-clipboard-in-bejson',
-  async (_e, {webContentsId, content}: {webContentsId: number; content: string}) => {
+  async (
+    _e,
+    { webContentsId, content }: { webContentsId: number; content: string },
+  ) => {
     try {
-      const appWindow = Application.instance.windows.findByBrowserView(webContentsId);
-      const view = appWindow?.viewManager.findViewByWebContentsId(webContentsId);
+      const appWindow =
+        Application.instance.windows.findByBrowserView(webContentsId);
+      const view =
+        appWindow?.viewManager.findViewByWebContentsId(webContentsId);
       if (!view || typeof content !== 'string') return false;
       view.loadClipboardInBejson(content);
       return true;
@@ -416,11 +434,14 @@ ipcMain.on('open-external-url', async (_e, url: string) => {
     await shell.openExternal(url);
   } catch (err) {
     console.error('[open-external-url] 唤起失败:', url, err);
+    const t = getMainTranslator(
+      Application.instance.settings?.object?.language,
+    );
     dialog.showMessageBox({
       type: 'warning',
-      title: '温馨提示',
-      message: '无法打开该链接,请确认系统已安装对应应用。',
-      buttons: ['确定'],
+      title: t('dialogHintTitle'),
+      message: t('notifOpenExternalFailed'),
+      buttons: [t('confirm')],
     });
   }
 });
@@ -457,7 +478,9 @@ const crxVerbose = process.env.CRX_VERBOSE === '1';
 
 app.on('web-contents-created', (e, webContents) => {
   try {
-    tlog(`web-contents-created: type=${webContents.getType()} url=${webContents.getURL()}`);
+    tlog(
+      `web-contents-created: type=${webContents.getType()} url=${webContents.getURL()}`,
+    );
   } catch (err) {}
 
   if (webContents.getType() === 'backgroundPage')
@@ -465,12 +488,17 @@ app.on('web-contents-created', (e, webContents) => {
 
   // 拦截所有 webContents 的电子书文件导航 → 重定向到 koodoreader
   webContents.on('will-navigate', (event, url) => {
-    console.log('[file-nav] will-navigate url:', url);
-    if (url && url.startsWith('file:///')) {
-      const path = filePathFromFileUrl(url);
+    const navigation = getNavigationContext(event, url);
+    if (!navigation.isMainFrame) return;
+    console.log('[file-nav] will-navigate url:', navigation.url);
+    if (navigation.url.startsWith('file:///')) {
+      const path = filePathFromFileUrl(navigation.url);
       const koodoUrl = buildKoodoReaderUrl(path);
       if (koodoUrl) {
-        console.log('[file-nav] will-navigate redirect to koodoreader:', koodoUrl);
+        console.log(
+          '[file-nav] will-navigate redirect to koodoreader:',
+          koodoUrl,
+        );
         event.preventDefault();
         webContents.loadURL(koodoUrl);
       }
