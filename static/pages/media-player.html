@@ -61,6 +61,53 @@
       color: var(--accent); background: var(--accent-soft); cursor: pointer;
     }
     .theme-toggle svg { width: 17px; height: 17px; }
+    .cast-toggle {
+      -webkit-app-region: no-drag; height: 34px; display: flex; align-items: center;
+      gap: 8px; margin-right: 10px; padding: 0 14px 0 12px; border: 1px solid var(--border-strong);
+      border-radius: 18px; color: var(--sub); background: var(--soft); cursor: pointer;
+      transition: background .16s, color .16s, border-color .16s;
+    }
+    .cast-toggle svg { width: 17px; height: 17px; }
+    .cast-toggle .cast-label { font-size: 13px; font-weight: 650; }
+    .cast-toggle .cast-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .cast-toggle:hover { border-color: var(--accent); }
+    .cast-toggle.on { color: #fff; border-color: #17a86b; background: #17a86b; box-shadow: 0 3px 12px rgba(23,168,107,.35); }
+    .cast-toggle.on .cast-dot { background: #fff; animation: cast-pulse 1.6s ease-out infinite; }
+    .cast-toggle.error { color: #fff; border-color: #d43d45; background: #d43d45; }
+    .cast-toggle.error .cast-dot { background: #fff; }
+    .cast-toggle.busy { opacity: .7; pointer-events: none; }
+    @keyframes cast-pulse {
+      0% { box-shadow: 0 0 0 0 rgba(255,255,255,.75); }
+      100% { box-shadow: 0 0 0 7px rgba(255,255,255,0); }
+    }
+    .cast-wait { display: none; flex-direction: column; align-items: center; gap: 14px; padding: 24px; text-align: center; color: #fff; }
+    .player-empty.casting .empty-player-mark { display: none; }
+    .player-empty.casting .cast-wait { display: flex; }
+    .cast-wait-icon {
+      width: 92px; height: 92px; display: grid; place-items: center; border-radius: 50%;
+      background: rgba(23,168,107,.9); box-shadow: 0 0 0 0 rgba(23,168,107,.6);
+      animation: cast-wave 2s ease-out infinite;
+    }
+    .cast-wait-icon svg { width: 44px; height: 44px; stroke-width: 1.6; }
+    @keyframes cast-wave {
+      0% { box-shadow: 0 0 0 0 rgba(23,168,107,.55); }
+      100% { box-shadow: 0 0 0 28px rgba(23,168,107,0); }
+    }
+    .cast-wait-title { font-size: 20px; font-weight: 700; text-shadow: 0 1px 6px rgba(0,0,0,.35); }
+    .cast-wait-name {
+      padding: 6px 14px; border-radius: 16px; font-size: 14px; font-weight: 650;
+      background: rgba(4,12,21,.35); backdrop-filter: blur(6px);
+    }
+    .cast-wait-hint { max-width: 460px; font-size: 12px; line-height: 1.7; color: rgba(255,255,255,.85); text-shadow: 0 1px 4px rgba(0,0,0,.35); }
+    .cast-now {
+      margin-right: auto; height: 36px; display: none; align-items: center; gap: 7px; padding: 0 12px;
+      border-radius: 7px; color: #17a86b; background: rgba(23,168,107,.12); font-size: 13px; font-weight: 650;
+      max-width: 50%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    }
+    .cast-now.show { display: inline-flex; }
+    .cast-now svg { flex: none; width: 17px; height: 17px; }
+    .cast-now span { overflow: hidden; text-overflow: ellipsis; }
+    .type-badge.cast { color: #fff; background: #17a86b; }
     .theme-toggle span:last-child { font-size: 13px; font-weight: 600; }
     .window-actions { -webkit-app-region: no-drag; height: 100%; display: flex; }
     .window-btn {
@@ -202,18 +249,267 @@
     }
     .toast.show { opacity: 1; transform: translate(-50%,0); }
     .toast.error { background: #d43d45; }
+
+    /* ---------- 模式切换(智能播放器 / IPTV播放器) ---------- */
+    .modes { display: flex; align-items: baseline; gap: 14px; }
+    .mode-tab {
+      -webkit-app-region: no-drag; position: relative; padding: 4px 0; border: 0; background: transparent;
+      color: var(--muted); font-size: 13px; font-weight: 550; cursor: pointer;
+      transition: color .18s, font-size .18s;
+    }
+    .mode-tab:hover { color: var(--sub); }
+    html:not([data-mode="iptv"]) #mode-smart,
+    html[data-mode="iptv"] #mode-iptv { font-size: 18px; font-weight: 700; color: var(--text); cursor: default; }
+    html[data-mode="iptv"] #mode-iptv {
+      color: transparent; background: linear-gradient(90deg,#ffffff 0%,#a7f3d0 100%);
+      -webkit-background-clip: text; background-clip: text;
+    }
+    html[data-mode="iptv"] #mode-iptv::after {
+      content: ""; position: absolute; left: 0; right: 0; bottom: -4px; height: 2px; border-radius: 1px;
+      background: linear-gradient(90deg,#34d399,rgba(52,211,153,0));
+    }
+    .shortcut-btn {
+      -webkit-app-region: no-drag; height: 34px; display: none; align-items: center; gap: 7px;
+      margin-right: 14px; padding: 0 14px; border: 1px solid rgba(255,255,255,.16); border-radius: 18px;
+      color: #fff; background: rgba(255,255,255,.06); font-size: 13px; font-weight: 650; cursor: pointer;
+    }
+    .shortcut-btn:hover { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.26); }
+    .shortcut-btn:disabled { opacity: .6; cursor: default; }
+    .shortcut-btn svg { width: 17px; height: 17px; }
+
+    /* IPTV 模式：黑色主题，不受日间/夜间切换影响 */
+    html[data-mode="iptv"] {
+      color-scheme: dark;
+      --accent: #ffffff; --accent-soft: rgba(255,255,255,.1); --active: rgba(255,255,255,.08);
+      --window: #000; --titlebar: #0a0a0c; --surface: #0e0e11;
+      --soft: #17171b; --hover: #1f1f24; --border: #222227;
+      --border-strong: #303036; --text: #f4f4f6; --sub: #b4b4bc;
+      --muted: #7c7c86; --icon: #c8c8d0;
+      --shadow: 0 16px 40px rgba(0,0,0,.6);
+      --live: #34d399;
+    }
+    html[data-mode="iptv"] .workspace,
+    html[data-mode="iptv"] #btn-cast,
+    html[data-mode="iptv"] #btn-theme { display: none; }
+    html[data-mode="iptv"] .shortcut-btn { display: flex; }
+    html[data-mode="iptv"] .brand-mark {
+      background: linear-gradient(145deg,#2c2c33,#0b0b0e); box-shadow: inset 0 0 0 1px rgba(255,255,255,.14);
+    }
+    html[data-mode="iptv"] .brand-mark::before { border-left-color: #34d399; }
+    html[data-mode="iptv"] .dialog-btn.primary { color: #04140d; border-color: #34d399; background: #34d399; }
+    html[data-mode="iptv"] .toast { background: #1b1b20; }
+    html[data-mode="iptv"] .toast.error { background: #d43d45; }
+    html[data-mode="iptv"] ::-webkit-scrollbar { width: 8px; height: 8px; }
+    html[data-mode="iptv"] ::-webkit-scrollbar-thumb { border-radius: 4px; background: #2a2a30; }
+    html[data-mode="iptv"] ::-webkit-scrollbar-thumb:hover { background: #3a3a42; }
+    html[data-mode="iptv"] ::-webkit-scrollbar-track { background: transparent; }
+
+    .iptv-workspace {
+      height: calc(100% - 58px); display: none;
+      grid-template-columns: 380px minmax(0,1fr); gap: 16px; padding: 16px 28px 20px;
+    }
+    html[data-mode="iptv"] .iptv-workspace { display: grid; }
+    .iptv-panel, .iptv-stage {
+      min-height: 0; min-width: 0; border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+    }
+    .iptv-panel { display: flex; flex-direction: column; overflow: hidden; }
+    .iptv-source-bar {
+      height: 58px; flex: none; display: flex; align-items: center; gap: 8px;
+      padding: 0 10px 0 12px; border-bottom: 1px solid var(--border);
+    }
+    .iptv-source-btn {
+      flex: 1; min-width: 0; height: 38px; display: flex; align-items: center; gap: 8px;
+      padding: 0 10px 0 12px; border: 1px solid var(--border-strong); border-radius: 8px;
+      background: var(--soft); cursor: pointer; text-align: left;
+    }
+    .iptv-source-btn:hover { background: var(--hover); }
+    .iptv-source-btn .src-label { flex: 1; min-width: 0; overflow: hidden; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+    .iptv-source-btn svg { flex: none; width: 15px; height: 15px; color: var(--muted); }
+    .iptv-source-btn .type-badge { flex: none; color: #6ee7b7; background: rgba(52,211,153,.12); }
+    .icon-btn {
+      flex: none; width: 38px; height: 38px; display: grid; place-items: center; padding: 0;
+      border: 1px solid var(--border-strong); border-radius: 8px; color: var(--icon); background: var(--soft); cursor: pointer;
+    }
+    .icon-btn:hover { color: var(--text); background: var(--hover); }
+    .icon-btn:disabled { opacity: .45; cursor: default; }
+    .icon-btn svg { width: 17px; height: 17px; }
+    .icon-btn.spin svg { animation: iptv-spin .9s linear infinite; }
+    @keyframes iptv-spin { to { transform: rotate(360deg); } }
+    .iptv-save-bar {
+      flex: none; display: flex; align-items: center; gap: 10px; margin: 10px 12px 0; padding: 9px 10px 9px 12px;
+      border: 1px solid rgba(52,211,153,.4); border-radius: 8px; color: var(--sub); background: rgba(52,211,153,.07); font-size: 12px;
+    }
+    .iptv-save-bar .txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pill-btn {
+      flex: none; height: 28px; padding: 0 12px; border: 0; border-radius: 14px;
+      color: #04140d; background: #34d399; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap;
+    }
+    .pill-btn:hover { filter: brightness(1.08); }
+    .pill-btn.ghost { color: var(--text); background: rgba(255,255,255,.1); }
+    .pill-btn.big { height: 40px; padding: 0 26px; border-radius: 20px; font-size: 14px; }
+    .iptv-search { position: relative; flex: none; display: block; margin: 10px 12px; }
+    .iptv-search svg { position: absolute; left: 11px; top: 50%; width: 15px; height: 15px; color: var(--muted); transform: translateY(-50%); }
+    .iptv-search input {
+      width: 100%; height: 34px; padding: 0 12px 0 32px; border: 1px solid var(--border); border-radius: 8px;
+      outline: none; color: var(--text); background: var(--soft); user-select: text;
+    }
+    .iptv-search input:focus { border-color: var(--border-strong); background: var(--hover); }
+    .iptv-body {
+      flex: 1; min-height: 0; display: grid; grid-template-columns: 116px minmax(0,1fr);
+      border-top: 1px solid var(--border);
+    }
+    .iptv-body.single { grid-template-columns: minmax(0,1fr); }
+    .iptv-body.single .iptv-groups { display: none; }
+    .iptv-groups {
+      min-height: 0; display: flex; flex-direction: column; gap: 2px; padding: 8px 6px;
+      overflow: auto; border-right: 1px solid var(--border);
+    }
+    .group-item {
+      width: 100%; flex: none; padding: 8px 10px; border: 0; border-radius: 6px; color: var(--sub); background: transparent;
+      font-size: 12px; line-height: 1.35; text-align: left; word-break: break-all; cursor: pointer;
+    }
+    .group-item:hover { color: var(--text); background: var(--hover); }
+    .group-item.active { color: var(--text); background: var(--active); font-weight: 700; box-shadow: inset 2px 0 0 #34d399; }
+    .group-item .n { margin-left: 4px; color: var(--muted); font-size: 11px; font-weight: 500; }
+    .iptv-channels { min-height: 0; padding: 8px; overflow: auto; }
+    .channel-item {
+      width: 100%; height: 50px; display: flex; align-items: center; gap: 10px; padding: 0 10px;
+      border: 0; border-radius: 7px; background: transparent; text-align: left; cursor: pointer;
+    }
+    .channel-item:hover { background: var(--hover); }
+    .channel-item.active { background: var(--active); box-shadow: inset 0 0 0 1px rgba(52,211,153,.28); }
+    .ch-logo {
+      flex: none; width: 44px; height: 32px; display: grid; place-items: center; overflow: hidden;
+      border-radius: 6px; color: #d7d7de; background: #1c1c21; font-size: 13px; font-weight: 700;
+    }
+    .ch-logo.text { font-size: 11px; letter-spacing: .3px; }
+    .ch-logo img { max-width: 100%; max-height: 100%; object-fit: contain; }
+    .ch-copy { flex: 1; min-width: 0; }
+    .ch-name { overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+    .ch-meta { margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .channel-item.active .ch-name { color: #6ee7b7; }
+    .live-eq { flex: none; height: 14px; display: flex; align-items: flex-end; gap: 2px; }
+    .live-eq i { width: 3px; height: 4px; border-radius: 1px; background: #34d399; animation: iptv-eq 1s ease-in-out infinite; }
+    .live-eq i:nth-child(2) { animation-delay: .2s; }
+    .live-eq i:nth-child(3) { animation-delay: .4s; }
+    @keyframes iptv-eq { 0%, 100% { height: 4px; } 50% { height: 14px; } }
+    .iptv-state { padding: 40px 16px; color: var(--muted); font-size: 13px; text-align: center; }
+    .iptv-state .state-title { color: var(--sub); font-weight: 650; }
+    .iptv-state.error .state-title { color: #f87171; }
+    .iptv-state .state-sub { margin-top: 6px; font-size: 12px; line-height: 1.6; word-break: break-all; }
+    .iptv-state .state-actions { display: flex; justify-content: center; gap: 8px; margin-top: 14px; }
+    .iptv-spinner {
+      width: 26px; height: 26px; margin: 0 auto 12px; border: 2.5px solid rgba(255,255,255,.14);
+      border-top-color: #34d399; border-radius: 50%; animation: iptv-spin .8s linear infinite;
+    }
+    .iptv-stage { display: flex; flex-direction: column; padding: 10px 16px 16px; overflow: hidden; }
+    .iptv-now { height: 50px; flex: none; display: flex; align-items: center; gap: 10px; padding-bottom: 8px; }
+    .live-badge {
+      flex: none; display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 4px;
+      color: #9a9aa3; background: #26262c; font-size: 11px; font-weight: 800; letter-spacing: .6px;
+    }
+    .live-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .live-badge.on { color: #fff; background: #e5484d; }
+    .now-copy { flex: 1; min-width: 0; }
+    .now-name { overflow: hidden; font-size: 15px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+    .now-group { margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .line-chip {
+      flex: none; height: 32px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: 16px;
+      color: var(--sub); background: var(--soft); font-size: 12px; font-weight: 650; cursor: pointer;
+    }
+    .line-chip:hover { color: var(--text); background: var(--hover); }
+    .iptv-shell { background: #000; box-shadow: none; }
+    .iptv-overlay {
+      position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 10px; padding: 24px; color: rgba(255,255,255,.8); text-align: center;
+      background: radial-gradient(circle at 50% 42%, #16161b 0%, #000 72%);
+    }
+    .iptv-overlay .iptv-spinner { display: none; margin: 0; width: 36px; height: 36px; }
+    .iptv-overlay[data-state="loading"] .iptv-spinner { display: block; }
+    .iptv-overlay .ov-icon {
+      width: 68px; height: 68px; display: none; place-items: center; border: 1px solid rgba(255,255,255,.16);
+      border-radius: 50%; background: rgba(255,255,255,.04);
+    }
+    .iptv-overlay[data-state="idle"] .ov-icon, .iptv-overlay[data-state="error"] .ov-icon { display: grid; }
+    .iptv-overlay[data-state="error"] .ov-icon { color: #f87171; border-color: rgba(248,113,113,.35); }
+    .iptv-overlay .ov-icon svg { width: 30px; height: 30px; }
+    .ov-title { color: #fff; font-size: 16px; font-weight: 700; }
+    .ov-sub { max-width: 440px; color: rgba(255,255,255,.58); font-size: 12px; line-height: 1.6; }
+    .iptv-empty { display: none; }
+    .iptv-workspace.is-empty { grid-template-columns: minmax(0,1fr); }
+    .iptv-workspace.is-empty .iptv-panel, .iptv-workspace.is-empty .iptv-stage { display: none; }
+    .iptv-workspace.is-empty .iptv-empty { min-height: 0; display: grid; place-items: center; overflow: auto; }
+    .iptv-empty-card {
+      width: min(540px,100%); padding: 36px 36px 30px; border: 1px solid var(--border); border-radius: 14px;
+      background: linear-gradient(180deg,#121216,#0a0a0c); box-shadow: var(--shadow); text-align: center;
+    }
+    .empty-tv {
+      width: 84px; height: 84px; display: grid; place-items: center; margin: 0 auto 18px; border-radius: 22px;
+      color: #fff; background: #17171c; box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+    }
+    .empty-tv svg { width: 40px; height: 40px; stroke-width: 1.5; }
+    .empty-title { font-size: 20px; font-weight: 750; }
+    .empty-desc { margin-top: 8px; color: var(--sub); font-size: 13px; }
+    .fmt-list { display: grid; gap: 8px; margin: 18px 0 22px; padding: 0; list-style: none; text-align: left; }
+    .fmt-list li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 8px; color: var(--sub); background: #17171b; font-size: 12px; }
+    .fmt-list b { width: 52px; flex: none; color: #6ee7b7; }
+    .empty-tip { margin-top: 16px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+    .iptv-menu { width: auto; min-width: 220px; max-width: 440px; max-height: 60vh; overflow: auto; }
+    .src-opt { display: flex; align-items: center; gap: 2px; padding-right: 4px; border-radius: 6px; }
+    .src-opt:hover { background: var(--hover); }
+    .src-main { flex: 1; min-width: 0; padding: 8px 10px; border: 0; background: transparent; text-align: left; cursor: pointer; }
+    .src-name { overflow: hidden; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+    .src-opt.active .src-name { color: #6ee7b7; }
+    .src-url { margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .src-tag { margin-left: 6px; padding: 1px 5px; border-radius: 4px; color: #fbbf24; background: rgba(251,191,36,.12); font-size: 10px; font-weight: 650; }
+    .src-act {
+      flex: none; width: 28px; height: 28px; display: grid; place-items: center; padding: 0;
+      border: 0; border-radius: 6px; color: var(--muted); background: transparent; cursor: pointer;
+    }
+    .src-act:hover { color: var(--text); background: rgba(255,255,255,.08); }
+    .src-act.danger:hover { color: #f87171; }
+    .src-act svg { width: 15px; height: 15px; }
+    .menu-sep { height: 1px; margin: 6px 2px; background: var(--border); }
+    .menu-empty { padding: 12px 10px; color: var(--muted); font-size: 12px; }
+    .line-opt { height: auto; min-height: 42px; flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; padding: 6px 10px; }
+    .line-opt .opt-main { font-size: 13px; }
+    .line-opt .opt-sub { max-width: 360px; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; }
+    .line-opt.active .opt-main { color: #6ee7b7; font-weight: 700; }
+    .line-opt.failed .opt-main { color: #f87171; }
+    .line-opt:disabled { opacity: .45; cursor: default; }
+    .dialog-hint { margin-top: 6px; color: var(--muted); font-size: 12px; }
+    .url-input + .url-input { margin-top: 10px; }
+
     @media (max-width: 900px) {
       .workspace { grid-template-columns: minmax(0,1fr) 300px; padding-inline: 14px; }
       .stage { padding-inline: 10px; }
       .stage-btn { width: 36px; padding: 0; }
       .stage-btn span { display: none; }
+      .iptv-workspace { grid-template-columns: 320px minmax(0,1fr); padding-inline: 14px; }
+      .iptv-body { grid-template-columns: 96px minmax(0,1fr); }
+      .iptv-stage { padding-inline: 10px; }
     }
   </style>
 </head>
 <body>
   <header class="titlebar">
-    <div class="brand"><div class="brand-mark"></div><div class="brand-title">智能播放器</div></div>
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div class="modes" role="tablist">
+        <button class="mode-tab" id="mode-smart" type="button" role="tab" aria-selected="true">智能播放器</button>
+        <button class="mode-tab" id="mode-iptv" type="button" role="tab" title="切换到 IPTV 直播">IPTV播放器</button>
+      </div>
+    </div>
     <div class="spacer"></div>
+    <button class="shortcut-btn" id="btn-iptv-shortcut" type="button" title="在桌面创建快捷方式，双击直接打开 IPTV 播放器">
+      <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/><path d="M12 7v6m-3-3h6"/></svg>
+      <span>添加到桌面</span>
+    </button>
+    <button class="cast-toggle" id="btn-cast" type="button" title="开启后，同一局域网内的手机可投屏到本机" aria-pressed="false">
+      <span class="cast-dot"></span>
+      <svg viewBox="0 0 24 24"><path d="M3 8V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M3 12a8 8 0 0 1 8 8M3 16a4 4 0 0 1 4 4"/><path d="M3 20h.01"/></svg>
+      <span class="cast-label" id="cast-label">投屏已关闭</span>
+    </button>
     <button class="theme-toggle" id="btn-theme" type="button" title="切换日间/夜间">
       <span id="theme-icon"></span><span id="theme-label">日间</span>
     </button>
@@ -244,15 +540,97 @@
     </aside>
     <section class="stage">
       <div class="stage-actions">
+        <div class="cast-now" id="cast-now"><svg viewBox="0 0 24 24"><path d="M3 8V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M3 12a8 8 0 0 1 8 8M3 16a4 4 0 0 1 4 4"/><path d="M3 20h.01"/></svg><span id="cast-now-text">正在播放投屏内容</span></div>
         <button class="stage-btn" id="btn-float" type="button"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M13 12h5v4h-5z"/></svg><span>悬浮播放</span></button>
         <button class="stage-btn" id="btn-full" type="button" title="网页全屏"><svg viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg><span>网页全屏</span></button>
       </div>
       <div class="player-shell">
         <div class="dplayer" id="dplayer"></div>
-        <div class="player-empty" id="player-empty"><div class="empty-player-mark" title="暂无可播放资源"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div></div>
+        <div class="player-empty" id="player-empty">
+          <div class="empty-player-mark" title="暂无可播放资源"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+          <div class="cast-wait">
+            <div class="cast-wait-icon"><svg viewBox="0 0 24 24"><path d="M3 8V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M3 12a8 8 0 0 1 8 8M3 16a4 4 0 0 1 4 4"/><path d="M3 20h.01"/></svg></div>
+            <div class="cast-wait-title">投屏已开启，等待投屏…</div>
+            <div class="cast-wait-name" id="cast-wait-name">--</div>
+            <div class="cast-wait-hint" id="cast-wait-hint">在手机视频 App 中点击「投屏」或「TV」按钮，选择上面的设备名。</div>
+          </div>
+        </div>
       </div>
     </section>
   </main>
+  <main class="iptv-workspace is-empty" id="iptv-workspace">
+    <aside class="iptv-panel">
+      <div class="iptv-source-bar">
+        <button class="iptv-source-btn" id="iptv-source-btn" type="button" title="切换订阅">
+          <span class="src-label" id="iptv-source-name">--</span>
+          <span class="type-badge" id="iptv-source-format" hidden></span>
+          <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+        <button class="icon-btn" id="iptv-refresh" type="button" title="刷新订阅"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg></button>
+        <button class="icon-btn" id="iptv-add" type="button" title="添加订阅"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+      </div>
+      <div class="iptv-save-bar" id="iptv-save-bar" hidden>
+        <span class="txt" id="iptv-save-text">来自网页的直播源，尚未保存</span>
+        <button class="pill-btn" id="iptv-save" type="button">保存此订阅</button>
+      </div>
+      <label class="iptv-search">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="iptv-search" type="search" autocomplete="off" placeholder="搜索频道"/>
+      </label>
+      <div class="iptv-body" id="iptv-body">
+        <div class="iptv-groups" id="iptv-groups"></div>
+        <div class="iptv-channels" id="iptv-channels"></div>
+      </div>
+    </aside>
+    <section class="iptv-stage">
+      <div class="iptv-now">
+        <span class="live-badge" id="iptv-live">LIVE</span>
+        <div class="now-copy">
+          <div class="now-name" id="iptv-now-name">未在播放</div>
+          <div class="now-group" id="iptv-now-group">从左侧选择一个频道</div>
+        </div>
+        <button class="line-chip" id="iptv-line" type="button" title="切换线路" hidden>线路 1/1</button>
+        <button class="stage-btn" id="iptv-float" type="button" title="悬浮播放"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M13 12h5v4h-5z"/></svg></button>
+        <button class="stage-btn" id="iptv-full" type="button" title="网页全屏"><svg viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg></button>
+      </div>
+      <div class="player-shell iptv-shell">
+        <div class="dplayer" id="iptv-dplayer"></div>
+        <div class="iptv-overlay" id="iptv-overlay" data-state="idle">
+          <div class="iptv-spinner"></div>
+          <div class="ov-icon"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="m8 2 4 4 4-4"/></svg></div>
+          <div class="ov-title" id="iptv-ov-title">选择频道开始观看</div>
+          <div class="ov-sub" id="iptv-ov-sub"></div>
+        </div>
+      </div>
+    </section>
+    <section class="iptv-empty">
+      <div class="iptv-empty-card">
+        <div class="empty-tv"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="m8 3 4 4 4-4"/></svg></div>
+        <div class="empty-title">还没有直播订阅</div>
+        <div class="empty-desc">添加一个直播源地址，即可观看电视直播</div>
+        <ul class="fmt-list">
+          <li><b>TXT</b><span>分组,#genre# 与 频道名,播放地址</span></li>
+          <li><b>M3U</b><span>#EXTINF 列表，支持 group-title / tvg-logo</span></li>
+          <li><b>TVBox</b><span>JSON 配置，读取其中的 lives 直播源</span></li>
+        </ul>
+        <button class="pill-btn big" id="iptv-empty-add" type="button">添加订阅</button>
+        <div class="empty-tip">在浏览器中打开直播源地址时，地址栏会提示「检测到可播放链接」，点击即可带入。</div>
+      </div>
+    </section>
+  </main>
+  <div class="context-menu iptv-menu" id="iptv-menu" hidden></div>
+  <div class="dialog-backdrop" id="iptv-dialog" hidden>
+    <form class="dialog" id="iptv-form">
+      <div class="dialog-title" id="iptv-dialog-title">添加直播订阅</div>
+      <input class="url-input" id="iptv-url" type="url" autocomplete="off" placeholder="订阅地址：TXT / M3U / TVBox JSON"/>
+      <input class="url-input" id="iptv-name" type="text" autocomplete="off" maxlength="80" placeholder="名称(可选)"/>
+      <div class="dialog-error" id="iptv-error"></div>
+      <div class="dialog-actions">
+        <button class="dialog-btn" id="iptv-cancel" type="button">取消</button>
+        <button class="dialog-btn primary" id="iptv-submit" type="submit">添加</button>
+      </div>
+    </form>
+  </div>
   <div class="context-menu" id="context-menu" hidden>
     <button class="menu-btn" type="button" data-action="copy"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></svg><span>复制</span></button>
     <button class="menu-btn" type="button" data-action="download"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 5-5m-5 5-5-5M4 20h16"/></svg><span>下载</span></button>
@@ -309,7 +687,7 @@
       return hours ? pad(hours) + ':' + pad(minutes) + ':' + pad(secs) : pad(minutes) + ':' + pad(secs);
     }
     function refererOf(item) {
-      if (!item) return '';
+      if (!item || item.cast) return '';
       const headers = item.playbackHeaders || {};
       return item.referrer || item.referer || headers.Referer || headers.referer || pageData.pageUrl || '';
     }
@@ -340,6 +718,7 @@
       try { if (hls) hls.destroy(); } catch (e) {}
       try { if (dp) dp.destroy(); } catch (e) {}
       hls = null; dp = null; hlsRecoveryAttempts = 0; $('dplayer').innerHTML = '';
+      reportPlaying();
     }
     function attachHls(video, url) {
       const instance = new Hls();
@@ -358,15 +737,33 @@
     function updateDuration() {
       if (dp && dp.video) setText('info-duration', formatDuration(dp.video.duration));
     }
+    // 嗅探资源所属网页的 origin 与播放器页面当前 origin 不一致(播放中没跟随标签页切换)：
+    // 交给主进程把页面重载到该 origin 后再播，防盗链 Referer 才对得上。
+    function needsOriginSwitch(item) {
+      return isSniffed(item) && typeof item.playerOrigin === 'string'
+        && item.playerOrigin !== (pageData.playerOrigin || '');
+    }
     function play(index) {
       if (!items[index]) return;
+      if (needsOriginSwitch(items[index])) {
+        ipcRenderer.send('media-player-play-request', keyOf(items[index]));
+        return;
+      }
+      // 从投屏视频切到别的资源时，告诉控制端投屏已停止。
+      if (castPlayingUrl && !isCastItem(items[index])) reportCastStopped();
       activeIndex = index;
+      playStartedAt = Date.now();
       const item = items[index];
+      // 主进程据此切换请求头策略：投屏视频去 Referer + 投屏端 UA，其余资源沿用嗅探头。
+      // sendSync 确保 UA 切换完成后才创建 video，首个媒体请求即生效。
+      setReferrerPolicy(isCastItem(item));
+      ipcRenderer.sendSync('media-player-cast-active', isCastItem(item));
       $('player-empty').style.display = 'none';
       destroyPlayer();
       const isHls = mediaType(item) === 'hls' || (item.url || '').toLowerCase().includes('.m3u8');
       dp = new DPlayer({
         container: $('dplayer'), autoplay: true, theme: '#1683ff',
+        playbackSpeed: [0.5, 0.75, 1, 1.25, 1.5, 2, 4, 8, 16],
         video: {
           url: item.url, type: isHls ? 'customHls' : 'auto',
           customType: {customHls(video) {
@@ -378,26 +775,12 @@
       if (dp.video) {
         dp.video.addEventListener('loadedmetadata', updateDuration);
         dp.video.addEventListener('durationchange', updateDuration);
+        bindPlayingReport(dp.video);
       }
-      // DPlayer 的网页全屏按钮也同步窗口全屏，避免视频和窗口状态分离。
-      if (dp.on) {
-        dp.on('webfullscreen', () => {
-          if (!windowFullscreen) {
-            windowFullscreen = true;
-            updateFullscreenButton(true);
-            ipcRenderer.send('media-player-toggle-fullscreen');
-          }
-        });
-        dp.on('webfullscreen_cancel', () => {
-          if (windowFullscreen) {
-            windowFullscreen = false;
-            updateFullscreenButton(false);
-            ipcRenderer.send('media-player-toggle-fullscreen');
-          }
-        });
-      }
+      bindCastVideo(item);
+      bindWebFullscreen(dp);
       if (dp.play) dp.play();
-      renderList(); renderInfo();
+      renderList(); renderInfo(); renderCast(); reportPlaying();
     }
     function renderList() {
       const list = $('source-list');
@@ -423,7 +806,8 @@
         url.className = 'source-url'; url.textContent = item.url || ''; url.title = item.url || '';
         copy.append(name, url);
         const badge = document.createElement('span');
-        badge.className = 'type-badge'; badge.textContent = typeLabel(item);
+        badge.className = 'type-badge' + (isCastItem(item) ? ' cast' : '');
+        badge.textContent = isCastItem(item) ? '投屏' : typeLabel(item);
         const more = document.createElement('button');
         more.type = 'button'; more.className = 'more-btn'; more.title = '资源操作'; more.innerHTML = icons.more;
         more.addEventListener('click', (event) => { event.stopPropagation(); openMenu(index, more); });
@@ -444,7 +828,7 @@
       let protocol = '--';
       try { protocol = new URL(item.url).protocol.replace(':', ''); } catch (e) {}
       setText('info-protocol', protocol);
-      setText('info-source', item.host || pageData.title || (item.local ? '本地文件' : '--'));
+      setText('info-source', isCastItem(item) ? 'DLNA 投屏' : (item.host || pageData.title || (item.local ? '本地文件' : '--')));
       setText('info-type', typeLabel(item));
       setText('info-duration', dp && dp.video ? formatDuration(dp.video.duration) : '--:--');
       setText('info-referer', refererOf(item) || '--');
@@ -488,20 +872,1022 @@
       if (index !== activeIndex) play(index);
       ipcRenderer.send('media-player-external');
     }
+    // 资源唯一键：本地文件用主进程分配的 id(其 url 随页面 origin 变化)，其余用 url。
+    function keyOf(item) { return item ? (item.id || item.url) : ''; }
+    function isSniffed(item) { return Boolean(item && !item.cast && !item.local && !item.manual); }
+    function emptyPlayer() {
+      activeIndex = -1; destroyPlayer(); $('player-empty').style.display = 'flex';
+      renderList(); renderInfo(); renderCast();
+    }
+    // 单例窗口会持续收到网页嗅探结果：正在播放时只更新列表，不打断当前视频；空闲时才替换。
     ipcRenderer.on('media-player-data', (event, data) => {
-      const previous = selectedItem(), previousUrl = previous && previous.url;
+      const previous = selectedItem(), previousKey = keyOf(previous);
+      const busy = isBusy();
+      const previousKeys = new Set(items.map(keyOf));
       const manualItems = items.filter((item) => item.manual);
       const incoming = data && Array.isArray(data.items) ? data.items : [];
       pageData = data || {};
-      items = incoming.concat(manualItems.filter((manual) => !incoming.some((item) => item.url === manual.url)));
-      if (!items.length) {
-        activeIndex = 0; destroyPlayer(); $('player-empty').style.display = 'flex';
-        renderList(); renderInfo(); return;
+      castMode = Boolean(pageData.castMode);
+      const intent = pageData.intent || {};
+      items = incoming.concat(manualItems.filter((manual) => !incoming.some((item) => keyOf(item) === keyOf(manual))));
+      // 标签页跳走后嗅探列表会清空，正在播的视频要留在列表里继续播。
+      if (busy && previous && !items.some((item) => keyOf(item) === previousKey)) items.unshift(previous);
+      const keepIndex = items.findIndex((item) => keyOf(item) === previousKey);
+      const keepCurrent = () => {
+        activeIndex = keepIndex; renderList(); renderInfo(); renderCast(); reportPlaying();
+      };
+      const sniffed = items.filter(isSniffed);
+      const newest = (list) => (list.length ? items.indexOf(list[list.length - 1]) : -1);
+
+      // IPTV 入口切到 IPTV 模式(可带入网页检测到的直播源)；地址栏/本地文件/投屏等显式入口切回智能播放器。
+      if (intent.iptv) {
+        if (mode !== 'iptv') setMode('iptv', intent.iptvSource);
+        else if (intent.iptvSource) openIptvSource(intent.iptvSource);
+      } else if (intent.autoplay || intent.focus || intent.cast) {
+        setMode('smart');
       }
-      const keep = items.findIndex((item) => item.url === previousUrl);
-      if (keep >= 0 && dp) { activeIndex = keep; renderList(); renderInfo(); }
-      else play(0);
+      // IPTV 模式：嗅探结果只刷新列表，不在后台起播网页视频。
+      if (mode === 'iptv') {
+        if (keepIndex >= 0) activeIndex = keepIndex;
+        renderList(); renderInfo(); renderCast();
+        return;
+      }
+
+      // 1. 显式指定的资源(本地文件入口、点选别站资源后重载)：无条件播放。
+      const focusIndex = intent.focus ? items.findIndex((item) => keyOf(item) === intent.focus) : -1;
+      if (focusIndex >= 0) return play(focusIndex);
+      // 2. 地址栏换了标签页：用户显式要看新标签页的视频，打断当前播放。
+      if (intent.follow && sniffed.length) return play(newest(sniffed));
+      // 3. 正在播放：只刷新列表。
+      if (busy && keepIndex >= 0) return keepCurrent();
+      if (!items.length) return emptyPlayer();
+      // 4. 空闲，地址栏入口：与原来一样从当前标签页的第一个资源开始播放。
+      if (intent.autoplay && sniffed.length) return play(items.indexOf(sniffed[0]));
+      // 5. 空闲的投屏窗口：不自动播放网页资源，保持「等待投屏」(超级投屏入口同样落在这里)。
+      if (castMode) {
+        if (keepIndex >= 0 && dp && !intent.cast) return keepCurrent();
+        return showIdle();
+      }
+      // 6. 空闲，嗅探到新视频：替换掉(已播完/未开始的)当前视频。
+      const fresh = sniffed.filter((item) => !previousKeys.has(keyOf(item)));
+      if (fresh.length) return play(newest(fresh));
+      if (keepIndex >= 0 && dp) return keepCurrent();
+      play(sniffed.length ? newest(sniffed) : 0);
     });
+    function showIdle() {
+      activeIndex = -1; destroyPlayer();
+      setReferrerPolicy(false);
+      ipcRenderer.send('media-player-cast-active', false); $('player-empty').style.display = 'flex';
+      renderList(); renderInfo(); renderCast();
+    }
+
+    // ---------- 播放状态 ----------
+    // 「正在播放」：有活动视频且未播完/未出错，并且在播或暂停在中途(暂停看一半不算空闲)。
+    // 刚点播放还没起播的几秒内也算，避免紧随其后的嗅探结果顶掉用户刚选的视频。
+    const START_GRACE_MS = 4000;
+    let playStartedAt = 0, reportedPlaying = null, reportedUrl = '';
+    function isBusy() {
+      const item = selectedItem(), video = dp && dp.video;
+      if (!item || !video || video.error || video.ended) return false;
+      if (isCastItem(item) && castStopped) return false;
+      if (!video.paused || video.currentTime > 0) return true;
+      return Date.now() - playStartedAt < START_GRACE_MS;
+    }
+    // 主进程据此决定嗅探刷新时能否把页面重载到新网页的 origin。
+    function reportPlaying() {
+      const playing = isBusy(), item = selectedItem(), url = playing && item ? item.url : '';
+      if (playing === reportedPlaying && url === reportedUrl) return;
+      reportedPlaying = playing; reportedUrl = url;
+      ipcRenderer.send('media-player-playing', {playing, url});
+    }
+    function bindPlayingReport(video) {
+      ['playing', 'pause', 'ended', 'error', 'emptied', 'timeupdate'].forEach((name) =>
+        video.addEventListener(name, reportPlaying));
+    }
+    // 起播宽限期结束时补报一次(期间可能一直没有媒体事件)。
+    setInterval(reportPlaying, 1000);
+
+    // ---------- 超级投屏(DLNA 接收) ----------
+    let castEnabled = false, castBusy = false, castMode = false, castInfo = {};
+    let castPlayingUrl = '', castStopped = false, castPendingSeek = null;
+    function isCastItem(item) { return Boolean(item && item.cast); }
+    // 投屏视频像电视端一样不带 Referer：页面级 no-referrer 覆盖 video 与 hls.js 的 XHR。
+    function setReferrerPolicy(noReferrer) {
+      let meta = document.querySelector('meta[name="referrer"]');
+      if (!noReferrer) { if (meta) meta.remove(); return; }
+      if (!meta) {
+        meta = document.createElement('meta');
+        meta.name = 'referrer';
+        document.head.appendChild(meta);
+      }
+      meta.content = 'no-referrer';
+    }
+    function renderCast() {
+      const button = $('btn-cast');
+      button.classList.toggle('on', castEnabled);
+      button.classList.toggle('error', !castEnabled && Boolean(castInfo.error));
+      button.classList.toggle('busy', castBusy);
+      button.setAttribute('aria-pressed', String(castEnabled));
+      $('cast-label').textContent = castBusy ? '投屏开启中…'
+        : castEnabled ? '投屏已开启'
+        : castInfo.error ? '投屏开启失败' : '投屏已关闭';
+      const addresses = (castInfo.addresses || []).join('、');
+      button.title = castEnabled
+        ? '设备名：' + (castInfo.name || '--') + (addresses ? '\n本机地址：' + addresses : '') + '\n点击关闭投屏接收'
+        : castInfo.error ? castInfo.error + '\n点击重试'
+        : '开启后，同一局域网内的手机可投屏到本机';
+      $('player-empty').classList.toggle('casting', castEnabled);
+      $('cast-wait-name').textContent = castInfo.name || '--';
+      $('cast-wait-hint').textContent = '在手机视频 App 中点击「投屏」或「TV」按钮，选择上面的设备名。'
+        + '手机需与本机连接同一 Wi-Fi' + (addresses ? '(本机 ' + addresses + ')' : '')
+        + '；搜不到时请检查 Windows 防火墙是否允许本浏览器访问专用网络。';
+      const active = selectedItem();
+      const showNow = isCastItem(active);
+      $('cast-now').classList.toggle('show', showNow);
+      $('cast-now-text').textContent = showNow ? '正在播放投屏：' + (active.name || active.host || '投屏视频') : '';
+      $('cast-now').title = showNow ? (active.name || active.url) : '';
+    }
+    function castVideo() { return dp && dp.video && isCastItem(selectedItem()) ? dp.video : null; }
+    function reportCast() {
+      const item = selectedItem(), video = castVideo();
+      if (!castEnabled || !video || !isCastItem(item)) return;
+      let state = 'PLAYING';
+      if (castStopped || video.ended) state = 'STOPPED';
+      else if (video.paused) state = 'PAUSED_PLAYBACK';
+      else if (video.readyState < 3) state = 'TRANSITIONING';
+      ipcRenderer.send('media-player-cast-state', {
+        url: item.url, state,
+        position: castStopped ? 0 : video.currentTime || 0,
+        duration: Number.isFinite(video.duration) ? video.duration : 0,
+        volume: Math.round((video.volume || 0) * 100), muted: Boolean(video.muted)
+      });
+    }
+    function reportCastStopped() {
+      if (castEnabled && castPlayingUrl) {
+        ipcRenderer.send('media-player-cast-state', {url: castPlayingUrl, state: 'STOPPED', position: 0});
+      }
+      castPlayingUrl = '';
+    }
+    function bindCastVideo(item) {
+      if (!isCastItem(item) || !dp || !dp.video) return;
+      const video = dp.video;
+      castPlayingUrl = item.url; castStopped = false;
+      ['playing', 'pause', 'ended', 'seeked', 'waiting', 'volumechange', 'durationchange'].forEach((name) =>
+        video.addEventListener(name, reportCast));
+      video.addEventListener('loadedmetadata', () => {
+        if (castPendingSeek !== null) { video.currentTime = castPendingSeek; castPendingSeek = null; }
+        reportCast();
+      });
+      video.addEventListener('error', () => {
+        toast('投屏视频无法播放，可能是格式不支持或地址已失效', 'error');
+        reportCastStopped();
+      });
+    }
+    function castSeek(seconds) {
+      const video = castVideo();
+      if (!video) return;
+      castStopped = false;
+      if (video.readyState < 1) { castPendingSeek = seconds; return; }
+      if (dp.seek) dp.seek(seconds); else video.currentTime = seconds;
+      reportCast();
+    }
+    ipcRenderer.on('media-player-cast-command', (event, command) => {
+      if (!command) return;
+      if (command.type === 'load') {
+        const index = items.findIndex(isCastItem);
+        const item = Object.assign({
+          url: command.url, name: command.title || '', mediaType: 'video',
+          host: '', addedAt: Date.now()
+        }, command.item || {}, {cast: true});
+        if (index >= 0) items.splice(index, 1);
+        items.unshift(item);
+        castPendingSeek = null;
+        castMode = true;
+        setMode('smart');
+        play(0);
+        toast('收到投屏' + (item.name ? '：' + item.name : ''));
+        return;
+      }
+      const active = selectedItem();
+      if (!isCastItem(active)) {
+        // 用户切走了投屏视频，控制端点播放时切回来。
+        if (command.type === 'play') {
+          const index = items.findIndex(isCastItem);
+          if (index >= 0) play(index);
+        }
+        return;
+      }
+      const video = castVideo();
+      if (!video) return;
+      if (command.type === 'play') {
+        castStopped = false;
+        if (video.ended) video.currentTime = 0;
+        if (dp.play) dp.play(); else video.play();
+      } else if (command.type === 'pause') {
+        if (dp.pause) dp.pause(); else video.pause();
+      } else if (command.type === 'stop') {
+        castStopped = true;
+        if (dp.pause) dp.pause(); else video.pause();
+        try { video.currentTime = 0; } catch (e) {}
+        reportCast();
+      } else if (command.type === 'seek') {
+        castSeek(Number(command.seconds) || 0);
+      } else if (command.type === 'volume') {
+        const volume = Math.max(0, Math.min(100, Number(command.volume) || 0)) / 100;
+        if (dp.volume) dp.volume(volume, true, false); else video.volume = volume;
+      } else if (command.type === 'mute') {
+        video.muted = Boolean(command.muted);
+      }
+    });
+    ipcRenderer.on('media-player-cast-status', (event, status) => {
+      const wasEnabled = castEnabled;
+      castInfo = status || {};
+      castEnabled = Boolean(castInfo.enabled);
+      if (castEnabled) castMode = true;
+      castBusy = false;
+      renderCast();
+      if (castInfo.error) toast(castInfo.error, 'error');
+      else if (castEnabled && !wasEnabled) toast('投屏已开启，手机可搜索「' + (castInfo.name || '本机') + '」');
+      if (castEnabled) reportCast();
+    });
+    $('btn-cast').addEventListener('click', async () => {
+      if (castBusy) return;
+      castBusy = true; renderCast();
+      const next = !castEnabled;
+      try {
+        const result = await ipcRenderer.invoke('media-player-cast-toggle', next);
+        castBusy = false;
+        if (!next && result && !result.enabled) {
+          castEnabled = false; castMode = false; castInfo = Object.assign({}, castInfo, {error: ''});
+          toast('投屏已关闭');
+        }
+      } catch (e) {
+        castBusy = false;
+        toast('投屏切换失败', 'error');
+      }
+      renderCast();
+    });
+    setInterval(reportCast, 1000);
+
+    // ================= IPTV 播放器 =================
+    // 订阅/缓存/最后频道都由主进程落盘(本页 partition 不持久且 origin 会变)；页面只持有内存态。
+    let mode = 'smart';
+    let iptvDp = null, iptvHls = null, iptvToken = 0, iptvWatchdog = null, iptvSaveTimer = null;
+    let iptvMenuKind = '', iptvSearchTimer = null;
+    const IPTV_START_TIMEOUT_MS = 15000, IPTV_STALL_TIMEOUT_MS = 20000, IPTV_SEARCH_LIMIT = 500;
+    const IPTV_KEY_SEP = '\u0001';
+    const FORMAT_LABEL = {txt: 'TXT', m3u: 'M3U', tvbox: 'TVBox'};
+    const iptvIcons = {
+      edit: '<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg>',
+      trash: '<svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',
+      plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>'
+    };
+    const iptv = {
+      store: {sources: [], currentId: '', lastChannel: {}},
+      ready: Promise.resolve(),
+      source: null,        // 当前订阅；temp=true 表示网页带入、尚未保存
+      groups: [], format: '', groupIndex: 0, query: '',
+      loading: false, error: '', loadSeq: 0, autoplay: false,
+      playing: null,       // {group, channel, groupName, line, failed:Set}
+      dialog: null
+    };
+
+    function setMode(next, hint) {
+      next = next === 'iptv' ? 'iptv' : 'smart';
+      if (next === mode) return;
+      mode = next;
+      const root = document.documentElement;
+      if (mode === 'iptv') root.setAttribute('data-mode', 'iptv'); else root.removeAttribute('data-mode');
+      $('mode-smart').setAttribute('aria-selected', String(mode === 'smart'));
+      $('mode-iptv').setAttribute('aria-selected', String(mode === 'iptv'));
+      document.title = mode === 'iptv' ? 'IPTV播放器' : '智能播放器';
+      closeMenu(); closeIptvMenu();
+      // 主进程据此停止跟随标签页 origin 重载页面，并在离开 IPTV 时清掉订阅 UA。
+      ipcRenderer.send('media-player-mode', {iptv: mode === 'iptv'});
+      if (mode === 'iptv') {
+        if (dp && dp.video && !dp.video.paused) { try { dp.pause(); } catch (e) {} }
+        enterIptv(hint);
+      } else {
+        // 直播不在后台空跑流量：离开 IPTV 即停播，切回时续播同一频道。
+        destroyIptvPlayer();
+        const item = selectedItem();
+        setReferrerPolicy(isCastItem(item));
+        ipcRenderer.send('media-player-cast-active', Boolean(dp) && isCastItem(item));
+        renderIptvNow();
+      }
+    }
+    async function enterIptv(hint) {
+      await iptv.ready;
+      if (mode !== 'iptv') return;
+      if (hint && hint.url) return openIptvSource(hint);
+      if (!iptv.source) {
+        const current = iptv.store.sources.find((s) => s.id === iptv.store.currentId) || iptv.store.sources[0];
+        if (current) return selectSource(current);
+        return renderIptv();
+      }
+      if (iptv.playing && !iptvDp) startIptvLine(iptv.playing.line);
+      renderIptv();
+    }
+    // 网页「检测到可播放链接」带入：已保存的订阅直接切过去，否则作为临时订阅加载并提示保存。
+    async function openIptvSource(hint) {
+      await iptv.ready;
+      const url = String(hint && hint.url || '').trim();
+      if (!url) return enterIptv();
+      // 已经是当前订阅：不重载，不打断正在播的频道。
+      if (iptv.source && iptv.source.url === url && (iptv.groups.length || iptv.loading)) {
+        if (iptv.playing && !iptvDp) startIptvLine(iptv.playing.line);
+        return renderIptv();
+      }
+      const saved = iptv.store.sources.find((s) => s.url === url);
+      if (saved) {
+        selectSource(saved, {force: true});
+        return toast('已切换到订阅「' + saved.name + '」');
+      }
+      selectSource({id: '', name: String(hint.name || '').trim().slice(0, 80) || nameFromUrl(url), url, temp: true}, {force: true});
+    }
+    function nameFromUrl(url) {
+      try {
+        const parsed = new URL(url);
+        const file = decodeURIComponent(parsed.pathname.split('/').filter(Boolean).pop() || '');
+        return (parsed.hostname || '本地文件') + (file ? ' · ' + file : '');
+      } catch (e) { return url; }
+    }
+    function newSourceId() {
+      return 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    }
+    function persistStore() {
+      if (iptvSaveTimer) clearTimeout(iptvSaveTimer);
+      iptvSaveTimer = setTimeout(flushStore, 300);
+    }
+    function flushStore() {
+      if (iptvSaveTimer) { clearTimeout(iptvSaveTimer); iptvSaveTimer = null; }
+      return ipcRenderer.invoke('iptv-sources-save', iptv.store)
+        .then((saved) => { if (!saved) toast('订阅保存失败', 'error'); })
+        .catch(() => toast('订阅保存失败', 'error'));
+    }
+    function rememberChannel() {
+      const p = iptv.playing, source = iptv.source;
+      if (!p || !source || source.temp || !source.id) return;
+      const key = p.groupName + IPTV_KEY_SEP + p.channel.name;
+      if (iptv.store.lastChannel[source.id] === key) return;
+      iptv.store.lastChannel[source.id] = key;
+      persistStore();
+    }
+    function findChannel(groupName, channelName) {
+      for (const group of iptv.groups) {
+        if (group.name !== groupName) continue;
+        const channel = group.channels.find((c) => c.name === channelName);
+        if (channel) return {group, channel};
+      }
+      return null;
+    }
+    function channelCount() {
+      return iptv.groups.reduce((sum, group) => sum + group.channels.length, 0);
+    }
+
+    // ---------- 订阅加载 ----------
+    function selectSource(source, options = {}) {
+      if (iptv.source && iptv.source.url === source.url && (iptv.groups.length || iptv.loading)) {
+        if (!options.force) return renderIptv();
+      }
+      stopIptv();
+      iptv.source = source;
+      iptv.groups = []; iptv.format = ''; iptv.groupIndex = 0; iptv.query = ''; iptv.error = '';
+      $('iptv-search').value = '';
+      iptv.autoplay = !source.temp;
+      if (!source.temp && iptv.store.currentId !== source.id) {
+        iptv.store.currentId = source.id;
+        persistStore();
+      }
+      loadSource(source, {force: Boolean(options.force)});
+    }
+    function setRefreshing(on) { $('iptv-refresh').classList.toggle('spin', on); }
+    // 先回缓存秒开，再后台强制刷新；刷新结果替换数据但不打断正在播的频道。
+    async function loadSource(source, options = {}) {
+      const seq = ++iptv.loadSeq;
+      iptv.loading = true; iptv.error = '';
+      setRefreshing(true);
+      if (!options.background) renderIptv();
+      if (!iptv.groups.length && !iptv.playing) showOverlay('loading', '正在加载订阅…', source.name);
+      let result;
+      try {
+        result = await ipcRenderer.invoke('iptv-load', {url: source.url, force: Boolean(options.force)});
+      } catch (e) {
+        result = {ok: false, message: (e && e.message) || String(e)};
+      }
+      if (seq !== iptv.loadSeq || !iptv.source || iptv.source.url !== source.url) return;
+      iptv.loading = false;
+      setRefreshing(false);
+      if (!result || !result.ok) {
+        const message = (result && result.message) || '未知错误';
+        if (iptv.groups.length) {
+          if (!options.background) toast('刷新失败：' + message, 'error');
+          return renderIptv();
+        }
+        iptv.error = message;
+        renderIptv();
+        return showOverlay('error', '订阅暂时无法加载', message);
+      }
+      applyGroups(source, result.groups, result.format);
+      if (result.fromCache && result.message) {
+        if (!options.background) toast('网络刷新失败，当前显示缓存的频道', 'error');
+      } else if (result.fromCache && !options.force) {
+        loadSource(source, {force: true, background: true});
+      } else if (options.manual) {
+        toast('订阅已刷新，共 ' + channelCount() + ' 个频道');
+      }
+    }
+    function applyGroups(source, groups, format) {
+      const previousGroup = iptv.groups[iptv.groupIndex] && iptv.groups[iptv.groupIndex].name;
+      iptv.groups = Array.isArray(groups) ? groups.filter((g) => g && Array.isArray(g.channels) && g.channels.length) : [];
+      iptv.format = format || '';
+      const groupIndex = previousGroup ? iptv.groups.findIndex((g) => g.name === previousGroup) : -1;
+      iptv.groupIndex = groupIndex >= 0 ? groupIndex : 0;
+      const p = iptv.playing;
+      if (p) {
+        const found = findChannel(p.groupName, p.channel.name);
+        if (found) {
+          p.group = found.group; p.channel = found.channel;
+          if (p.line >= found.channel.urls.length) p.line = 0;
+        }
+      } else if (iptv.autoplay) {
+        iptv.autoplay = false;
+        const key = source.id ? iptv.store.lastChannel[source.id] : '';
+        const parts = String(key || '').split(IPTV_KEY_SEP);
+        const found = key && parts.length === 2 ? findChannel(parts[0], parts[1]) : null;
+        if (found) {
+          iptv.groupIndex = iptv.groups.indexOf(found.group);
+          if (mode === 'iptv') {
+            renderIptv();
+            playChannel(found.group, found.channel);
+            scrollActiveChannel();
+            return;
+          }
+        }
+      }
+      renderIptv();
+      if (!iptv.playing) {
+        if (iptv.groups.length) showOverlay('idle', '选择频道开始观看', '已载入 ' + channelCount() + ' 个频道');
+        else showOverlay('idle', '订阅中没有可用频道', '');
+      }
+    }
+
+    // ---------- 播放 ----------
+    function streamKind(url) {
+      let parsed;
+      try { parsed = new URL(url); } catch (e) { return 'unsupported'; }
+      if (!/^https?:$/.test(parsed.protocol)) return 'unsupported';
+      const path = parsed.pathname.toLowerCase();
+      if (/\.m3u8?$/.test(path)) return 'hls';
+      if (/\.(flv|rmvb|avi|wmv)$/.test(path)) return 'unsupported';
+      if (/\.(mp4|webm|ogg|ogv|mp3|m4a|aac|mov|mkv)$/.test(path)) return 'native';
+      // 无扩展名的直播地址多为 m3u8(php/302 跳转)，交给 hls.js 判断，不是清单会报错转下一条线路。
+      return 'hls';
+    }
+    function destroyIptvPlayer() {
+      iptvToken += 1;
+      clearWatchdog();
+      try { if (iptvHls) iptvHls.destroy(); } catch (e) {}
+      try { if (iptvDp) iptvDp.destroy(); } catch (e) {}
+      iptvHls = null; iptvDp = null;
+      $('iptv-dplayer').innerHTML = '';
+    }
+    function stopIptv() {
+      destroyIptvPlayer();
+      iptv.playing = null;
+      renderIptvNow();
+      showOverlay('idle', '选择频道开始观看', '');
+    }
+    function armWatchdog(token, ms, reason) {
+      clearWatchdog();
+      iptvWatchdog = setTimeout(() => {
+        iptvWatchdog = null;
+        if (token === iptvToken) iptvLineFailed(reason);
+      }, ms);
+    }
+    function clearWatchdog() {
+      if (iptvWatchdog) { clearTimeout(iptvWatchdog); iptvWatchdog = null; }
+    }
+    function playChannel(group, channel, line = 0) {
+      iptv.playing = {group, channel, groupName: group.name, line, failed: new Set()};
+      rememberChannel();
+      startIptvLine(line);
+      renderIptvChannels();
+    }
+    function startIptvLine(line) {
+      const p = iptv.playing;
+      if (!p) return;
+      const urls = p.channel.urls || [];
+      p.line = Math.max(0, Math.min(line, urls.length - 1));
+      const url = urls[p.line];
+      destroyIptvPlayer();
+      const token = iptvToken;
+      renderIptvNow();
+      const kind = streamKind(url);
+      if (kind === 'unsupported') {
+        setTimeout(() => { if (token === iptvToken) iptvLineFailed('unsupported'); }, 0);
+        return;
+      }
+      showOverlay('loading', '正在连接 ' + p.channel.name, urls.length > 1 ? '线路 ' + (p.line + 1) + '/' + urls.length : '');
+      // 直播源普遍不认网页 Referer；订阅要求的 UA 在创建 video 前同步给主进程，首个请求即生效。
+      setReferrerPolicy(true);
+      ipcRenderer.sendSync('media-player-cast-active', false);
+      ipcRenderer.sendSync('media-player-iptv-ua', p.group.ua || '');
+      const live = {token, started: false, recoveries: 0};
+      const isHls = kind === 'hls';
+      iptvDp = new DPlayer({
+        container: $('iptv-dplayer'), autoplay: true, live: true, theme: '#34d399',
+        video: {
+          url, type: isHls ? 'customHls' : 'auto',
+          customType: {customHls(video) {
+            if (window.Hls && Hls.isSupported()) attachIptvHls(video, url, live);
+            else video.src = url;
+          }}
+        }
+      });
+      const video = iptvDp.video;
+      if (video) {
+        video.addEventListener('playing', () => {
+          if (token !== iptvToken) return;
+          live.started = true; clearWatchdog(); hideOverlay(); renderIptvNow();
+        });
+        video.addEventListener('waiting', () => {
+          if (token === iptvToken && live.started) armWatchdog(token, IPTV_STALL_TIMEOUT_MS, 'stall');
+        });
+        video.addEventListener('pause', () => { if (token === iptvToken) { clearWatchdog(); renderIptvNow(); } });
+        video.addEventListener('error', () => {
+          if (token === iptvToken && !(isHls && iptvHls)) iptvLineFailed('error');
+        });
+      }
+      bindWebFullscreen(iptvDp);
+      armWatchdog(token, IPTV_START_TIMEOUT_MS, 'timeout');
+      if (iptvDp.play) iptvDp.play();
+    }
+    function attachIptvHls(video, url, live) {
+      const instance = new Hls({
+        manifestLoadingTimeOut: 10000, manifestLoadingMaxRetry: 1,
+        levelLoadingTimeOut: 10000, fragLoadingTimeOut: 20000, liveDurationInfinity: true
+      });
+      iptvHls = instance;
+      instance.on(Hls.Events.MEDIA_ATTACHED, () => { if (iptvHls === instance) instance.loadSource(url); });
+      instance.on(Hls.Events.ERROR, (event, data) => {
+        if (iptvHls !== instance || live.token !== iptvToken || !data || !data.fatal) return;
+        // 解码错误先自愈一次；起播后的网络错误也先重连一次；其余(清单拉不到/不是 m3u8)直接换线路。
+        if (live.recoveries < 1) {
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR) { live.recoveries += 1; return instance.recoverMediaError(); }
+          if (live.started && data.type === Hls.ErrorTypes.NETWORK_ERROR) { live.recoveries += 1; return instance.startLoad(); }
+        }
+        iptvLineFailed(data.details || data.type);
+      });
+      instance.attachMedia(video);
+    }
+    // 当前线路不可用：自动切到下一条未失败的线路，全部失败才提示。
+    function iptvLineFailed(reason) {
+      const p = iptv.playing;
+      if (!p) return;
+      clearWatchdog();
+      p.failed.add(p.line);
+      const urls = p.channel.urls || [];
+      for (let step = 1; step < urls.length; step += 1) {
+        const next = (p.line + step) % urls.length;
+        if (p.failed.has(next)) continue;
+        if (streamKind(urls[next]) === 'unsupported') { p.failed.add(next); continue; }
+        toast('线路 ' + (p.line + 1) + ' 无法播放，已切换到线路 ' + (next + 1));
+        return startIptvLine(next);
+      }
+      destroyIptvPlayer();
+      renderIptvNow();
+      const unsupported = urls.length > 0 && urls.every((u) => streamKind(u) === 'unsupported');
+      showOverlay('error', p.channel.name + ' 暂时无法播放',
+        unsupported ? '该频道的线路格式(如 RTMP/RTSP/FLV)暂不支持'
+          : urls.length > 1 ? '已尝试全部 ' + urls.length + ' 条线路，可稍后点击频道重试或换一个频道'
+          : '线路无法连接，可能已失效或需要特定网络环境，可稍后点击频道重试');
+    }
+    function onChannelClick(group, channel) {
+      const p = iptv.playing;
+      if (p && p.channel === channel && iptvDp) return;
+      playChannel(group, channel);
+    }
+
+    // ---------- 渲染 ----------
+    function showOverlay(state, title, sub) {
+      const el = $('iptv-overlay');
+      el.hidden = false; el.dataset.state = state;
+      $('iptv-ov-title').textContent = title || '';
+      $('iptv-ov-sub').textContent = sub || '';
+    }
+    function hideOverlay() { $('iptv-overlay').hidden = true; }
+    function renderIptv() {
+      const source = iptv.source;
+      $('iptv-workspace').classList.toggle('is-empty', !iptv.store.sources.length && !source);
+      $('iptv-source-name').textContent = source ? source.name : '选择订阅';
+      $('iptv-source-btn').title = source ? source.name + '\n' + source.url : '切换订阅';
+      const format = $('iptv-source-format');
+      format.hidden = !FORMAT_LABEL[iptv.format];
+      format.textContent = FORMAT_LABEL[iptv.format] || '';
+      $('iptv-save-bar').hidden = !(source && source.temp);
+      $('iptv-refresh').disabled = !source;
+      renderIptvGroups(); renderIptvChannels(); renderIptvNow();
+    }
+    function renderIptvGroups() {
+      const box = $('iptv-groups');
+      const single = iptv.groups.length <= 1 || Boolean(iptv.query);
+      $('iptv-body').classList.toggle('single', single);
+      if (single) return box.replaceChildren();
+      const frag = document.createDocumentFragment();
+      iptv.groups.forEach((group, index) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'group-item' + (index === iptv.groupIndex ? ' active' : '');
+        button.title = group.name;
+        button.textContent = group.name;
+        const count = document.createElement('span');
+        count.className = 'n'; count.textContent = String(group.channels.length);
+        button.appendChild(count);
+        button.addEventListener('click', () => {
+          if (iptv.groupIndex === index) return;
+          iptv.groupIndex = index;
+          box.querySelectorAll('.group-item.active').forEach((el) => el.classList.remove('active'));
+          button.classList.add('active');
+          renderIptvChannels();
+          $('iptv-channels').scrollTop = 0;
+        });
+        frag.appendChild(button);
+      });
+      box.replaceChildren(frag);
+    }
+    function visibleChannels() {
+      const query = iptv.query.toLowerCase();
+      if (query) {
+        const out = [];
+        for (const group of iptv.groups) {
+          for (const channel of group.channels) {
+            if (!channel.name.toLowerCase().includes(query)) continue;
+            out.push({group, channel});
+            if (out.length >= IPTV_SEARCH_LIMIT) return out;
+          }
+        }
+        return out;
+      }
+      const group = iptv.groups[iptv.groupIndex];
+      return group ? group.channels.map((channel) => ({group, channel})) : [];
+    }
+    function stateNode(kind, title, sub, actions) {
+      const node = document.createElement('div');
+      node.className = 'iptv-state' + (kind ? ' ' + kind : '');
+      if (kind === 'loading') {
+        const spinner = document.createElement('div');
+        spinner.className = 'iptv-spinner';
+        node.appendChild(spinner);
+      }
+      const head = document.createElement('div');
+      head.className = 'state-title'; head.textContent = title;
+      node.appendChild(head);
+      if (sub) {
+        const detail = document.createElement('div');
+        detail.className = 'state-sub'; detail.textContent = sub;
+        node.appendChild(detail);
+      }
+      if (actions && actions.length) {
+        const row = document.createElement('div');
+        row.className = 'state-actions';
+        actions.forEach(([label, handler]) => {
+          const button = document.createElement('button');
+          button.type = 'button'; button.className = 'pill-btn ghost'; button.textContent = label;
+          button.addEventListener('click', handler);
+          row.appendChild(button);
+        });
+        node.appendChild(row);
+      }
+      return node;
+    }
+    function logoText(name) {
+      const text = String(name || '').trim();
+      const latin = text.match(/^[A-Za-z]+[-\s]?\d*/);
+      if (latin) return latin[0].replace(/[-\s]/g, '').slice(0, 6).toUpperCase();
+      return text.slice(0, 2) || 'TV';
+    }
+    function channelRow(entry, playing) {
+      const {group, channel} = entry;
+      const active = Boolean(playing && playing.channel === channel);
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'channel-item' + (active ? ' active' : '');
+      row.title = channel.name;
+      const logo = document.createElement('span');
+      logo.className = 'ch-logo';
+      const fallback = () => { logo.classList.add('text'); logo.textContent = logoText(channel.name); };
+      if (channel.logo && /^https?:\/\//i.test(channel.logo)) {
+        const img = document.createElement('img');
+        img.loading = 'lazy'; img.decoding = 'async'; img.alt = ''; img.referrerPolicy = 'no-referrer';
+        img.addEventListener('error', () => { img.remove(); fallback(); }, {once: true});
+        img.src = channel.logo;
+        logo.appendChild(img);
+      } else {
+        fallback();
+      }
+      const copy = document.createElement('span');
+      copy.className = 'ch-copy';
+      const name = document.createElement('div');
+      name.className = 'ch-name'; name.textContent = channel.name;
+      const meta = document.createElement('div');
+      meta.className = 'ch-meta';
+      meta.textContent = (iptv.query ? group.name + ' · ' : '') + channel.urls.length + ' 条线路';
+      copy.append(name, meta);
+      row.append(logo, copy);
+      if (active && iptvDp) {
+        const eq = document.createElement('span');
+        eq.className = 'live-eq';
+        eq.innerHTML = '<i></i><i></i><i></i>';
+        row.appendChild(eq);
+      }
+      row.addEventListener('click', () => onChannelClick(group, channel));
+      return row;
+    }
+    function renderIptvChannels() {
+      const box = $('iptv-channels');
+      if (!iptv.source) {
+        return box.replaceChildren(stateNode('', '尚未选择订阅', '', [['添加订阅', () => openIptvDialog('add')]]));
+      }
+      if (!iptv.groups.length) {
+        if (iptv.loading) return box.replaceChildren(stateNode('loading', '正在加载订阅…', iptv.source.url));
+        if (iptv.error) {
+          return box.replaceChildren(stateNode('error', '订阅加载失败', iptv.error,
+            [['重试', () => iptv.source && loadSource(iptv.source, {force: true})]]));
+        }
+        return box.replaceChildren(stateNode('', '订阅中没有可用频道', iptv.source.url));
+      }
+      const list = visibleChannels();
+      if (!list.length) return box.replaceChildren(stateNode('', '没有匹配的频道', ''));
+      const frag = document.createDocumentFragment();
+      for (const entry of list) frag.appendChild(channelRow(entry, iptv.playing));
+      box.replaceChildren(frag);
+    }
+    function scrollActiveChannel() {
+      const row = $('iptv-channels').querySelector('.channel-item.active');
+      if (row) row.scrollIntoView({block: 'center'});
+    }
+    function renderIptvNow() {
+      const p = iptv.playing;
+      $('iptv-now-name').textContent = p ? p.channel.name : '未在播放';
+      $('iptv-now-group').textContent = p
+        ? [iptv.source && iptv.source.name, p.groupName].filter(Boolean).join(' · ')
+        : (iptv.groups.length ? '从左侧选择一个频道' : '');
+      const video = iptvDp && iptvDp.video;
+      $('iptv-live').classList.toggle('on', Boolean(p && video && !video.paused && video.readyState >= 2));
+      const lines = p ? (p.channel.urls || []).length : 0;
+      const chip = $('iptv-line');
+      chip.hidden = lines < 2;
+      chip.textContent = '线路 ' + (p ? p.line + 1 : 1) + '/' + lines;
+    }
+
+    // ---------- 菜单 / 订阅管理 ----------
+    function closeIptvMenu() {
+      $('iptv-menu').hidden = true;
+      iptvMenuKind = '';
+    }
+    function openIptvMenu(kind, anchor, build) {
+      const menu = $('iptv-menu');
+      if (!menu.hidden && iptvMenuKind === kind) return closeIptvMenu();
+      closeMenu();
+      iptvMenuKind = kind;
+      menu.replaceChildren(build());
+      menu.hidden = false;
+      const rect = anchor.getBoundingClientRect(), menuRect = menu.getBoundingClientRect();
+      const left = kind === 'line' ? rect.right - menuRect.width : rect.left;
+      menu.style.left = Math.max(12, Math.min(innerWidth - menuRect.width - 12, left)) + 'px';
+      menu.style.top = Math.max(12, Math.min(innerHeight - menuRect.height - 12, rect.bottom + 6)) + 'px';
+    }
+    function buildSourceMenu() {
+      const frag = document.createDocumentFragment();
+      const list = iptv.store.sources.slice();
+      if (iptv.source && iptv.source.temp) list.unshift(iptv.source);
+      if (!list.length) {
+        const empty = document.createElement('div');
+        empty.className = 'menu-empty'; empty.textContent = '暂无订阅';
+        frag.appendChild(empty);
+      }
+      list.forEach((source) => {
+        const option = document.createElement('div');
+        option.className = 'src-opt' + (iptv.source && iptv.source.url === source.url ? ' active' : '');
+        const main = document.createElement('button');
+        main.type = 'button'; main.className = 'src-main'; main.title = source.url;
+        const name = document.createElement('div');
+        name.className = 'src-name'; name.textContent = source.name;
+        if (source.temp) {
+          const tag = document.createElement('span');
+          tag.className = 'src-tag'; tag.textContent = '未保存';
+          name.appendChild(tag);
+        }
+        const url = document.createElement('div');
+        url.className = 'src-url'; url.textContent = source.url;
+        main.append(name, url);
+        main.addEventListener('click', () => { closeIptvMenu(); selectSource(source); });
+        option.appendChild(main);
+        if (!source.temp) {
+          const edit = document.createElement('button');
+          edit.type = 'button'; edit.className = 'src-act'; edit.title = '编辑'; edit.innerHTML = iptvIcons.edit;
+          edit.addEventListener('click', () => openIptvDialog('edit', source));
+          const remove = document.createElement('button');
+          remove.type = 'button'; remove.className = 'src-act danger'; remove.title = '删除'; remove.innerHTML = iptvIcons.trash;
+          remove.addEventListener('click', () => deleteSource(source));
+          option.append(edit, remove);
+        }
+        frag.appendChild(option);
+      });
+      const sep = document.createElement('div');
+      sep.className = 'menu-sep';
+      const add = document.createElement('button');
+      add.type = 'button'; add.className = 'menu-btn';
+      add.innerHTML = iptvIcons.plus + '<span>添加订阅</span>';
+      add.addEventListener('click', () => openIptvDialog('add'));
+      frag.append(sep, add);
+      return frag;
+    }
+    function buildLineMenu() {
+      const frag = document.createDocumentFragment();
+      const p = iptv.playing;
+      if (!p) return frag;
+      (p.channel.urls || []).forEach((url, index) => {
+        const unsupported = streamKind(url) === 'unsupported';
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'menu-btn line-opt' + (index === p.line ? ' active' : '') + (p.failed.has(index) ? ' failed' : '');
+        button.disabled = unsupported;
+        button.title = url;
+        const main = document.createElement('span');
+        main.className = 'opt-main';
+        main.textContent = '线路 ' + (index + 1) + (index === p.line ? ' · 当前' : '')
+          + (unsupported ? ' · 格式不支持' : p.failed.has(index) ? ' · 失败' : '');
+        const sub = document.createElement('span');
+        sub.className = 'opt-sub';
+        try { sub.textContent = new URL(url).host || url; } catch (e) { sub.textContent = url; }
+        button.append(main, sub);
+        button.addEventListener('click', () => {
+          closeIptvMenu();
+          p.failed = new Set();
+          startIptvLine(index);
+        });
+        frag.appendChild(button);
+      });
+      return frag;
+    }
+    function openIptvDialog(kind, source) {
+      closeIptvMenu();
+      iptv.dialog = {kind, source: source || null};
+      $('iptv-dialog-title').textContent = kind === 'edit' ? '编辑订阅' : kind === 'save' ? '保存直播订阅' : '添加直播订阅';
+      $('iptv-submit').textContent = kind === 'add' ? '添加' : '保存';
+      $('iptv-url').value = source ? source.url : '';
+      $('iptv-name').value = source && kind !== 'add' ? source.name : '';
+      $('iptv-error').textContent = '';
+      $('iptv-dialog').hidden = false;
+      setTimeout(() => (kind === 'add' ? $('iptv-url') : $('iptv-name')).focus(), 0);
+    }
+    function submitIptvDialog() {
+      const dialog = iptv.dialog || {kind: 'add', source: null};
+      const url = $('iptv-url').value.trim();
+      let parsed = null;
+      try { parsed = new URL(url); } catch (e) {}
+      if (!parsed || !['http:', 'https:', 'file:'].includes(parsed.protocol)) {
+        $('iptv-error').textContent = '请输入有效的订阅地址(http/https)';
+        return;
+      }
+      const editingId = dialog.kind === 'edit' && dialog.source ? dialog.source.id : '';
+      const duplicate = iptv.store.sources.find((s) => s.url === url && s.id !== editingId);
+      if (duplicate) {
+        $('iptv-error').textContent = '该订阅已存在：' + duplicate.name;
+        return;
+      }
+      const name = $('iptv-name').value.trim().slice(0, 80) || nameFromUrl(url);
+      $('iptv-dialog').hidden = true;
+
+      if (dialog.kind === 'edit' && dialog.source) {
+        const target = iptv.store.sources.find((s) => s.id === dialog.source.id);
+        if (!target) return;
+        const urlChanged = target.url !== url;
+        target.name = name; target.url = url;
+        if (urlChanged) delete iptv.store.lastChannel[target.id];
+        persistStore();
+        if (iptv.source && iptv.source.id === target.id && urlChanged) {
+          iptv.source = null;
+          selectSource(target, {force: true});
+        } else {
+          renderIptv();
+        }
+        return toast('订阅已更新');
+      }
+
+      const source = {id: newSourceId(), name, url};
+      iptv.store.sources.push(source);
+      iptv.store.currentId = source.id;
+      const current = iptv.source;
+      if (dialog.kind === 'save' && current && current.temp && current.url === url) {
+        // 临时订阅原地转正：不重新加载，也不打断正在播的频道。
+        iptv.source = source;
+        rememberChannel();
+        persistStore();
+        renderIptv();
+        return toast('已保存订阅「' + name + '」');
+      }
+      persistStore();
+      selectSource(source);
+      toast(dialog.kind === 'save' ? '已保存订阅「' + name + '」' : '已添加订阅「' + name + '」');
+    }
+    function deleteSource(source) {
+      closeIptvMenu();
+      if (!confirm('删除订阅「' + source.name + '」？')) return;
+      iptv.store.sources = iptv.store.sources.filter((s) => s.id !== source.id);
+      delete iptv.store.lastChannel[source.id];
+      if (iptv.store.currentId === source.id) iptv.store.currentId = iptv.store.sources[0] ? iptv.store.sources[0].id : '';
+      persistStore();
+      if (iptv.source && !iptv.source.temp && iptv.source.id === source.id) {
+        stopIptv();
+        iptv.source = null; iptv.groups = []; iptv.format = ''; iptv.error = ''; iptv.loading = false;
+        iptv.loadSeq += 1;
+        setRefreshing(false);
+        const next = iptv.store.sources[0];
+        if (next) selectSource(next); else renderIptv();
+      } else {
+        renderIptv();
+      }
+      toast('已删除订阅');
+    }
+
+    // ---------- 桌面快捷方式 ----------
+    // 256px 图标：黑底圆角 + 白色电视轮廓 + 绿色播放键，主进程转 .ico 写入快捷方式。
+    function drawIptvIcon() {
+      const size = 256, canvas = document.createElement('canvas');
+      canvas.width = canvas.height = size;
+      const g = canvas.getContext('2d');
+      const round = (x, y, w, h, r) => {
+        g.beginPath();
+        g.moveTo(x + r, y);
+        g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
+        g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r);
+        g.closePath();
+      };
+      const bg = g.createLinearGradient(0, 0, 0, size);
+      bg.addColorStop(0, '#2a2a31'); bg.addColorStop(1, '#050506');
+      round(8, 8, 240, 240, 56); g.fillStyle = bg; g.fill();
+      g.strokeStyle = '#fff'; g.lineWidth = 14; g.lineCap = 'round'; g.lineJoin = 'round';
+      g.beginPath(); g.moveTo(96, 44); g.lineTo(128, 74); g.lineTo(160, 44); g.stroke();
+      round(42, 76, 172, 126, 24); g.stroke();
+      g.fillStyle = '#34d399';
+      g.beginPath(); g.moveTo(114, 114); g.lineTo(114, 164); g.lineTo(154, 139); g.closePath(); g.fill();
+      return canvas.toDataURL('image/png');
+    }
+
+    function initIptv() {
+      iptv.ready = ipcRenderer.invoke('iptv-sources-get').then((store) => {
+        if (!store || !Array.isArray(store.sources)) return;
+        iptv.store = {
+          sources: store.sources.map((s) => ({id: s.id, name: s.name, url: s.url})),
+          currentId: store.currentId || '',
+          lastChannel: Object.assign({}, store.lastChannel || {})
+        };
+      }).catch(() => undefined).then(() => renderIptv());
+      $('mode-smart').addEventListener('click', () => setMode('smart'));
+      $('mode-iptv').addEventListener('click', () => setMode('iptv'));
+      $('iptv-source-btn').addEventListener('click', () => openIptvMenu('source', $('iptv-source-btn'), buildSourceMenu));
+      $('iptv-line').addEventListener('click', () => openIptvMenu('line', $('iptv-line'), buildLineMenu));
+      $('iptv-refresh').addEventListener('click', () => {
+        if (iptv.source) loadSource(iptv.source, {force: true, manual: true});
+      });
+      $('iptv-add').addEventListener('click', () => openIptvDialog('add'));
+      $('iptv-empty-add').addEventListener('click', () => openIptvDialog('add'));
+      $('iptv-save').addEventListener('click', () => { if (iptv.source && iptv.source.temp) openIptvDialog('save', iptv.source); });
+      $('iptv-cancel').addEventListener('click', () => { $('iptv-dialog').hidden = true; });
+      $('iptv-dialog').addEventListener('mousedown', (event) => {
+        if (event.target === $('iptv-dialog')) $('iptv-dialog').hidden = true;
+      });
+      $('iptv-form').addEventListener('submit', (event) => { event.preventDefault(); submitIptvDialog(); });
+      $('iptv-search').addEventListener('input', () => {
+        if (iptvSearchTimer) clearTimeout(iptvSearchTimer);
+        iptvSearchTimer = setTimeout(() => {
+          iptvSearchTimer = null;
+          iptv.query = $('iptv-search').value.trim();
+          renderIptvGroups(); renderIptvChannels();
+          $('iptv-channels').scrollTop = 0;
+        }, 120);
+      });
+      document.addEventListener('mousedown', (event) => {
+        if (!$('iptv-menu').contains(event.target) && !event.target.closest('#iptv-source-btn, #iptv-line')) closeIptvMenu();
+      });
+      $('btn-iptv-shortcut').addEventListener('click', async () => {
+        const button = $('btn-iptv-shortcut');
+        button.disabled = true;
+        try {
+          const result = await ipcRenderer.invoke('iptv-create-shortcut', {icon: drawIptvIcon()});
+          if (result && result.ok) toast('已在桌面创建「IPTV播放器」快捷方式');
+          else toast('创建快捷方式失败：' + ((result && result.message) || '未知错误'), 'error');
+        } catch (e) {
+          toast('创建快捷方式失败', 'error');
+        }
+        button.disabled = false;
+      });
+      window.addEventListener('beforeunload', () => { if (iptvSaveTimer) flushStore(); });
+    }
+
     function applyTheme(theme) {
       document.documentElement.setAttribute('data-theme', theme);
       $('theme-icon').innerHTML = theme === 'dark' ? icons.moon : icons.sun;
@@ -521,22 +1907,44 @@
     $('btn-close').addEventListener('click', () => ipcRenderer.send('media-player-close'));
     $('btn-copy').addEventListener('click', () => copyItem());
     let windowFullscreen = false;
+    // 当前视图的播放器：智能播放器 dp / IPTV iptvDp。
+    function activeDp() { return mode === 'iptv' ? iptvDp : dp; }
     function updateFullscreenButton(isFullscreen) {
       const button = $('btn-full');
       const label = button.querySelector('span');
       if (label) label.textContent = isFullscreen ? '退出全屏' : '网页全屏';
       button.title = isFullscreen ? '退出全屏' : '网页全屏';
+      $('iptv-full').title = button.title;
     }
-    $('btn-full').addEventListener('click', () => {
-      if (!dp && !windowFullscreen) return toast('请先选择视频资源', 'error');
-      const videoFullscreen = Boolean(dp && dp.fullScreen && dp.fullScreen.isFullScreen('web'));
+    // DPlayer 的网页全屏按钮也同步窗口全屏，避免视频和窗口状态分离。
+    function bindWebFullscreen(player) {
+      if (!player || !player.on) return;
+      player.on('webfullscreen', () => {
+        if (!windowFullscreen) {
+          windowFullscreen = true;
+          updateFullscreenButton(true);
+          ipcRenderer.send('media-player-toggle-fullscreen');
+        }
+      });
+      player.on('webfullscreen_cancel', () => {
+        if (windowFullscreen) {
+          windowFullscreen = false;
+          updateFullscreenButton(false);
+          ipcRenderer.send('media-player-toggle-fullscreen');
+        }
+      });
+    }
+    function toggleFullscreen() {
+      const player = activeDp();
+      if (!player && !windowFullscreen) return toast(mode === 'iptv' ? '请先选择频道' : '请先选择视频资源', 'error');
+      const videoFullscreen = Boolean(player && player.fullScreen && player.fullScreen.isFullScreen('web'));
       const next = !(windowFullscreen || videoFullscreen);
       windowFullscreen = next;
       updateFullscreenButton(next);
-      if (dp && dp.fullScreen) {
+      if (player && player.fullScreen) {
         try {
-          if (next && !videoFullscreen) dp.fullScreen.request('web');
-          if (!next && videoFullscreen) dp.fullScreen.cancel('web');
+          if (next && !videoFullscreen) player.fullScreen.request('web');
+          if (!next && videoFullscreen) player.fullScreen.cancel('web');
         } catch (e) {
           windowFullscreen = !next;
           updateFullscreenButton(windowFullscreen);
@@ -545,22 +1953,28 @@
         }
       }
       ipcRenderer.send('media-player-toggle-fullscreen');
-    });
+    }
+    $('btn-full').addEventListener('click', toggleFullscreen);
+    $('iptv-full').addEventListener('click', toggleFullscreen);
     ipcRenderer.on('media-player-fullscreen-state', (event, isFullscreen) => {
       windowFullscreen = Boolean(isFullscreen);
-      const videoFullscreen = Boolean(dp && dp.fullScreen && dp.fullScreen.isFullScreen('web'));
-      if (!windowFullscreen && videoFullscreen && dp && dp.fullScreen) {
-        try { dp.fullScreen.cancel('web'); } catch (e) {}
+      const player = activeDp();
+      const videoFullscreen = Boolean(player && player.fullScreen && player.fullScreen.isFullScreen('web'));
+      if (!windowFullscreen && videoFullscreen && player && player.fullScreen) {
+        try { player.fullScreen.cancel('web'); } catch (e) {}
       }
       updateFullscreenButton(windowFullscreen || videoFullscreen);
     });
-    $('btn-float').addEventListener('click', async () => {
-      if (!dp || !dp.video) return toast('请先选择视频资源', 'error');
+    async function togglePip() {
+      const player = activeDp();
+      if (!player || !player.video) return toast(mode === 'iptv' ? '请先选择频道' : '请先选择视频资源', 'error');
       try {
         if (document.pictureInPictureElement) await document.exitPictureInPicture();
-        else await dp.video.requestPictureInPicture();
+        else await player.video.requestPictureInPicture();
       } catch (e) { toast('悬浮播放失败', 'error'); }
-    });
+    }
+    $('btn-float').addEventListener('click', togglePip);
+    $('iptv-float').addEventListener('click', togglePip);
     $('context-menu').addEventListener('click', (event) => {
       const button = event.target.closest('[data-action]');
       if (!button) return;
@@ -596,11 +2010,14 @@
       if (!$('context-menu').contains(event.target) && !event.target.closest('.more-btn')) closeMenu();
     });
     document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') { closeMenu(); $('add-dialog').hidden = true; }
+      if (event.key === 'Escape') { closeMenu(); closeIptvMenu(); $('add-dialog').hidden = true; $('iptv-dialog').hidden = true; }
     });
-    window.addEventListener('resize', closeMenu);
-    window.addEventListener('beforeunload', destroyPlayer);
+    window.addEventListener('resize', () => { closeMenu(); closeIptvMenu(); });
+    window.addEventListener('beforeunload', () => { destroyPlayer(); destroyIptvPlayer(); });
+    initIptv();
+    renderCast();
     ipcRenderer.send('media-player-request-data');
+    ipcRenderer.send('media-player-cast-request-status');
   </script>
 </body>
 </html>

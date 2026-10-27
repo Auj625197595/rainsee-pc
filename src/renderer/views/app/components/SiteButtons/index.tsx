@@ -15,13 +15,14 @@ import {
   ShieldChevronIcon,
   Translate,
   ArrowSquareOut,
+  Television,
 } from '@phosphor-icons/react';
 import {ipcRenderer} from 'electron';
 import * as remote from '@electron/remote';
 import {parse} from 'url';
 import store from '../../store';
 import {ToolbarButton} from '../ToolbarButton';
-import {UpdatePill, NewTabSearchPill} from './style';
+import {NewTabSearchPill, IptvPill} from './style';
 import {getAddressBarSearchAnchor} from '../../utils/dialogs';
 import {useDelayedHover} from '../../utils/delayed-hover';
 import { getShellTranslator } from '../../utils/i18n';
@@ -170,6 +171,11 @@ const onVideoClick = (e: React.MouseEvent<HTMLDivElement>) => {
   ipcRenderer.send(`show-media-player-${store.windowId}`);
 };
 
+// 当前页被识别为 IPTV 直播源:主进程取选中 view 的 url/标题带入 IPTV 播放器。
+const onIptvClick = () => {
+  ipcRenderer.send(`iptv-open-detected-${store.windowId}`);
+};
+
 
 const onZoomClick = (e: React.MouseEvent<HTMLDivElement>) => {
   showZoomDialog();
@@ -259,12 +265,6 @@ const onShieldContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
   menu.popup();
 };
 
-// 点击"有新版本"胶囊, 打开更新弹窗
-const onUpdatePillClick = (e: React.MouseEvent<HTMLDivElement>) => {
-  const {right, bottom} = e.currentTarget.getBoundingClientRect();
-  ipcRenderer.send(`show-update-dialog-${store.windowId}`, right, bottom);
-};
-
 // "新标签页搜索"气泡:复用地址栏搜索框, 但搜索结果在新标签页打开。
 // 以地址栏的左边界/宽度定位搜索弹窗(与点地址栏时一致), 并透传 openInNewTab 标志。
 const resetCompactNewTabSearch = () => {
@@ -320,10 +320,26 @@ const openCompactNewTabSearch = () => {
   return true;
 };
 
+// 「新标签搜索」胶囊 = 持久开关:默认灰色(当前页打开),点击高亮后搜索结果
+// 一律在新标签页打开,并立即唤起一次新标签搜索弹窗;再次点击恢复当前页打开。
 const onSearchNewTabClick = (e: React.MouseEvent<HTMLDivElement>) => {
   e.preventDefault();
   e.stopPropagation();
 
+  const t = getShellTranslator();
+  const next = store.settings.object.addressSearchInNewTab !== true;
+  store.settings.setAddressSearchInNewTab(next);
+
+  if (!next) {
+    // 关闭:结束仍在进行的一次性新标签搜索会话,恢复当前页打开。
+    store.addressbarOpenInNewTab = false;
+    store.showShellToast(t('shellNewTabSearchOff'));
+    return;
+  }
+
+  store.showShellToast(t('shellNewTabSearchOn'));
+
+  // 开启:立即以新标签页模式唤起一次搜索联想。
   if (store.isCompact && openCompactNewTabSearch()) {
     return;
   }
@@ -446,6 +462,8 @@ export const SiteButtons = observer(() => {
           className="addressbar-action addressbar-action--new-tab-search"
           ref={searchPillRef}
           $iconOnly={searchIconOnly}
+          $active={store.settings.object.addressSearchInNewTab === true}
+          $lightToolbar={lightToolbar}
           title={t('shellSearchNewTabTitle')}
           onMouseDown={onSearchNewTabClick}
         >
@@ -453,16 +471,32 @@ export const SiteButtons = observer(() => {
           <span>{t('shellNewTabSearch')}</span>
         </NewTabSearchPill>
       )}
-      {store.updateAvailable && (
-        <UpdatePill
+      {selectedTab?.iptvDetected && (
+        <IptvPill
           data-rainsee-part="brand-action"
-          data-rainsee-action="update"
-          id="update-pill"
-          className="addressbar-action addressbar-action--update"
-          onClick={onUpdatePillClick}
+          data-rainsee-action="iptv"
+          className="addressbar-action addressbar-action--iptv"
+          title={t('shellIptvDetectedTitle')}
+          onMouseDown={onIptvClick}
         >
-          {t('shellUpdateAvailable', { version: store.updateVersion || '' }).trim()}
-        </UpdatePill>
+          <span className="iptv-dot" />
+          <Television size={14} weight="bold" />
+          <span>
+            {t('shellIptvDetected')}
+            {selectedTab.iptvDetected.count > 0 && (
+              <>
+                {' · '}
+                <span className="iptv-count">
+                  {t('shellIptvChannelCount', {
+                    count: `${selectedTab.iptvDetected.count}${
+                      selectedTab.iptvDetected.truncated ? '+' : ''
+                    }`,
+                  })}
+                </span>
+              </>
+            )}
+          </span>
+        </IptvPill>
       )}
       {process.env.ENABLE_AUTOFILL && hasCredentials && (
         <ToolbarButton
