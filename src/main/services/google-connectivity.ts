@@ -60,6 +60,18 @@ export class GoogleConnectivityService {
     }
   }
 
+  /**
+   * Network-layer fallback for Greasy Fork while Google is unreachable.
+   * Runs inside webRequest.onBeforeRequest, so it must stay synchronous and
+   * only read the cached probe result. Chromium applies the returned URL as a
+   * 307 internal redirect: method, body and the navigation entry are kept,
+   * unlike cancelling the navigation and re-issuing it with loadURL().
+   */
+  public resolveRequestRedirect(rawUrl: string): string | undefined {
+    if (this.isCanGoogle !== false || !isGreasyforkUrl(rawUrl)) return undefined;
+    return getGreasyforkMirrorUrl(rawUrl);
+  }
+
   public dispose() {
     if (this.refreshTimer) clearInterval(this.refreshTimer);
     this.refreshTimer = null;

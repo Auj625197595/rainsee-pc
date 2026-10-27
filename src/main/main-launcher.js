@@ -76,6 +76,15 @@ if (!acquired) {
     if (typeof handler === 'function') handler(argv);
     else global.__rainseeSecondInstanceQueue.push(argv);
   });
+  // macOS 将 Finder 双击文件通过 open-file 事件交给应用，而不是放入
+  // process.argv。转成同一套 argv 队列，复用 HTML/MHTML 等本地文件唤起逻辑。
+  app.on('open-file', (event, filePath) => {
+    event.preventDefault();
+    const argv = [process.execPath, filePath];
+    const handler = global.__rainseeSecondInstanceHandler;
+    if (typeof handler === 'function') handler(argv);
+    else global.__rainseeSecondInstanceQueue.push(argv);
+  });
 
   launcherMark('launcher.main_bundle.require.begin');
   require('./main.bundle.js');

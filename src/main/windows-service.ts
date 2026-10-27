@@ -5,10 +5,37 @@ import { dumpMemoryReport } from './services/memory-report';
 import { Application } from './application';
 import { IWorkspace } from '~/interfaces';
 import { getWebUIURL } from '~/common/webui-main';
+import { getTrustedWebUIHost } from '~/common/webui-bridge-policy';
+import { findSecondInstanceWindow } from './single-instance';
+import { readFileSync, writeFileSync } from 'fs';
+import { getPath } from '~/utils';
+
+// 普通会话(startupTabs/tabGroups)按 Electron 运行时 windowId 落库。主窗口关闭后
+// 重新打开会拿到新 id,若仍按新 id 查库就会丢失全部标签。这里持久化「主会话当前
+// 使用的 windowId」,新的主窗口认领时把旧 id 的记录改写到自己名下。
+const MAIN_SESSION_FILE = 'main-session.json';
+const MAIN_SESSION_SCOPES = ['startupTabs', 'tabGroups'];
+
+const readMainSessionWindowId = (): number | null => {
+  try {
+    const value = Number(JSON.parse(readFileSync(getPath(MAIN_SESSION_FILE), 'utf8'))?.windowId);
+    return Number.isFinite(value) && value > 0 ? value : null;
+  } catch {
+    return null;
+  }
+};
+
+const writeMainSessionWindowId = (windowId: number) => {
+  try {
+    writeFileSync(getPath(MAIN_SESSION_FILE), JSON.stringify({ windowId }));
+  } catch (error) {
+    console.error('[main-session] failed to persist session window id', error);
+  }
+};
 
 interface ExtensionWindowHostOptions {
   focused?: boolean;
-  minimumSize?: {width: number; height: number};
+  minimumSize?: { width: number; height: number };
   persistWindowState?: boolean;
 }
 
@@ -24,7 +51,17 @@ export class WindowsService {
   // 各窗口标签栏的屏幕坐标矩形,由渲染层在拖拽开始时上报,用于跨窗口合并命中检测。
   public tabStripRects = new Map<number, Electron.Rectangle>();
 
+  // 当前持有主会话记录的普通窗口。工作区/无痕窗口不参与。
+  private primarySessionWindowId: number | null = null;
+
   constructor() {
+    ipcMain.handle('claim-main-session', (event, windowId: number, options?: { migrate?: boolean }) => {
+      // 只允许窗口为自己认领,防止其他 renderer 篡改主会话归属。
+      const window = this.list.find((item) => item.id === Number(windowId));
+      if (!window || window.webContents.id !== event.sender.id) return { primary: false };
+      return this.claimMainSession(window.id, options?.migrate !== false);
+    });
+
     if (process.env.ENABLE_EXTENSIONS) {
       // extensions.tabs.on('activated', (tabId, windowId, focus) => {
       //   const win = this.list.find((x) => x.id === windowId);
@@ -53,8 +90,30 @@ export class WindowsService {
 
     ipcMain.handle('get-tab-zoom', (e, tabId) => {
       const appWindow = this.findByBrowserView(tabId);
-      return appWindow?.viewManager.findViewByWebContentsId(tabId)?.webContents
-        .zoomFactor ?? 1;
+      return (
+        appWindow?.viewManager.findViewByWebContentsId(tabId)?.webContents
+          .zoomFactor ?? 1
+      );
+    });
+
+    // sourceWindowId:发起「回到主窗口」的窗口。它若是由普通窗口原地切成的工作区、
+    // 且没有别的主窗口,就原地切回普通会话。
+    ipcMain.handle('main-window-open', (_event, sourceWindowId?: number) => {
+      const source = this.list.find((window) => window.id === Number(sourceWindowId));
+      if (source?.restoresNormalSession && source.workspaceId && !this.findMainWindow()) {
+        return Application.instance.workspaces.returnToNormal(source);
+      }
+      return this.openOrFocusMainWindow();
+    });
+
+    ipcMain.handle('main-window-status', (_event, hostWindowId: number) => {
+      const host = this.list.find(
+        (window) => window.id === Number(hostWindowId),
+      );
+      return {
+        isOpen: !!this.findMainWindow(),
+        isCurrent: !!host && this.isMainWindow(host),
+      };
     });
 
     ipcMain.handle('add-to-homepage', async (_e, item: any) => {
@@ -65,6 +124,28 @@ export class WindowsService {
 
     ipcMain.handle('get-pending-homepage-items', async () => {
       return this.pendingHomepageItems.slice();
+    });
+
+    // 新标签页外壳在 iframe onLoad 后探测 pcapp 是否真正渲染。index.html 成功但
+    // 入口 JS/CSS 失败(net::ERR_FAILED)时 onLoad 照常触发,iframe 却是空白 #root;
+    // 跨源外壳读不到 iframe DOM,由主进程在该子帧里执行只读检查。
+    ipcMain.handle('newtab-frame-health', async (event) => {
+      const senderUrl = event.sender.getURL();
+      if (!/^(yjllq:|http:\/\/localhost:4444\/).*newtab/i.test(senderUrl)) {
+        return { ok: false, reason: 'invalid' };
+      }
+      const frame = event.sender.mainFrame.frames.find((f) =>
+        /^https:\/\/pcv2\.rainsee\.cn\//i.test(f.url),
+      );
+      if (!frame) return { ok: false, reason: 'no-frame' };
+      try {
+        const rendered = await frame.executeJavaScript(
+          `(function(){var r=document.getElementById('root');return !!r&&r.childElementCount>0;})()`,
+        );
+        return { ok: true, rendered: rendered === true };
+      } catch {
+        return { ok: false, reason: 'exec-failed' };
+      }
     });
 
     ipcMain.on('remove-down-homepage-items', (_e, ids: number[]) => {
@@ -111,7 +192,7 @@ export class WindowsService {
     // 松手:决定是合并进某个窗口,还是在落点生成新窗口。
     // payload: { sourceWindowId, tabId, screenX, screenY, tabState }
     ipcMain.on('tab-drag-detach', (e, payload) => {
-      const {sourceWindowId, tabId, screenX, screenY, tabState} = payload;
+      const { sourceWindowId, tabId, screenX, screenY, tabState } = payload;
       const source = this.list.find((x) => x.id === sourceWindowId);
       if (!source) return;
 
@@ -144,7 +225,7 @@ export class WindowsService {
 
     // 标签右键「在新窗口中打开」:无光标坐标,在源窗口右下方偏移处建新窗。
     ipcMain.on('tab-move-to-new-window', (e, payload) => {
-      const {sourceWindowId, tabId, tabState} = payload;
+      const { sourceWindowId, tabId, tabState } = payload;
       const source = this.list.find((x) => x.id === sourceWindowId);
       if (!source) return;
       if (source.viewManager.rendererTabCount <= 1) return; // 单标签不允许
@@ -175,7 +256,7 @@ export class WindowsService {
 
       // 源渲染层移除该标签(不销毁 view);目标渲染层领养出一个标签模型。
       source.send('tab-detached-local', tabId);
-      target.send('tab-adopt', {...tabState, id: tabId});
+      target.send('tab-adopt', { ...tabState, id: tabId });
       target.win.focus();
 
       this.closeIfEmpty(source);
@@ -218,7 +299,7 @@ export class WindowsService {
       if (newWin.win.isDestroyed() || view.webContents.isDestroyed()) return;
       try {
         newWin.viewManager.adoptView(view, true);
-        newWin.send('tab-adopt', {...tabState, id: tabId});
+        newWin.send('tab-adopt', { ...tabState, id: tabId });
       } catch (err) {
         console.error('[tab-tearoff] adopt failed, restoring to source', err);
         this.restoreToSource(source, view);
@@ -240,6 +321,7 @@ export class WindowsService {
       favicon: view.favicon,
       pinned: false,
       incognito: view.incognito,
+      thumbKey: view.thumbKey,
     });
   }
 
@@ -253,10 +335,7 @@ export class WindowsService {
     // 幽灵 view)。延迟复检一次:若届时 views 已清空(真实迁出完成、幽灵已对账),
     // 仍按空窗口关闭,避免泄漏。
     setTimeout(() => {
-      if (
-        !source.win.isDestroyed() &&
-        source.viewManager.views.size === 0
-      ) {
+      if (!source.win.isDestroyed() && source.viewManager.views.size === 0) {
         source.win.close();
       }
     }, 1500).unref?.();
@@ -290,7 +369,9 @@ export class WindowsService {
     // 4s 后仍存活则打一份 [mem] 定位残留,再 app.exit(0) 硬终止,确保不残留、单例锁释放。
     setTimeout(() => {
       try {
-        console.log('[mem] 关窗后 4s 仍存活,优雅退出被卡住,强制终止。残留进程:');
+        console.log(
+          '[mem] 关窗后 4s 仍存活,优雅退出被卡住,强制终止。残留进程:',
+        );
         dumpMemoryReport('退出卡住');
       } catch {
         // 诊断失败不影响硬退出
@@ -321,9 +402,14 @@ export class WindowsService {
         cleanup();
         resolve();
       };
-      const onGone = (_event: Electron.Event, details: Electron.RenderProcessGoneDetails) => {
+      const onGone = (
+        _event: Electron.Event,
+        details: Electron.RenderProcessGoneDetails,
+      ) => {
         cleanup();
-        reject(new Error(`Extension window renderer exited: ${details.reason}`));
+        reject(
+          new Error(`Extension window renderer exited: ${details.reason}`),
+        );
       };
 
       contents.once('did-finish-load', onReady);
@@ -336,8 +422,8 @@ export class WindowsService {
       this.lastFocused?.win && !this.lastFocused.win.isDestroyed()
         ? this.lastFocused.win.getBounds()
         : this.current?.win && !this.current.win.isDestroyed()
-          ? this.current.win.getBounds()
-          : {x: 80, y: 80, width: 900, height: 600};
+        ? this.current.win.getBounds()
+        : { x: 80, y: 80, width: 900, height: 600 };
     const popup = details.type === 'popup' || details.type === 'panel';
 
     return {
@@ -357,14 +443,18 @@ export class WindowsService {
     const source =
       requestedTabId === undefined
         ? undefined
-        : this.list.find((window) => window.viewManager.getById(requestedTabId));
+        : this.list.find((window) =>
+            window.viewManager.getById(requestedTabId),
+          );
     if (requestedTabId !== undefined && !source) {
       throw new Error(`No tab with id: ${requestedTabId}`);
     }
 
     const incognito = forceIncognito || details.incognito === true;
     if (source && source.incognito !== incognito) {
-      throw new Error('Tabs cannot be moved between normal and incognito windows');
+      throw new Error(
+        'Tabs cannot be moved between normal and incognito windows',
+      );
     }
 
     const previouslyFocused = this.lastFocused || this.current;
@@ -375,7 +465,9 @@ export class WindowsService {
     // the chrome-less popup presentation is an application-level concern.
     const window = this.openAt(incognito, bounds, {
       focused: details.focused !== false,
-      minimumSize: popup ? {width: 100, height: 100} : {width: 800, height: 450},
+      minimumSize: popup
+        ? { width: 100, height: 100 }
+        : { width: 800, height: 450 },
       persistWindowState: false,
     });
     (window.win as any).__crxWindowType = details.type || 'normal';
@@ -398,6 +490,7 @@ export class WindowsService {
             favicon: view.favicon,
             pinned: false,
             incognito: view.incognito,
+            thumbKey: view.thumbKey,
           });
           this.closeIfEmpty(source);
         } catch (error) {
@@ -408,8 +501,8 @@ export class WindowsService {
         const urls = Array.isArray(details.url)
           ? details.url
           : details.url
-            ? [details.url]
-            : [getWebUIURL('newtab')];
+          ? [details.url]
+          : [getWebUIURL('newtab')];
         urls.forEach((url, index) => {
           window.viewManager.create(
             {
@@ -461,6 +554,7 @@ export class WindowsService {
       this.tabStripRects.delete(window.id);
       Application.instance.workspaces?.unbindWindow(window.id);
       this.list = this.list.filter((item) => item !== window);
+      this.releaseMainSession(window);
       const fallback = this.list.find((item) => !item.win.isDestroyed());
       if (this.current === window) this.current = fallback;
       if (this.lastFocused === window) this.lastFocused = fallback;
@@ -472,6 +566,94 @@ export class WindowsService {
       }
       this.quitIfNoBrowserWindows();
     });
+  }
+
+  public isPrimarySessionWindow(windowId: number) {
+    return this.primarySessionWindowId === windowId;
+  }
+
+  private isMainWindow(window: AppWindow | undefined): window is AppWindow {
+    return (
+      !!window &&
+      !window.win.isDestroyed() &&
+      !window.incognito &&
+      !window.workspaceId
+    );
+  }
+
+  // 渲染层恢复会话前调用。返回本窗口是否为主会话窗口(决定「打开特定页面」等
+  // 启动模式是否生效);若上一个主会话记录在别的 windowId 名下,先迁到本窗口。
+  private async claimMainSession(windowId: number, migrate: boolean) {
+    const window = this.list.find((item) => item.id === windowId);
+    if (!this.isMainWindow(window)) return { primary: false };
+
+    const current = this.primarySessionWindowId;
+    if (
+      current !== null &&
+      current !== windowId &&
+      this.list.some((item) => item.id === current && this.isMainWindow(item))
+    ) {
+      return { primary: false };
+    }
+    this.primarySessionWindowId = windowId;
+
+    // 旧版本没有标记文件,主会话记录总在首个窗口(id 1)名下。
+    const previous = readMainSessionWindowId() ?? 1;
+    // 崩溃恢复按参数里的原窗口 id 读取标签,不能先把记录改写掉。
+    if (migrate && previous !== windowId) {
+      const { storage } = Application.instance;
+      try {
+        for (const scope of MAIN_SESSION_SCOPES) {
+          // 本 id 名下可能残留更早会话的过期记录,先清掉再迁移。迁移中途退出时
+          // 标记文件仍指向旧 id,下次认领会重试。
+          await storage.remove({ scope, query: { windowId }, multi: true });
+          await storage.update({
+            scope,
+            query: { windowId: previous },
+            value: { windowId },
+            multi: true,
+          });
+        }
+      } catch (error) {
+        console.error('[main-session] failed to migrate session', { previous, windowId, error });
+        return { primary: true };
+      }
+    }
+    writeMainSessionWindowId(windowId);
+    return { primary: true };
+  }
+
+  // 主会话窗口关闭:还有其他普通窗口时把主会话交给它;否则保留标记文件指向
+  // 本窗口 id,下次打开的主窗口据此认领。
+  private releaseMainSession(window: AppWindow) {
+    if (this.primarySessionWindowId !== window.id) return;
+    const next =
+      [this.lastFocused, ...this.list].find(
+        (item) => item !== window && this.isMainWindow(item),
+      ) || null;
+    this.primarySessionWindowId = next?.id ?? null;
+    if (next) writeMainSessionWindowId(next.id);
+  }
+
+  public findMainWindow() {
+    return findSecondInstanceWindow({
+      incognito: false,
+      current: this.current,
+      lastFocused: this.lastFocused,
+      list: this.list,
+    });
+  }
+
+  public openOrFocusMainWindow() {
+    const existing = this.findMainWindow();
+    if (existing) {
+      existing.showAndFocus();
+      return { ok: true, windowId: existing.id, reused: true };
+    }
+
+    const window = this.open(false);
+    window.showAndFocus();
+    return { ok: true, windowId: window.id, reused: false };
   }
 
   public open(
@@ -578,8 +760,8 @@ export class WindowsService {
   }
 
   public findByBrowserView(webContentsId: number) {
-    return this.list.find((x) =>
-      !!x.viewManager.findViewByWebContentsId(webContentsId),
+    return this.list.find(
+      (x) => !!x.viewManager.findViewByWebContentsId(webContentsId),
     );
   }
 
@@ -588,9 +770,34 @@ export class WindowsService {
   }
 
   public broadcast(channel: string, ...args: unknown[]) {
-    this.list.forEach((appWindow) =>
-      appWindow.win.webContents.send(channel, ...args),
-    );
+    this.list.forEach((appWindow) => {
+      appWindow.win.webContents.send(channel, ...args);
+
+      // WebUI pages (including the bookmark manager) run in BrowserViews,
+      // not in the host BrowserWindow. Keep the existing broad broadcast
+      // semantics for the chrome renderer, but forward bookmark invalidation
+      // only to trusted bookmark-manager views so external pages never receive
+      // an internal IPC event.
+      if (
+        channel !== 'reload-bookmarks' &&
+        channel !== 'bookmark-cloud-status-changed'
+      )
+        return;
+      // 书签数据有变(启动后延迟载入完成、云同步落地、导入、编辑 URL/移入移出
+      // 移动目录等)时,地址栏星标也要重算;否则只在导航/切标签时才刷新,
+      // 首个标签在书签缓存载入前打开会一直显示未收藏。
+      if (channel === 'reload-bookmarks') {
+        appWindow.viewManager.selected?.updateBookmark();
+      }
+      appWindow.viewManager.views.forEach((view) => {
+        if (
+          !view.webContents.isDestroyed() &&
+          getTrustedWebUIHost(view.webContents.getURL()) === 'bookmarks'
+        ) {
+          view.webContents.send(channel, ...args);
+        }
+      });
+    });
   }
 
   public broadcastHomepageItems(items: any[]) {

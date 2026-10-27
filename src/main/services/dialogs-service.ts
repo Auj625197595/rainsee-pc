@@ -7,7 +7,6 @@ import { ShowBlockDialog } from '../dialogs/show-block';
 import { AddBookmarkDialog } from '../dialogs/add-bookmark';
 import { MenuDialog } from '../dialogs/menu';
 import { ExtensionsListDialog } from '../dialogs/extensions-list';
-import { UpdateDialog } from '../dialogs/update';
 import { ShareDialog } from '../dialogs/share';
 import { ScreenshotDialog } from '../dialogs/screenshot';
 import { SearchEnginesDialog } from '../dialogs/search-engines';
@@ -100,7 +99,6 @@ export class DialogsService {
       'add-bookmark': () => new AddBookmarkDialog(),
       menu: () => new MenuDialog(),
       'extensions-list': () => new ExtensionsListDialog(),
-      update: () => new UpdateDialog(),
       share: () => new ShareDialog(),
       screenshot: () => new ScreenshotDialog(),
       'search-engines': () => new SearchEnginesDialog(),

@@ -193,9 +193,6 @@ export class Application {
   public start() {
     startupMark('main.application.start.entered');
     this.googleConnectivity.start();
-    // 更新服务会在首个真实标签加载后才按需加载；菜单可能更早打开。
-    // 先提供稳定的查询结果，延迟服务就绪后会替换为读取实际更新状态的 handler。
-    ipcMain.handle('is-update-available', () => false);
     if (profileStartupError) {
       const t = getMainTranslator(this.settings?.object?.language);
       app.whenReady().then(async () => {
@@ -1822,15 +1819,10 @@ export class Application {
       try {
         await this.settings.ready();
         const [
-          autoUpdater,
           searchEngines,
           userAgentConfig,
           videoWhitelist,
         ] = await Promise.all([
-          import(
-            /* webpackChunkName: "deferred-auto-updater" */
-            './services/auto-updater'
-          ),
           import(
             /* webpackChunkName: "deferred-search-engines" */
             './services/search-engines'
@@ -1847,7 +1839,6 @@ export class Application {
 
         // These services may issue network requests during initialization, so
         // keep their imports and first calls behind the same startup gate.
-        autoUpdater.runAutoUpdaterService();
         searchEngines.runSearchEnginesService();
         videoWhitelist.runVideoPlayerWhitelistService();
         userAgentConfig.runUserAgentConfigService();

@@ -71,9 +71,10 @@ const DRIVER = `(function () {
   diag.envDefine = typeof define;
   diag.loadErr = window.__drLoadErr || null;
   try {
-    if (window.__rainseeDarkReaderEnabled && document.querySelector('style.darkreader--fallback, style.darkreader--variables, style.darkreader--invert, style.darkreader--root-vars')) {
+    if (document.querySelector('style.darkreader--fallback, style.darkreader--variables, style.darkreader--invert, style.darkreader--root-vars')) {
       diag.ready = true;
-      diag.reused = true;
+      diag.reused = !!window.__rainseeDarkReaderEnabled;
+      diag.existing = !diag.reused;
       return diag;
     }
     // —— 暗站门控:视口有充分暗色证据时保持原样,避免把原生暗站反相变亮 ——
@@ -223,6 +224,35 @@ export const injectDarkReader = async (wc: WebContents): Promise<void> => {
     }
   } catch (e) {
     console.log('[web-dark-mode] executeJavaScript THREW: ' + String((e && (e.message || e)) || e));
+  }
+};
+
+/**
+ * Remove the browser dark-mode script from a page. This is used by isolated
+ * PWA windows when their per-window mode changes to light (or auto while the
+ * browser is light). Keep the cleanup in the same utility as the injector so
+ * both paths agree on the marker/style names used by Dark Reader.
+ */
+export const disableDarkReader = async (wc: WebContents): Promise<void> => {
+  if (!wc || wc.isDestroyed()) return;
+  const script = `
+(function () {
+  try {
+    if (globalThis.DarkReader && typeof globalThis.DarkReader.disable === 'function') {
+      globalThis.DarkReader.disable();
+    }
+  } catch (_) {}
+  try {
+    document.querySelectorAll('style.darkreader, style.darkreader--fallback, style.darkreader--variables, style.darkreader--invert, style.darkreader--root-vars').forEach(function (node) { node.remove(); });
+  } catch (_) {}
+  try { window.__rainseeDarkReaderEnabled = false; } catch (_) {}
+  return true;
+})();`;
+  try {
+    await wc.executeJavaScript(script, true);
+  } catch {
+    // The page may be navigating or already destroyed; the next navigation
+    // applies the current mode again.
   }
 };
 

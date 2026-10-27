@@ -33,6 +33,7 @@ const BUILTIN_SWITCHES = new Set([
   'enable-transparent-visuals',
   'enable-features',
   'disable-features',
+  'disable-blink-features',
   'lang',
   'remote-debugging-port',
   'host-rules',

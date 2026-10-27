@@ -2,6 +2,7 @@ type SecondInstanceHandler = (argv: string[]) => void;
 
 type SecondInstanceWindow = {
   incognito: boolean;
+  workspaceId?: string;
   win: {isDestroyed(): boolean};
 };
 
@@ -12,9 +13,10 @@ type SecondInstanceWindowCandidates<T extends SecondInstanceWindow> = {
   list: T[];
 };
 
-// A normal taskbar launch must never resolve to an incognito window (and vice
-// versa). The two shortcuts share one process lock, so the primary process has
-// to preserve that mode boundary when it handles the secondary launch.
+// A normal taskbar launch must never resolve to an incognito or workspace
+// window. Workspaces are independent browser contexts, so launching the app
+// again must restore the regular browsing window instead of silently focusing
+// an already-open workspace.
 export const findSecondInstanceWindow = <T extends SecondInstanceWindow>({
   incognito,
   current,
@@ -23,7 +25,10 @@ export const findSecondInstanceWindow = <T extends SecondInstanceWindow>({
 }: SecondInstanceWindowCandidates<T>): T | undefined =>
   [current, lastFocused, ...list].find(
     (window): window is T =>
-      !!window && !window.win.isDestroyed() && window.incognito === incognito,
+      !!window &&
+      !window.win.isDestroyed() &&
+      window.incognito === incognito &&
+      (incognito || !window.workspaceId),
   );
 
 // The lightweight launcher owns the lock and queues early requests. The full

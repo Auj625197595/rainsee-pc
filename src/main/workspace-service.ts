@@ -1,6 +1,8 @@
-import { ipcMain } from 'electron';
+import { dialog, ipcMain } from 'electron';
 
 import { Application } from './application';
+import { getMainTranslator } from './i18n';
+import type { AppWindow } from './windows/app';
 import { IWorkspace, IWorkspaceSnapshot, IWorkspaceSummary, WORKSPACE_COLORS } from '~/interfaces';
 import { isSessionRestorableUrl } from '~/utils/url';
 
@@ -59,7 +61,8 @@ export class WorkspaceService {
     ipcMain.handle('workspace-current-count', (_event, windowId: number) => this.currentCount(Number(windowId)));
     ipcMain.handle('workspace-create', (_event, payload) => this.create(payload));
     ipcMain.handle('workspace-open', (_event, id: string) => this.open(String(id)));
-    ipcMain.handle('workspace-update', (_event, payload) => this.update(payload));
+    ipcMain.handle('workspace-open-here', (_event, payload) => this.openHere(payload));
+    ipcMain.handle('workspace-update',(_event, payload) => this.update(payload));
     ipcMain.handle('workspace-replace-tabs', (_event, payload) => this.replaceTabs(payload));
     ipcMain.handle('workspace-delete', (_event, id: string) => this.remove(String(id)));
 
@@ -153,6 +156,71 @@ export class WorkspaceService {
     return { ok: true, windowId: window.id, reused: false };
   }
 
+  // 把指定窗口原地切换为工作区。工作区已在别的窗口打开则聚焦那个窗口。
+  private async openHere(payload: any) {
+    const id = String(payload?.id || '');
+    const windowId = Number(payload?.windowId);
+    const target = Application.instance.windows.list.find((item) => item.id === windowId);
+    const workspace = await this.getContext(id);
+    if (!target || target.incognito) return { ok: false, error: 'invalid' };
+    if (!workspace) return { ok: false, error: 'missing' };
+    const boundId = this.openWindows.get(id);
+    if (boundId === target.id) return { ok: true, windowId: target.id, noop: true };
+    if (boundId && Application.instance.windows.list.some((item) => item.id === boundId)) {
+      return this.open(id);
+    }
+
+    const previousId = target.workspaceId;
+    if (!previousId) {
+      // 普通窗口的标签未被任何工作区保存,切换前须确认。确认框由主进程弹,
+      // 原因同 replaceTabs(面板 hideOnBlur,渲染层 confirm 会让点击失效)。
+      const count = Array.from(target.viewManager.views.values()).filter((view: any) => isRestorableUrl(view.url)).length;
+      const t = getMainTranslator(Application.instance.settings?.object?.language);
+      const isMain = Application.instance.windows.isPrimarySessionWindow(target.id);
+      const { response } = await dialog.showMessageBox(target.win, {
+        type: 'question',
+        message: t('ptSwitchWsConfirm', { name: workspace.name, count }),
+        detail: isMain ? t('ptSwitchWsConfirmMain') : undefined,
+        buttons: [t('ptOpenHere'), t('cancel')],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      });
+      if (response !== 0) return { ok: false, error: 'cancelled' };
+      if (this.openWindows.has(id)) return this.open(id);
+      target.restoresNormalSession = true;
+    } else {
+      // 旧工作区:先拿最新快照落盘再解绑,切换后旧标签关闭不会再回写它。
+      const snapshot = await this.requestSnapshot(target.id);
+      if (snapshot) await this.syncSnapshot(previousId, snapshot).catch(() => false);
+      this.openWindows.delete(previousId);
+    }
+
+    const latest = (await this.getContext(id)) || workspace;
+    target.workspace = latest;
+    this.bindWindow(id, target.id);
+    await Application.instance.storage.update({ scope: 'workspaces', query: { id }, value: { lastOpenedAt: Date.now() } });
+    target.send('workspace-switch', latest);
+    target.showAndFocus();
+    this.broadcast();
+    return { ok: true, windowId: target.id };
+  }
+
+  // openHere 的逆操作:窗口原地切回普通会话。只适用于由普通窗口切过来的窗口。
+  public async returnToNormal(target: AppWindow) {
+    const id = target.workspaceId;
+    if (!id || !target.restoresNormalSession) return { ok: false, error: 'invalid' };
+    const snapshot = await this.requestSnapshot(target.id);
+    if (snapshot) await this.syncSnapshot(id, snapshot).catch(() => false);
+    this.openWindows.delete(id);
+    target.workspace = null;
+    target.restoresNormalSession = false;
+    target.send('workspace-exit');
+    target.showAndFocus();
+    this.broadcast();
+    return { ok: true, windowId: target.id, reused: true };
+  }
+
   private async update(payload: any) {
     const id = String(payload?.id || '');
     const workspace = await this.getContext(id);
@@ -178,6 +246,19 @@ export class WorkspaceService {
     if (!source || source.incognito || !workspace) return { ok: false, error: 'invalid' };
     if (this.openWindows.has(id)) return { ok: false, error: 'open' };
     const snapshot = (await this.requestSnapshot(sourceWindowId)) || this.fallbackSnapshot(source);
+    // 覆盖不可撤销,须确认。确认框必须由主进程弹:面板是 hideOnBlur 的 BrowserView,
+    // 在渲染层 window.confirm 会让面板失焦即被隐藏回收,点击表现为无反应。
+    const t = getMainTranslator(Application.instance.settings?.object?.language);
+    const { response } = await dialog.showMessageBox(source.win, {
+      type: 'warning',
+      message: t('ptReplaceWsConfirm', { name: workspace.name, count: snapshot.tabs.length }),
+      buttons: [t('ptUpdateFromCurrent'), t('cancel')],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (response !== 0) return { ok: false, error: 'cancelled' };
+    if (this.openWindows.has(id)) return { ok: false, error: 'open' };
     const updated = await this.syncSnapshot(id, snapshot, true);
     return updated ? { ok: true } : { ok: false, error: 'empty' };
   }

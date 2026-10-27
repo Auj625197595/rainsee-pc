@@ -57,7 +57,6 @@ import {getMainTranslator} from '../i18n';
 import { ShowBlockDialog } from '~/main/dialogs/show-block';
 import { ShareDialog } from '~/main/dialogs/share';
 import { ScreenshotDialog } from '~/main/dialogs/screenshot';
-import { UpdateDialog } from '~/main/dialogs/update';
 import { showVideoDialog } from '~/main/dialogs/show-video';
 import { showMediaPlayer } from '~/main/windows/media-player';
 // 开源版：手机互联(phone tabs)模块已移除。
@@ -812,14 +811,6 @@ export const runMessagingService = (appWindow: AppWindow) => {
       'show-block',
     ) as ShowBlockDialog;
     dialog.open(appWindow.win, left, top, data);
-  });
-
-  // 地址栏更新胶囊点击, 打开更新弹窗
-  ipcMain.on(`show-update-dialog-${id}`, (e, left, top) => {
-    const dialog = Application.instance.dialogs.getPersistent(
-      'update',
-    ) as UpdateDialog;
-    dialog.open(appWindow.win, left, top);
   });
 
   // 在当前激活标签页注入并启动元素拾取器(标记广告)

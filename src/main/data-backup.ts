@@ -231,7 +231,9 @@ const stageSelectedBackup = async (
       const extensionSettings = {
         disabledExtensions: settings.disabledExtensions,
         incognitoAllowedExtensions: settings.incognitoAllowedExtensions,
+        extensionNotificationModes: settings.extensionNotificationModes,
         pinnedExtensions: settings.pinnedExtensions,
+        extensionOrder: settings.extensionOrder,
         extensionGroups: settings.extensionGroups,
         extensionShortcuts: settings.extensionShortcuts,
         extensionsAutoUpdate: settings.extensionsAutoUpdate,
