@@ -36,6 +36,7 @@ const mainConfig = getConfig({
   entry: {
     main: './src/main',
     'database-worker': './src/main/services/database-worker',
+    'download-file-check-worker': './src/main/services/download-file-check-worker',
   },
 
   plugins: [
@@ -124,8 +125,14 @@ const preloadConfig = getConfig({
 
   entry: {
     'view-preload': './src/preloads/view-preload',
+    'privileged-view-preload': './src/preloads/privileged-view-preload',
+    'page-prompt-preload': './src/preloads/page-prompt-preload',
     // 独立 PWA 窗口的轻量应用栏（右上角更多菜单）。
     'app-mode-preload': './src/preloads/app-mode-preload',
+    // Main-process URL classification can select this preload independently
+    // of ENABLE_EXTENSIONS (notably in builds that can still encounter a
+    // chrome-extension:// navigation). Always emit the referenced artifact.
+    'extension-view-preload': './src/preloads/extension-view-preload',
   },
 
   plugins: [],
@@ -137,6 +144,22 @@ if (process.env.ENABLE_EXTENSIONS) {
   // Loaded at runtime via modulePath in sessions-service.ts.
   preloadConfig.entry['crx-preload'] =
     './src/vendor/electron-chrome-extensions/preload';
+  // Keep frame and service-worker registrations on distinct renderer profiles.
+  // Electron 43 can otherwise co-site a chrome-extension:// frame in the
+  // service-worker renderer and skip the frame preload when startupData is
+  // unavailable.
+  preloadConfig.entry['crx-frame-preload'] =
+    './src/vendor/electron-chrome-extensions/frame-preload';
+  // Offscreen pages use the same bridge code, but a distinct preload path. The
+  // path is part of Electron's renderer profile and prevents an offscreen
+  // document from sharing a renderer with an action popup (Electron 43 can
+  // otherwise reuse the process even when webPreferences differ).
+  preloadConfig.entry['crx-offscreen-preload'] =
+    './src/vendor/electron-chrome-extensions/offscreen-preload';
+  // Side panels likewise need their own renderer profile: co-sited with the
+  // worker they go blank as soon as it stops.
+  preloadConfig.entry['crx-sidepanel-preload'] =
+    './src/vendor/electron-chrome-extensions/sidepanel-preload';
   // preloadConfig.entry['extensions-preload'] =
   //   './src/preloads/extensions-preload';
 }

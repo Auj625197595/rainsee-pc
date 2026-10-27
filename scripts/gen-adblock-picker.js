@@ -44,44 +44,21 @@ const escaped = body
   .replace(/`/g, '\\`')
   .replace(/\$\{/g, '\\${');
 
-const D = '$'; // 用于在输出里写出 ${...}
-
 const out = `// 此文件由 scripts/gen-adblock-picker.js 从 dom_picker.js 自动生成，请勿手改主体逻辑。
 // 来源: browserv4/moduleMain/src/main/assets/adblock/dom_picker.js
-// 改动: 1) i18n 占位符替换为中文常量; 2) 顶部注入 JSInterface -> Electron ipcRenderer 桥。
+// 改动: 1) i18n 占位符替换为中文常量; 2) JSInterface 由标签 preload
+// 在用户启动拾取器时临时安装,不向网页暴露通用 Electron IPC。
 //
-// 注入到标签页 webContents(contextIsolation:false, preload 暴露 window.electron.ipcRenderer)。
-// picker 主体通过 window.JSInterface 回传, 由下方 shim 转成 ipc 消息发给所属窗口。
+// picker 主体通过 window.JSInterface 回传,取消或提交后 preload 会撤销该接口。
 /* eslint-disable */
 
 const PICKER_BODY = \`${escaped}\`;
 
 /**
  * 生成可注入网页的元素拾取器代码。
- * @param windowId 所属浏览器窗口 id, 回传 ipc 时拼到频道名
+ * @param windowId 保留现有调用签名;IPC 目标由 preload 的窗口快照决定
  */
-export const getAdblockPickerCode = (windowId: number): string => {
-  const WINDOW_ID = JSON.stringify(windowId);
-  const shim = \`
-    (function () {
-      try {
-        var ipc = window.electron && window.electron.ipcRenderer;
-        window.JSInterface = window.JSInterface || {};
-        window.JSInterface.onAdblockPickerEnter = function () {
-          try { ipc && ipc.send("adblock-picker-state-" + ${D}{WINDOW_ID}, "enter"); } catch (e) {}
-        };
-        window.JSInterface.onAdblockPickerCancel = function () {
-          try { ipc && ipc.send("adblock-picker-state-" + ${D}{WINDOW_ID}, "cancel"); } catch (e) {}
-        };
-        window.JSInterface.onAdblockPickerSubmit = function (ruleText) {
-          try { ipc && ipc.send("adblock-picker-state-" + ${D}{WINDOW_ID}, "submit", ruleText || ""); } catch (e) {}
-        };
-        window.JSInterface.saveGeneratedAdblockRule = function (ruleText) {
-          try { ipc && ipc.send("save-adblock-rule-" + ${D}{WINDOW_ID}, ruleText || ""); } catch (e) {}
-        };
-      } catch (e) {}
-    })();
-  \`;
+export const getAdblockPickerCode = (_windowId: number): string => {
   const starter = \`
     (function () {
       try {
@@ -91,7 +68,7 @@ export const getAdblockPickerCode = (windowId: number): string => {
       } catch (e) {}
     })();
   \`;
-  return shim + PICKER_BODY + starter;
+  return PICKER_BODY + starter;
 };
 `;
 

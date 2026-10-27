@@ -60,14 +60,57 @@ function extractBundleShim(src) {
     return eval(findExpr(src, 'const SHIM_BODY', 'const SHIM_VERSION'));
   }
 
-  const hashCall = /\.createHash\(["']sha256["']\)\.update\(([A-Za-z_$][\w$]*)\)/g;
+  // Current production webpack output uses `(0,module.createHash)("sha256")`
+  // and keeps the body in a minified local such as `xr`. Avoid depending on
+  // the exact import alias or regex escaping: locate the stable call suffix,
+  // read its argument, then evaluate the preceding `<body>=...` expression.
+  for (const suffix of ['sha256").update(', "sha256').update("]) {
+    let at = 0;
+    while ((at = src.indexOf(suffix, at)) >= 0) {
+      const argStart = at + suffix.length;
+      const argEnd = src.indexOf(')', argStart);
+      const variable = argEnd >= 0 ? src.slice(argStart, argEnd) : '';
+      if (/^[A-Za-z_$][\w$]*$/.test(variable)) {
+        const hashEquals = src.lastIndexOf('=', at);
+        const hashAssignmentStart = src.lastIndexOf(',', hashEquals);
+        const bodyStart = src.lastIndexOf(`${variable}=`, hashAssignmentStart);
+        if (bodyStart >= 0 && at - bodyStart < 250000) {
+          let expression = src.slice(
+            bodyStart + variable.length + 1,
+            hashAssignmentStart,
+          );
+          if (expression.endsWith(',')) expression = expression.slice(0, -1);
+          // Terser keeps the one compile-time enum interpolation inside the
+          // folded template literal, but renames its local import alias. The
+          // validator already provides the enum value, so substitute that
+          // interpolation before evaluating the expression instead of relying
+          // on a particular minifier-generated identifier.
+          expression = expression.replace(
+            /\$\{JSON\.stringify\([A-Za-z_$][\w$]*\)\}/g,
+            JSON.stringify(JSON.stringify(RUNTIME_CONTEXT_TYPE)),
+          );
+          try {
+            const value = eval(expression);
+            if (typeof value === 'string' && value.includes('__crxShimInstalled')) {
+              return value;
+            }
+          } catch {
+            // Try the next crypto call; bundles contain unrelated hashes.
+          }
+        }
+      }
+      at = argEnd >= 0 ? argEnd + 1 : at + suffix.length;
+    }
+  }
+
+  const hashCall = /(?:\.createHash|\(0,[A-Za-z_$][\w$]*\.createHash\))\(["']sha256["']\)\.update\(([A-Za-z_$][\w$]*)\)/g;
   let match;
   while ((match = hashCall.exec(src))) {
     const variable = match[1];
     const marker = '/*__crx_storage_sync_shim_';
-    if (src.indexOf(marker, match.index) < 0) continue;
+    const windowStart = Math.max(0, match.index - 250000);
+    if (src.indexOf(marker, windowStart) < 0) continue;
     const escapedVariable = variable.replace(/[$]/g, '\\$&');
-    const windowStart = Math.max(0, match.index - 200000);
     const prefix = src.slice(windowStart, match.index + match[0].length);
     const assignment = new RegExp(
       `(?:const |let |var |,)${escapedVariable}=("(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'),` +
@@ -78,6 +121,58 @@ function extractBundleShim(src) {
     const value = eval(assignment[1]);
     if (typeof value === 'string' && value.includes('__crxShimInstalled')) {
       return value;
+    }
+
+    // Terser often emits the body as `xr=<concatenated expression>,Cr=hash(xr)`
+    // without a declaration keyword. Evaluate that exact assignment directly;
+    // unlike the literal-only path above this also preserves `.replace(...)`.
+    const directStart = src.lastIndexOf(`${variable}=`, match.index);
+    if (directStart >= 0 && match.index - directStart < 250000) {
+      let directExpression = src.slice(
+        directStart + variable.length + 1,
+        match.index,
+      );
+      if (directExpression.endsWith(',')) directExpression = directExpression.slice(0, -1);
+      try {
+        const directValue = eval(directExpression);
+        if (
+          typeof directValue === 'string' &&
+          directValue.includes('__crxShimInstalled')
+        ) {
+          return directValue;
+        }
+      } catch {
+        // Fall through to the more restrictive compatibility probes below.
+      }
+    }
+
+    // Terser can keep SHIM_BODY as a concatenation followed by `.replace()`
+    // and emit the crypto import as `(0,x.createHash)(...)`. In that form the
+    // body is not a single string literal. Its assignment immediately
+    // precedes the hash variable, so evaluate that self-contained expression.
+    const hashAssignment = new RegExp(
+      `,([A-Za-z_$][\\w$]*)=${match[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+    ).exec(src.slice(windowStart, match.index + match[0].length));
+    if (hashAssignment) {
+      const localHashStart = hashAssignment.index;
+      const bodyAssignment = prefix.lastIndexOf(`${variable}=`, localHashStart);
+      if (bodyAssignment >= 0) {
+        const expression = prefix.slice(
+          bodyAssignment + variable.length + 1,
+          localHashStart,
+        );
+        try {
+          const expressionValue = eval(expression);
+          if (
+            typeof expressionValue === 'string' &&
+            expressionValue.includes('__crxShimInstalled')
+          ) {
+            return expressionValue;
+          }
+        } catch {
+          // Ignore unrelated minified assignments.
+        }
+      }
     }
   }
   throw new Error('could not locate minified SHIM_BODY assignment');

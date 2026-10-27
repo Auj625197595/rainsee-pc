@@ -16,7 +16,6 @@
     "createStartMenuShortcut": true,
     "shortcutName": "雨见浏览器"
   },
-  "generateUpdatesFilesForAllChannels": true,
   "asar": true,
   "directories": {
     "output": "dist",
@@ -37,6 +36,10 @@
     {
       "from": "static/win-hello.ps1",
       "to": "win-hello.ps1"
+    },
+    {
+      "from": "static/win-credential.ps1",
+      "to": "win-credential.ps1"
     }
   ],
   "files": [
@@ -44,7 +47,6 @@
     "package.json",
     "static/**/*"
   ],
-  "publish": "github",
   "linux": {
     "category": "Network",
     "target": [
