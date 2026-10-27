@@ -10,7 +10,8 @@ import type {MessageKey} from './i18n';
 export interface IChromePanelField {
   key: string;
   labelKey: MessageKey;
-  type: 'slider' | 'color' | 'toggle';
+  type: 'slider' | 'color' | 'toggle' | 'select';
+  options?: { value: string; labelKey: MessageKey }[];
   /** slider:数值范围与单位(px 等)。 */
   min?: number;
   max?: number;
@@ -39,6 +40,15 @@ export const CHROME_PANEL_SECTIONS: IChromePanelSection[] = [
         type: 'slider',
         min: 44,
         max: 68,
+        step: 1,
+        unit: 'px',
+      },
+      {
+        key: 'titlebarHeight',
+        labelKey: 'chromePanelTitlebarHeight',
+        type: 'slider',
+        min: 36,
+        max: 80,
         step: 1,
         unit: 'px',
       },
@@ -81,6 +91,15 @@ export const CHROME_PANEL_SECTIONS: IChromePanelSection[] = [
       { key: 'brandText', labelKey: 'chromePanelBrandText', type: 'color' },
       { key: 'brandSubText', labelKey: 'chromePanelBrandSubText', type: 'color' },
       { key: 'showBrandText', labelKey: 'chromePanelShowBrandText', type: 'toggle' },
+      {
+        key: 'aiButtonStyle',
+        labelKey: 'chromePanelAiButtonStyle',
+        type: 'select',
+        options: [
+          { value: 'button', labelKey: 'chromePanelAiButtonStyleButton' },
+          { value: 'icon', labelKey: 'chromePanelAiButtonStyleIcon' },
+        ],
+      },
     ],
   },
   {
@@ -167,6 +186,15 @@ export const CHROME_PANEL_SECTIONS: IChromePanelSection[] = [
         unit: 'px',
       },
       {
+        key: 'tabHeight',
+        labelKey: 'chromePanelTabHeight',
+        type: 'slider',
+        min: 24,
+        max: 44,
+        step: 1,
+        unit: 'px',
+      },
+      {
         key: 'tabFont',
         labelKey: 'chromePanelTabFont',
         type: 'slider',
@@ -240,10 +268,13 @@ export const CHROME_PANEL_FIELDS: IChromePanelField[] =
   CHROME_PANEL_SECTIONS.flatMap((section) => section.fields);
 
 const FIELD_BY_KEY = new Map(CHROME_PANEL_FIELDS.map((f) => [f.key, f]));
+export const isChromePanelFieldKey = (key: unknown): key is string =>
+  typeof key === 'string' && FIELD_BY_KEY.has(key);
 
 // slider 的默认值(应用原生样式值)。键缺省/等于默认 → 不输出 CSS。
 export const CHROME_PANEL_DEFAULTS: Record<string, number> = {
   topbarHeight: 54,
+  titlebarHeight: 54,
   logoSize: 32,
   logoRadius: 11,
   brandFont: 14,
@@ -253,6 +284,7 @@ export const CHROME_PANEL_DEFAULTS: Record<string, number> = {
   buttonSize: 36,
   buttonRadius: 99999,
   tabRadius: 9999,
+  tabHeight: 34,
   tabFont: 12,
   bookmarkFont: 12,
   sidebarNewTabRadius: 10,
@@ -261,9 +293,10 @@ export const CHROME_PANEL_DEFAULTS: Record<string, number> = {
 };
 
 // toggle 的默认态恒为 true(原生显示);返回 NaN/true 之外的值仅对 slider 有意义。
-export const getChromePanelFieldDefault = (key: string): number | boolean => {
+export const getChromePanelFieldDefault = (key: string): number | boolean | string => {
   const field = FIELD_BY_KEY.get(key);
   if (field?.type === 'toggle') return true;
+  if (field?.type === 'select') return field.options?.[0]?.value || '';
   if (field?.type === 'slider') {
     const def = CHROME_PANEL_DEFAULTS[key];
     if (typeof def === 'number') return def;
@@ -297,6 +330,10 @@ export const sanitizeChromePanelValues = (
       }
     } else if (field.type === 'toggle') {
       if (typeof v === 'boolean') out[field.key] = v;
+    } else if (field.type === 'select') {
+      if (typeof v === 'string' && field.options?.some((option) => option.value === v)) {
+        out[field.key] = v;
+      }
     }
   }
   return out;
@@ -365,6 +402,14 @@ const num = (values: Vals, key: string): number | null => {
   return n;
 };
 
+// 供布局读取的 slider 值(已 sanitize 夹取);未调整时返回 null。
+// 标题栏高度/标签高度参与多行标签布局计算,不能只靠 CSS 覆盖,
+// 由渲染进程读取后注入 theme 与 TabsStore。
+export const getChromePanelNumber = (
+  values: unknown,
+  key: string,
+): number | null => num(sanitizeChromePanelValues(values), key);
+
 const px = (n: number) => `${n}px`;
 const imp = (prop: string, value: string): Decl => ({
   prop,
@@ -395,6 +440,8 @@ export const buildChromePanelCss = (values: Vals): string => {
     topbarBorder && imp('border-bottom-color', topbarBorder),
     topbarHeight && { prop: 'height', value: px(topbarHeight) },
   ]);
+  // titlebarHeight / tabHeight 不输出 CSS:二者参与多行标签布局(行高/行距/居中),
+  // 由渲染进程经 getChromePanelNumber 注入 store.titlebarBaseHeight / tabSurfaceHeight。
   if (topbarText) {
     topbar.add(
       '[data-rainsee-part="address-input"][data-rainsee-input-visible="true"]',
@@ -633,6 +680,40 @@ export const buildChromePanelCss = (values: Vals): string => {
   return chunks.join('\n\n');
 };
 
+// 设置页字段悬停时的临时定位提示。只用于 live preview，不写入配置。
+export const buildChromePanelHoverCss = (key: string | null | undefined): string => {
+  if (!key) return '';
+  const topbarTargets: Record<string, string> = {
+    topbarBackground: '[data-rainsee-part="titlebar"], [data-rainsee-part="toolbar"]',
+    topbarHeight: '[data-rainsee-part="toolbar"]', titlebarHeight: '[data-rainsee-part="titlebar"]', topbarText: '[data-rainsee-part="toolbar"]', topbarBorder: '[data-rainsee-part="toolbar"]',
+    logoSize: '[data-rainsee-part="brand-logo"]', logoRadius: '[data-rainsee-part="brand-logo"]', logoBackground: '[data-rainsee-part="brand-logo"]',
+    brandFont: '[data-rainsee-part="brand-title"]', brandText: '[data-rainsee-part="brand-title"]', brandSubText: '[data-rainsee-part="brand-sub"]', showBrandText: '[data-rainsee-part="brand-text"]', aiButtonStyle: '[data-rainsee-part="brand-action"][data-rainsee-action="ai"]',
+    addressBackground: '[data-rainsee-part="address-bar"]', addressText: '[data-rainsee-part="address-bar"]', addressRadius: '[data-rainsee-part="address-bar"]', addressHeight: '[data-rainsee-part="address-bar"]', addressFont: '[data-rainsee-part="address-input"]', addressBorder: '[data-rainsee-part="address-bar"]', addressFocusBorder: '[data-rainsee-part="address-bar"]', addressFocusGlow: '[data-rainsee-part="address-bar"]',
+    buttonSize: PLAIN_BUTTON, buttonRadius: PLAIN_BUTTON, buttonColor: PLAIN_BUTTON, buttonHover: PLAIN_BUTTON, buttonActive: PLAIN_BUTTON,
+    tabBackground: '[data-rainsee-part="tab-surface"]', tabSelectedBackground: '[data-rainsee-part="tab"][data-rainsee-selected="true"] > [data-rainsee-part="tab-surface"]', tabText: '[data-rainsee-part="tab-title"]', tabSelectedText: '[data-rainsee-part="tab"][data-rainsee-selected="true"] [data-rainsee-part="tab-title"]', tabHoverBackground: '[data-rainsee-part="tab-surface"]', tabRadius: '[data-rainsee-part="tab-surface"]', tabHeight: '[data-rainsee-part="tab-surface"]', tabFont: '[data-rainsee-part="tab-title"]',
+    bookmarkBackground: '[data-rainsee-part="bookmark-bar"]', bookmarkText: '[data-rainsee-part="bookmark-title"]', bookmarkFont: '[data-rainsee-part="bookmark-title"]', bookmarkItemHover: '[data-rainsee-part="bookmark-item"]',
+  };
+  const sidebarTargets: Record<string, string> = {
+    sidebarBackground: '[data-rainsee-area="sidebar"]', sidebarText: '[data-rainsee-area="sidebar"]', sidebarNewTabBackground: '[data-rainsee-part="sidebar-new-tab"]', sidebarNewTabText: '[data-rainsee-part="sidebar-new-tab"]', sidebarNewTabRadius: '[data-rainsee-part="sidebar-new-tab"]', sidebarTabBackground: '[data-rainsee-part="sidebar-tab"]', sidebarTabSelected: '[data-rainsee-part="sidebar-tab"][data-rainsee-selected="true"]', sidebarTabRadius: '[data-rainsee-part="sidebar-tab"]', sidebarTabFont: '[data-rainsee-part="sidebar-tab-title"]',
+  };
+  const target = topbarTargets[key] || sidebarTargets[key];
+  if (!target) return '';
+  // 外框提示目标所在的区域：标签栏(含品牌/标签)、书签栏，其余顶部项归工具栏。
+  const shellPart = !topbarTargets[key]
+    ? ''
+    : key === 'topbarBackground'
+      ? ''
+      : /^(titlebar|logo|brand|showBrand|aiButton|tab)/.test(key)
+        ? 'titlebar'
+        : /^bookmark/.test(key)
+          ? 'bookmark-bar'
+          : 'toolbar';
+  const shell = shellPart ? `[data-rainsee-part="${shellPart}"] { box-shadow: inset 0 0 0 2px #ff3b3066, 0 0 0 2px #ff3b302b !important; }\n` : '';
+  // 整条栏贴着窗口边缘，外扩的 outline 会被裁掉，改为内收。
+  const isBar = /^\[data-rainsee-(part="(titlebar|toolbar|bookmark-bar)"|area="sidebar")\]$/.test(target);
+  return `${shell}${target} { outline: 2px solid #ff3b30 !important; outline-offset: ${isBar ? -2 : 2}px; box-shadow: 0 0 0 4px #ff3b303d, 0 0 18px #ff3b3066 !important; }`;
+};
+
 const indent = (css: string) =>
   css
     .split('\n')
@@ -645,5 +726,6 @@ export const countChromePanelCustomized = (values: Vals) =>
     const v = values[field.key];
     if (field.type === 'color') return typeof v === 'string' && !!v;
     if (field.type === 'toggle') return v === false;
+    if (field.type === 'select') return v !== getChromePanelFieldDefault(field.key);
     return num(values, field.key) !== null;
   }).length;

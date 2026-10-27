@@ -5,8 +5,10 @@ import {
   makeObservable,
   makeAutoObservable,
   reaction,
+  runInAction,
 } from 'mobx';
 import * as React from 'react';
+import { parse as parseUrl } from 'url';
 import { createLocaleTranslator } from '~/common/i18n';
 
 import { ITab, ITabGroup } from '../models';
@@ -16,6 +18,7 @@ import {
   TABS_PADDING,
   TAB_MAX_WIDTH,
   TAB_MIN_WIDTH,
+  TAB_WRAP_WIDTH,
   TAB_PINNED_WIDTH,
   CHIP_PAD_LR,
   CHIP_NAME_MAX,
@@ -28,11 +31,27 @@ import {
 
 import store from '.';
 import { ipcRenderer } from 'electron';
-import { TOOLBAR_HEIGHT, ADD_TAB_BUTTON_WIDTH } from '~/constants/design';
+import {
+  ADD_TAB_BUTTON_WIDTH,
+  COMPACT_TAB_HEIGHT,
+  COMPACT_TAB_ROW_PITCH,
+  DEFAULT_TAB_ROW_PITCH,
+  TAB_ROW_GAP,
+} from '~/constants/design';
 import { TabEvent } from '~/interfaces/tabs';
 import { getWebUIURL } from '~/common/webui';
 import { prefixHttp } from '~/utils';
+import { getIconByUrlNet } from '~/utils/url';
 import { isImmersiveHeaderWindow } from '../utils/windows';
+import { calculateTopTabRows } from '../utils/top-tab-layout';
+
+const FULL_ROW_END_GAP = 4;
+
+const logTabLayout = (...args: any[]) => {
+  if (process.env.DEBUG_IMMERSIVE_HEADER === '1') {
+    console.log('[immersive-tab-layout]', ...args);
+  }
+};
 
 export interface AddTabsBehavior {
   loadImmediately?: boolean;
@@ -67,16 +86,35 @@ export class TabsStore {
   private recentlyActiveTabIds: number[] = [];
 
   public removedTabs = 0;
+  // Row of each closing standalone tab whose width is intentionally reserved.
+  // Keep this separate from all isClosing tabs: createTab resets removedTabs
+  // so a newly opened tab can immediately consume the closing gap.
+  public removedTabRows: number[] = [];
 
   public lastScrollLeft = 0;
   public lastMouseX = 0;
   public mouseStartX = 0;
+  public mouseStartY = 0;
   public tabStartX = 0;
+  public tabStartY = 0;
 
   private scrollTimeout: any;
 
   public scrollingToEnd = false;
   public scrollable = false;
+  public topTabRowsUsed = 1;
+  public scrollContentWidth = 0;
+  private slotRows = new Map<ITab | ITabGroup, number>();
+  private topTabLayoutContext = '';
+  private topTabLayoutCapacity = 0;
+  private topTabLayoutFirstCapacity = 0;
+  // 多行「独立成栏」模式下,标签容器横跨整条标题栏;fullRowInset 为容器相对
+  // StyledTabbar 向左/右外扩的距离(品牌块宽度 / 窗口控制宽度),供 CSS 定位。
+  public fullRowInset = { left: 0, right: 0 };
+  // 第 0 行(夹在品牌块与工具箱之间)在容器内容坐标中的起点与可用宽度。
+  private firstRowLeft = 0;
+  private firstRowWidth = 0;
+  private layoutRetryFrame = 0;
 
   public closedUrl = '';
 
@@ -85,6 +123,11 @@ export class TabsStore {
 
   // 快照自增 id(供 React key 用,避免同毫秒关闭撞 key)。
   private closedSeq = 0;
+
+  // 关闭标签后工具箱按钮短暂变成「恢复」态(呼吸高亮,点击即恢复刚关闭的标签)。
+  public restoreHintVisible = false;
+  private restoreHintTimer: ReturnType<typeof setTimeout> | null = null;
+  private restoreHintHeld = false;
 
   // 占位标签 id 自增序列:负数,与真实 webContents.id(正数)不冲突。
   // -1 被各类“无选中/无拖拽目标”状态用作哨兵值,必须保留不用。
@@ -103,11 +146,13 @@ export class TabsStore {
   // Chrome 式交互:先高亮再确认,可反悔。区别于旧版一越过阈值就即时 setTabToGroup。
   public pendingGroupDropId = -1;
 
-  // 网页链接拖入顶部标签栏:投放指示线 content 坐标 X(null=隐藏)。由标签栏
+  // 网页链接拖入顶部标签栏:投放指示线 content 坐标(null=隐藏)。由标签栏
   // 容器上的 HTML5 dragover 计算写入,render 时画一条竖线提示新标签落点。
-  public linkDropLeft: number | null = null;
+  public linkDropPosition: { left: number; top: number } | null = null;
 
   public containerRef = React.createRef<HTMLDivElement>();
+  public tabbarRef = React.createRef<HTMLDivElement>();
+  public tabbarEndRef = React.createRef<HTMLDivElement>();
 
   public leftMargins = 0;
   public slotMargin = CHIP_SLOT_MARGIN;
@@ -129,8 +174,11 @@ export class TabsStore {
       hoveredTabId: observable,
       selectedTabId: observable,
       scrollable: observable,
+      topTabRowsUsed: observable,
+      fullRowInset: observable.ref,
+      scrollContentWidth: observable,
       pendingGroupDropId: observable,
-      linkDropLeft: observable,
+      linkDropPosition: observable,
       sidebarDragId: observable,
       sidebarDragGroupId: observable,
       sidebarDropTargetId: observable,
@@ -141,7 +189,9 @@ export class TabsStore {
       sidebarDropOutside: observable,
       panelGroupCollapsed: observable,
       panelVisible: observable,
+      overviewVisible: observable,
       recentlyClosed: observable,
+      restoreHintVisible: observable,
       selectedTab: computed,
       hoveredTab: computed,
     });
@@ -162,10 +212,47 @@ export class TabsStore {
       },
     );
 
+    // 把已加载标签的 [id, thumbKey] 告诉主进程,View 抓图时据此落盘预览图
+    // (services/tab-thumbnails)。占位标签加载后 id 由负数换成真实 id,会再触发一次。
+    // 无痕/工作区窗口不落盘。
+    reaction(
+      () =>
+        this.list
+          .filter((t) => t.id >= 0 && !t.discarded)
+          .map((t) => `${t.id}:${t.thumbKey}`)
+          .join(','),
+      () => {
+        if (!store.canPersistNormalSession) return;
+        const pairs = this.list
+          .filter((t) => t.id >= 0 && !t.discarded)
+          .map((t) => [t.id, t.thumbKey]);
+        try {
+          ipcRenderer.send('tab-thumb-keys', store.windowId, pairs);
+        } catch {
+          // best-effort:窗口销毁期 send 可能抛
+        }
+      },
+    );
+
     reaction(
       () => this.selectedTabId,
       (id) => this.recordTabActivation(id),
       { fireImmediately: true },
+    );
+
+    // 标签表面高度(调控面板「标签高度」)变化 → 行距变了,按新行距重排各行位置。
+    reaction(
+      () => store.tabSurfaceHeight,
+      () => this.updateTabsBounds(false),
+    );
+
+    // 进入/退出多行独立成栏:先按新模式测量外扩量,DOM 更新后再重排一次。
+    reaction(
+      () => this.fullWidthRows,
+      () => {
+        this.updateTabsBounds(false);
+        requestAnimationFrame(() => this.updateTabsBounds(false));
+      },
     );
 
     window.addEventListener('mouseup', this.onMouseUp);
@@ -176,10 +263,20 @@ export class TabsStore {
       this.updateTabsBounds(true);
     });
 
+    // 历史弹窗「最近关闭」区点击 → 主进程转发快照 id 到这里恢复。
+    ipcRenderer.on('restore-closed-tab', (_e, ids: number[]) => {
+      // 「全部恢复」传入的顺序是最新在前;倒序打开,让最近关闭的那个最终处于激活态。
+      [...(Array.isArray(ids) ? ids : [ids])]
+        .reverse()
+        .forEach((id) => this.restoreClosedById(Number(id)));
+    });
+
     ipcRenderer.on('clear-tab-hover', () => {
       this.hoveredTabId = -1;
       this.canShowPreview = true;
     });
+
+    this.setupGroupOverview();
 
     // 标签组悬停弹窗(独立 BrowserView)回传的交互。
     ipcRenderer.on('tabgroup-preview-action', (e, payload) => {
@@ -199,13 +296,41 @@ export class TabsStore {
       this.onSidebarPanelAction(payload);
     });
     ipcRenderer.on('sidebar-panel-enter', () => {
+      this.sidebarPanelHovered = true;
       this.cancelSidebarPanelHide();
     });
     ipcRenderer.on('sidebar-panel-leave', () => {
+      this.sidebarPanelHovered = false;
       // 留一点缓冲:指针从浮层滑回窄轨(两者重叠)时,窄轨的 enter 会及时取消,
       // 不会误收起;也避免与滑入动画抢拍。
       this.scheduleSidebarPanelHide(120);
     });
+
+    // 沉浸模式没有常驻侧栏 DOM,主进程按光标所在的左右边缘驱动同一个
+    // 非固定模式 SidebarPanel BrowserView。浮层自己的 enter/leave 仍负责
+    // 保持打开,避免光标从边缘滑入浮层后被主进程的下一次轮询立即收起。
+    ipcRenderer.on(
+      'immersive-sidebar-hover',
+      (_e, side: 'left' | 'right' | null) => {
+        const immersive =
+          store.settings.object.immersiveBrowsing && !store.isSidebar;
+        if (side === null) {
+          this.panelSide = null;
+          if (this.sidebarPanelHovered) {
+            this.cancelSidebarPanelHide();
+          } else if (!immersive) {
+            this.hideSidebarPanel();
+          } else {
+            this.scheduleSidebarPanelHide(220);
+          }
+          return;
+        }
+        if (!immersive) return;
+        if (side === 'left' || side === 'right') {
+          this.openSidebarPanel(side);
+        }
+      },
+    );
 
     ipcRenderer.on(
       'create-tab',
@@ -289,6 +414,22 @@ export class TabsStore {
       this.getTabById(id)?.close();
     });
 
+    ipcRenderer.on('close-all-tabs', () => {
+      if (isImmersiveHeaderWindow()) return;
+      // 固定、分组和未加载的标签都要关闭。使用快照,避免关掉最后一页补出的新标签。
+      // 当前标签最后关闭,避免中途切换并加载即将被关闭的后台标签。
+      const tabsToClose = this.list
+        .filter((tab) => !tab.isClosing)
+        .sort((a, b) => Number(a.isSelected) - Number(b.isSelected));
+      for (const tab of tabsToClose) tab.close();
+    });
+
+    // chrome.tabs.move:主进程已算好目标位置(0-based,已夹到范围内)。改 list 后
+    // 由上面的 reaction 回传 crx-set-tab-order,与主进程预写的顺序一致。
+    ipcRenderer.on('crx-move-tab', (e, id: number, index: number) => {
+      this.moveTabToIndex(id, index);
+    });
+
     // 后台 renderer 崩溃后，主进程已释放 BrowserView；保留原标签位置和元数据，
     // 改成与启动恢复相同的 discarded 占位标签，用户切回时才创建并加载。
     ipcRenderer.on(
@@ -319,6 +460,8 @@ export class TabsStore {
           pinned: !!tabState.pinned,
           incognito: !!tabState.incognito,
           index: typeof index === 'number' ? index : undefined,
+          // 迁移不算关闭:沿用原预览图落盘键。
+          thumbKey: tabState.thumbKey,
         } as any,
         id,
       );
@@ -337,8 +480,12 @@ export class TabsStore {
           tab.filtersCount = args[2];
         }
         if (event === 'title-updated') {
-          const changed = tab.title !== args[0];
-          tab.title = args[0];
+          // 页面加载中或未设 title 时标题可能为空,先用 host 兜底避免标签栏空白;
+          // 真实标题到达后由下一次 title-updated 覆盖。
+          const { hostname } = parseUrl(tab.url);
+          const title = args[0] || hostname || args[0];
+          const changed = tab.title !== title;
+          tab.title = title;
           // 回写标题:延迟标签恢复时不重新加载,标题只能取自 DB,
           // 必须在变化时持久化,否则下次恢复停留在创建时的旧值。
           if (changed) store.startupTabs.updateStartupTabItem(tab);
@@ -374,6 +521,9 @@ export class TabsStore {
         if (event === 'pwa-installed') {
           tab.pwaInstalled = !!args[0];
         }
+        if (event === 'iptv-detected') {
+          tab.iptvDetected = args[0] && args[0].format ? args[0] : null;
+        }
 
         if (event === 'url-updated') {
           const [url] = args;
@@ -402,6 +552,15 @@ export class TabsStore {
             event === 'loading')
         ) {
           this.refreshSidebarPanel();
+        }
+
+        // 组悬停弹窗打开时,标题/图标到达即刷新快照,避免弹窗停留在旧内容
+        // (弹窗不持有模型,此前只在用户交互后才刷新)。
+        if (
+          this.groupPreviewGroupId !== -1 &&
+          (event === 'title-updated' || event === 'favicon-updated')
+        ) {
+          this.refreshGroupPreview();
         }
       }
     });
@@ -453,6 +612,7 @@ export class TabsStore {
   public onResize = (e: Event) => {
     if (e.isTrusted) {
       this.removedTabs = 0;
+      this.removedTabRows = [];
       this.updateTabsBounds(false);
     }
     this.reportTabStripRect();
@@ -556,6 +716,7 @@ export class TabsStore {
     tab.canTranslate = false;
     tab.translated = false;
     tab.canInstallPwa = false;
+    tab.iptvDetected = null;
 
     if (this.hoveredTabId === oldId) this.hoveredTabId = placeholderId;
     if (process.env.ENABLE_EXTENSIONS) {
@@ -583,6 +744,7 @@ export class TabsStore {
     openOpts: { skipScrollToEnd?: boolean; openerTabId?: number } = {},
   ) {
     this.removedTabs = 0;
+    this.removedTabRows = [];
 
     const tab = new ITab(options, id);
 
@@ -601,7 +763,15 @@ export class TabsStore {
     }
 
     requestAnimationFrame(() => {
-      tab.setLeft(tab.getLeft(), false);
+      // Preserve the original create flow: place the newly mounted DOM first,
+      // then animate the shared layout. Refreshing the row map here also gives
+      // a row 2+ tab its correct Y without racing layout against its deferred
+      // select() callback.
+      tab.setPosition(
+        tab.getLeft(true),
+        this.getTabTargetTop(tab),
+        false,
+      );
       this.updateTabsBounds(true);
       // 仅「自然追加到末尾」时滚到末尾;链接拖放等显式指定 index 插入到中间时,
       // 新标签落在投放点(本就在可视区),保持当前滚动位置,不被强行滚走。
@@ -620,6 +790,7 @@ export class TabsStore {
     persist = true,
   ) {
     this.removedTabs = 0;
+    this.removedTabRows = [];
 
     if (!persist) store.startupTabs.suppressPersistence(ids);
 
@@ -713,7 +884,7 @@ export class TabsStore {
     let isBlankNewTab = !options.url;
     if (!options.url) {
       const sb = store.settings.object.startupBehavior;
-      if (sb.type === 'urls' && sb.url && sb.url.trim()) {
+      if (sb.type === 'urls' && sb.applyToNewTab !== false && sb.url && sb.url.trim()) {
         // 启动行为「打开特定页面」:新建标签页也打开配置网址(非空白)。
         options.url = prefixHttp(sb.url.trim());
         isBlankNewTab = false;
@@ -870,6 +1041,11 @@ export class TabsStore {
 
   public removeTab(id: number) {
     (this.list as any).remove(this.getTabById(id));
+    if (process.env.ENABLE_EXTENSIONS) {
+      store.extensions.browserActions = store.extensions.browserActions.filter(
+        (action) => action.tabId !== id,
+      );
+    }
     this.recentlyActiveTabIds = this.recentlyActiveTabIds.filter(
       (tabId) => tabId !== id,
     );
@@ -993,10 +1169,46 @@ export class TabsStore {
 
   @action
   public updateTabsBounds(animation: boolean) {
+    logTabLayout('updateTabsBounds', {
+      animation,
+      immersive: isImmersiveHeaderWindow(),
+      tabs: this.list.map((tab) => ({
+        id: tab.id,
+        width: Math.round(tab.width),
+        left: Math.round(tab.left),
+        closing: tab.isClosing,
+        pinned: tab.isPinned,
+      })),
+      containerWidth: Math.round(this.containerWidth),
+      removedTabs: this.removedTabs,
+    });
     // 沉浸悬浮头部本身直接显隐，内部标签布局也必须瞬时落位；否则 resize / mouseleave
     // 触发的重算会用 anime.js 改变 width/translateX，看起来像头部横向缩放。
     if (isImmersiveHeaderWindow()) animation = false;
 
+    // During titlebar/immersive remounts the container can briefly be absent
+    // or have zero width. Do not calculate rows against a fake 1px canvas, but
+    // also do not leave newly mounted tabs at width 0 when no resize event is
+    // emitted after the remount.
+    if (!this.containerRef.current || this.containerWidth <= 0) {
+      if (!this.layoutRetryFrame) {
+        this.layoutRetryFrame = requestAnimationFrame(() => {
+          this.layoutRetryFrame = 0;
+          if (this.containerRef.current && this.containerWidth > 0) {
+            this.updateTabsBounds(false);
+          }
+        });
+      }
+      return;
+    }
+    if (this.layoutRetryFrame) {
+      cancelAnimationFrame(this.layoutRetryFrame);
+      this.layoutRetryFrame = 0;
+    }
+
+    this.measureFullRowInset();
+    this.measureRowGeometry();
+    this.updateTopTabRowLayout();
     this.calculateTabMargins();
     this.setTabsWidths(animation);
     // setTabGroupsLefts 已并入 setTabsLefts:芯片本体即 slot 元素,在那里定位。
@@ -1047,10 +1259,304 @@ export class TabsStore {
     return Math.min(w, CHIP_MAX_WIDTH);
   }
 
+  // 多行「独立成栏」:配置了多行的顶部默认布局下,第 0 行留在品牌块与工具箱之间,
+  // 第 1 行起占满整条标题栏宽度(填补品牌块下方与窗口控制下方的空白)。
+  // 按「配置」而非「实际行数」判定,避免行数与容器宽度互相依赖。
+  public get fullWidthRows(): boolean {
+    return (
+      !store.isSidebar &&
+      !store.isCompact &&
+      (store.settings.object.topTabRows || 1) > 1
+    );
+  }
+
+  // 测量 StyledTabbar 相对标题栏内容区的左右外扩量(写入 fullRowInset 供 CSS)。
+  public measureFullRowInset() {
+    const bar = this.tabbarRef.current;
+    const titlebar = bar?.parentElement;
+    let next = { left: 0, right: 0 };
+    if (bar && titlebar && this.fullWidthRows) {
+      const b = bar.getBoundingClientRect();
+      const tb = titlebar.getBoundingClientRect();
+      const pad = parseFloat(getComputedStyle(titlebar).paddingLeft) || 0;
+      next = {
+        left: Math.max(0, Math.round(b.left - tb.left - pad)),
+        right: Math.max(0, Math.round(tb.right - b.right)),
+      };
+    }
+    const cur = this.fullRowInset;
+    if (cur.left !== next.left || cur.right !== next.right) {
+      runInAction(() => {
+        this.fullRowInset = next;
+      });
+    }
+  }
+
+  // 读取第 0 行几何:起点 = StyledTabbar 左缘,终点 = 工具箱左缘(均换算到容器坐标)。
+  private measureRowGeometry() {
+    const container = this.containerRef.current;
+    const bar = this.tabbarRef.current;
+    if (!this.fullWidthRows || !container || !bar) {
+      this.firstRowLeft = 0;
+      this.firstRowWidth = this.containerWidth;
+      return;
+    }
+    const c = container.getBoundingClientRect();
+    const b = bar.getBoundingClientRect();
+    const endEl = this.tabbarEndRef.current;
+    const right = endEl ? endEl.getBoundingClientRect().left : b.right;
+    this.firstRowLeft = Math.max(0, b.left - c.left);
+    this.firstRowWidth = Math.max(
+      1,
+      Math.min(this.containerWidth - this.firstRowLeft, right - b.left),
+    );
+  }
+
+  public getRowLeft(row: number): number {
+    return row === 0 ? this.firstRowLeft : 0;
+  }
+
+  public getRowWidth(row: number): number {
+    if (!this.fullWidthRows) return this.containerWidth;
+    if (row === 0) return this.firstRowWidth || this.containerWidth;
+    // 整行栏右侧与标题栏左内边距对称留 4px,不贴窗口边缘。
+    return Math.max(1, this.containerWidth - FULL_ROW_END_GAP);
+  }
+
+  public get tabRowPitch(): number {
+    if (this.topTabRowsUsed > 1) {
+      // 多行:表面高度 + 行间距(标签自身不带顶部留白)
+      return (
+        store.tabSurfaceHeight + TAB_ROW_GAP
+      );
+    }
+    return store.isCompact ? COMPACT_TAB_ROW_PITCH : DEFAULT_TAB_ROW_PITCH;
+  }
+
+  private getSlotKey(
+    slot: { kind: 'tab'; tab: ITab } | { kind: 'group'; group: ITabGroup },
+  ): ITab | ITabGroup {
+    return slot.kind === 'group' ? slot.group : slot.tab;
+  }
+
+  public getSlotRow(
+    slot: { kind: 'tab'; tab: ITab } | { kind: 'group'; group: ITabGroup },
+  ): number {
+    return this.slotRows.get(this.getSlotKey(slot)) || 0;
+  }
+
+  private updateTopTabRowLayout(slots = this.getSlots()) {
+    const configuredRows = store.isSidebar
+      ? 1
+      : store.settings.object.topTabRows || 1;
+    const shrinkTabs =
+      store.settings.object.tabOverflowBehavior === 'shrink';
+    const slotPadding = shrinkTabs ? 0 : TABS_PADDING;
+    const slotGap = CHIP_SLOT_MARGIN;
+    const availableWidth = Math.max(1, this.getRowWidth(1) + slotGap);
+    const firstRowWidth = Math.max(1, this.getRowWidth(0) + slotGap);
+    const layoutContext = [
+      store.isSidebar ? 'sidebar' : 'top',
+      store.isCompact ? 'compact' : 'default',
+      configuredRows,
+      store.settings.object.tabOverflowBehavior,
+    ].join(':');
+    const preserveRows =
+      layoutContext === this.topTabLayoutContext &&
+      Math.abs(availableWidth - this.topTabLayoutCapacity) <= 1 &&
+      Math.abs(firstRowWidth - this.topTabLayoutFirstCapacity) <= 1;
+    const preferredFootprints = slots.map((slot) => {
+      const width =
+        slot.kind === 'group'
+          ? this.computeChipWidth(slot.group)
+          : slot.tab.isPinned
+          ? TAB_PINNED_WIDTH
+          : shrinkTabs
+          ? TAB_WRAP_WIDTH
+          : TAB_MIN_WIDTH;
+      // Count one gap on every slot and add one gap to the row capacity. This
+      // is equivalent to gaps only between slots, including after wrapping.
+      return width + slotPadding + slotGap;
+    });
+    const minimumFootprints = slots.map((slot) => {
+      if (!shrinkTabs) return 0;
+      const width =
+        slot.kind === 'group'
+          ? slot.group.isPinned
+            ? this.computeChipWidth(slot.group)
+            : Math.min(TAB_MIN_WIDTH, this.computeChipWidth(slot.group))
+          : slot.tab.isPinned
+          ? TAB_PINNED_WIDTH
+          : TAB_MIN_WIDTH;
+      return width + slotGap;
+    });
+    const previousRows = slots.map((slot) => {
+      if (!preserveRows) return undefined;
+      const key = this.getSlotKey(slot);
+      return this.slotRows.has(key) ? this.slotRows.get(key) : undefined;
+    });
+    const layout = calculateTopTabRows(
+      preferredFootprints,
+      availableWidth,
+      configuredRows,
+      {
+        previousRows,
+        minimumFootprints,
+        avoidOrphanLastRow: shrinkTabs,
+        firstRowWidth,
+      },
+    );
+    this.topTabLayoutContext = layoutContext;
+    this.topTabLayoutCapacity = availableWidth;
+    this.topTabLayoutFirstCapacity = firstRowWidth;
+    this.slotRows.clear();
+    slots.forEach((slot, index) => {
+      this.slotRows.set(this.getSlotKey(slot), layout.rowByIndex[index] || 0);
+    });
+    this.topTabRowsUsed = layout.rows;
+  }
+
+  private getRows(slots = this.getSlots()) {
+    const rows: Array<typeof slots> = Array.from(
+      { length: this.topTabRowsUsed },
+      () => [],
+    );
+    for (const slot of slots) rows[this.getSlotRow(slot)].push(slot);
+    return rows;
+  }
+
+  public getTabTargetLeft(tab: ITab, refreshLayout = false): number {
+    const slots = this.getSlots();
+    if (refreshLayout) {
+      this.measureRowGeometry();
+      this.updateTopTabRowLayout(slots);
+      this.calculateTabMargins();
+    }
+    const target = slots.find((slot) =>
+      slot.kind === 'tab'
+        ? slot.tab === tab
+        : slot.group.tabs.some((member) => member === tab),
+    );
+    if (!target) return tab.left;
+    const row = this.getSlotRow(target);
+    let left = this.getRowLeft(row);
+    let index = 0;
+    for (const slot of slots) {
+      if (this.getSlotRow(slot) !== row) continue;
+      left += index === 0 ? 0 : this.slotMargin;
+      if (slot === target) return left;
+      left +=
+        (slot.kind === 'group' ? slot.group.width : slot.tab.width) +
+        this.slotPadding;
+      index++;
+    }
+    return left;
+  }
+
+  public getTabTargetTop(tab: ITab, refreshLayout = false): number {
+    const slots = this.getSlots();
+    if (refreshLayout) this.updateTopTabRowLayout(slots);
+    const target = slots.find((slot) =>
+      slot.kind === 'tab'
+        ? slot.tab === tab
+        : slot.group.tabs.some((member) => member === tab),
+    );
+    if (!target) return tab.top;
+    return this.getSlotRow(target) * this.tabRowPitch;
+  }
+
+  // 第 0 行标签的顶部偏移(与 Tab/style 的 tabsBlockTop 一致),
+  // 指针 clientY 换算成行坐标前须先减去它。
+  private getTabsBlockOffset(): number {
+    return Math.max(0, (store.titlebarBaseHeight - store.tabSurfaceHeight) / 2);
+  }
+
+  private getPointerInsertion(
+    clientX: number,
+    clientY: number,
+    excluded?: ITab | ITabGroup,
+  ) {
+    const container = this.containerRef.current;
+    if (!container) return null;
+    const rect = container.getBoundingClientRect();
+    const contentX = clientX - rect.left + container.scrollLeft;
+    const contentY = clientY - rect.top - this.getTabsBlockOffset();
+    const rowIndex = Math.max(
+      0,
+      Math.min(
+        this.topTabRowsUsed - 1,
+        Math.floor(Math.max(0, contentY) / this.tabRowPitch),
+      ),
+    );
+    const row = this.getRows()[rowIndex].filter(
+      (slot) => this.getSlotKey(slot) !== excluded,
+    );
+    if (row.length === 0) return null;
+    for (const slot of row) {
+      const left = slot.kind === 'group' ? slot.group.left : slot.tab.left;
+      const width = slot.kind === 'group' ? slot.group.width : slot.tab.width;
+      if (contentX < left + width / 2) return { slot, before: true };
+    }
+    return { slot: row[row.length - 1], before: false };
+  }
+
+  private reorderTopTabAtPoint(tab: ITab, clientX: number, clientY: number) {
+    const insertion = this.getPointerInsertion(clientX, clientY, tab);
+    if (!insertion || insertion.slot.kind !== 'tab') return;
+    const anchor = insertion.slot.tab;
+    if (anchor === tab) return;
+    if (this.isTabInPinnedZone(tab) !== this.isTabInPinnedZone(anchor)) return;
+
+    const currentIndex = this.list.indexOf(tab);
+    const anchorIndex = this.list.indexOf(anchor);
+    if (currentIndex === -1 || anchorIndex === -1) return;
+    // A group is one indivisible chip in the top strip.  Do not let a
+    // two-dimensional pointer jump a standalone tab across its members; the
+    // old one-dimensional neighbour guard stopped at this boundary.
+    const start = Math.min(currentIndex, anchorIndex);
+    const end = Math.max(currentIndex, anchorIndex);
+    if (
+      this.list
+        .slice(start + 1, end)
+        .some((candidate) => !candidate.isClosing && candidate.tabGroupId !== -1)
+    ) {
+      return;
+    }
+    const alreadyThere = insertion.before
+      ? currentIndex === anchorIndex - 1
+      : currentIndex === anchorIndex + 1;
+    if (!alreadyThere) this.moveTabNextTo(tab, anchor, insertion.before);
+  }
+
+  private reorderTopGroupAtPoint(
+    group: ITabGroup,
+    clientX: number,
+    clientY: number,
+  ) {
+    const insertion = this.getPointerInsertion(clientX, clientY, group);
+    if (!insertion || !this.canGroupCrossSlot(group, insertion.slot)) return;
+    const slots = this.getSlots();
+    const groupIndex = slots.findIndex(
+      (slot) => slot.kind === 'group' && slot.group === group,
+    );
+    const targetIndex = slots.indexOf(insertion.slot);
+    if (
+      groupIndex === -1 ||
+      targetIndex === -1 ||
+      (insertion.before && groupIndex === targetIndex - 1) ||
+      (!insertion.before && groupIndex === targetIndex + 1)
+    ) {
+      return;
+    }
+    this.moveGroupNextToSlot(group, insertion.slot, insertion.before);
+  }
+
   @action
   public calculateTabMargins() {
     const slots = this.getSlots();
-    const gapCount = Math.max(0, slots.length - 1);
+    const rows = this.getRows(slots);
+    const maxSlotsInRow = Math.max(0, ...rows.map((row) => row.length));
+    const gapCount = Math.max(0, maxSlotsInRow - 1);
     const shrinkTabs = store.settings.object.tabOverflowBehavior === 'shrink';
 
     if (shrinkTabs) {
@@ -1058,12 +1564,12 @@ export class TabsStore {
       // 标签增多后只使用不挤占 36px 图标态宽度的剩余空间，间距会自然降到 0。
       const availableWidth = Math.max(
         0,
-        this.containerWidth - ADD_TAB_BUTTON_WIDTH - 6,
+        this.getRowWidth(0) - ADD_TAB_BUTTON_WIDTH - 6,
       );
       const iconOnlyWidth = 36;
       const affordableMargin =
         gapCount > 0
-          ? (availableWidth - slots.length * iconOnlyWidth) / gapCount
+          ? (availableWidth - maxSlotsInRow * iconOnlyWidth) / gapCount
           : CHIP_SLOT_MARGIN;
       this.slotMargin = Math.max(
         0,
@@ -1082,161 +1588,189 @@ export class TabsStore {
   @action
   public setTabsWidths(animation: boolean) {
     const slots = this.getSlots();
-    const containerWidth = this.containerWidth;
     const shrinkTabs = store.settings.object.tabOverflowBehavior === 'shrink';
     let scrollable = false;
-
-    // Pass A:先解析标签组的理想宽度。滚动模式保持原来的固定芯片宽度；持续
-    // 缩小模式仅在固定标签和标签组本身已经塞不下时才按比例压缩它们。
-    const chipWidths = new Map<number, number>();
-    let chipWidthsTotal = 0;
-    for (const slot of slots) {
-      if (slot.kind === 'group') {
-        const w = this.computeChipWidth(slot.group);
-        chipWidths.set(slot.group.id, w);
-        chipWidthsTotal += w + this.slotPadding;
-        if (!shrinkTabs && w >= CHIP_MAX_WIDTH) scrollable = true;
-      }
+    const rows = this.getRows(slots);
+    const closingSlotsByRow = new Map<number, number>();
+    const reservedRows = this.removedTabRows.slice(-this.removedTabs);
+    for (const originalRow of reservedRows) {
+      const row = Math.max(0, Math.min(rows.length - 1, originalRow));
+      closingSlotsByRow.set(row, (closingSlotsByRow.get(row) || 0) + 1);
     }
-
-    // Pass B:普通固定项优先保留宽度；非固定标签组与普通标签作为同级槽位，
-    // 平分剩余空间。这样持续缩小时，标签组不会一直挤占固定宽度。
-    const pinnedSlots = slots.filter(
-      (s) => s.kind === 'tab' && s.tab.isPinned,
-    ).length;
-    const pinnedWidthsTotal =
-      pinnedSlots * (TAB_PINNED_WIDTH + this.slotPadding);
-    const pinnedGroupWidthsTotal = slots.reduce(
-      (sum, slot) =>
-        slot.kind === 'group' && slot.group.isPinned
-          ? sum + (chipWidths.get(slot.group.id) || 0)
-          : sum,
-      0,
-    );
-    const flexibleSlots =
-      slots.filter(
-        (s) =>
-          (s.kind === 'tab' && !s.tab.isPinned) ||
-          (s.kind === 'group' && !s.group.isPinned),
-      ).length + this.removedTabs;
 
     if (shrinkTabs) {
       this.scrollingToEnd = false;
       if (this.containerRef.current?.scrollLeft) {
         this.containerRef.current.scrollLeft = 0;
       }
+    }
 
-      const fixedPreferred =
-        pinnedSlots * TAB_PINNED_WIDTH + pinnedGroupWidthsTotal;
-      const slotPadding = (slots.length + this.removedTabs) * this.slotPadding;
-      const widthCapacity = Math.max(
-        0,
-        containerWidth -
-          ADD_TAB_BUTTON_WIDTH -
-          6 -
-          this.leftMargins -
-          slotPadding,
-      );
-      const fixedScale =
-        fixedPreferred > widthCapacity && fixedPreferred > 0
-          ? widthCapacity / fixedPreferred
-          : 1;
-      const remainingWidth = Math.max(
-        0,
-        widthCapacity - fixedPreferred * fixedScale,
-      );
-      const sharedWidth =
-        flexibleSlots > 0
-          ? Math.min(TAB_MAX_WIDTH, remainingWidth / flexibleSlots)
-          : TAB_MAX_WIDTH;
+    rows.forEach((row, rowIndex) => {
+      const containerWidth = this.getRowWidth(rowIndex);
+      const chipWidths = new Map<number, number>();
+      let chipWidthsTotal = 0;
+      for (const slot of row) {
+        if (slot.kind !== 'group') continue;
+        const width = this.computeChipWidth(slot.group);
+        chipWidths.set(slot.group.id, width);
+        chipWidthsTotal += width + this.slotPadding;
+        if (!shrinkTabs && width >= CHIP_MAX_WIDTH) scrollable = true;
+      }
 
-      for (const slot of slots) {
+      const pinnedTabs = row.filter(
+        (slot) => slot.kind === 'tab' && slot.tab.isPinned,
+      ).length;
+      const pinnedTabsWidth =
+        pinnedTabs * (TAB_PINNED_WIDTH + this.slotPadding);
+      const pinnedGroupWidth = row.reduce(
+        (sum, slot) =>
+          slot.kind === 'group' && slot.group.isPinned
+            ? sum + (chipWidths.get(slot.group.id) || 0)
+            : sum,
+        0,
+      );
+      const rowMargins = Math.max(0, row.length - 1) * this.slotMargin;
+      // Closing tabs remain mounted at their original row for the exit
+      // animation. Reserve their width in that row, rather than moving every
+      // closing slot's denominator to the final row.
+      const closingSlots = closingSlotsByRow.get(rowIndex) || 0;
+      const addTabReserve =
+        rowIndex === rows.length - 1 ? ADD_TAB_BUTTON_WIDTH + 6 : 0;
+
+      if (shrinkTabs) {
+        const flexibleSlots =
+          row.filter(
+            (slot) =>
+              (slot.kind === 'tab' && !slot.tab.isPinned) ||
+              (slot.kind === 'group' && !slot.group.isPinned),
+          ).length + closingSlots;
+        const fixedPreferred = pinnedTabs * TAB_PINNED_WIDTH + pinnedGroupWidth;
+        const widthCapacity = Math.max(
+          0,
+          containerWidth -
+            addTabReserve -
+            rowMargins -
+            (row.length + closingSlots) * this.slotPadding,
+        );
+        const fixedScale =
+          fixedPreferred > widthCapacity && fixedPreferred > 0
+            ? widthCapacity / fixedPreferred
+            : 1;
+        const sharedWidth =
+          flexibleSlots > 0
+            ? Math.min(
+                TAB_MAX_WIDTH,
+                Math.max(0, widthCapacity - fixedPreferred * fixedScale) /
+                  flexibleSlots,
+              )
+            : TAB_MAX_WIDTH;
+
+        for (const slot of row) {
+          if (slot.kind === 'group') {
+            slot.group.setWidth(
+              slot.group.isPinned
+                ? (chipWidths.get(slot.group.id) || 0) * fixedScale
+                : sharedWidth,
+              animation,
+            );
+          } else {
+            slot.tab.setWidth(
+              slot.tab.isPinned ? TAB_PINNED_WIDTH * fixedScale : sharedWidth,
+              animation,
+            );
+          }
+        }
+        return;
+      }
+
+      const shareTabs =
+        row.filter((slot) => slot.kind === 'tab' && !slot.tab.isPinned)
+          .length + closingSlots;
+      const reserved =
+        addTabReserve +
+        pinnedTabsWidth +
+        chipWidthsTotal +
+        rowMargins;
+
+      for (const slot of row) {
         if (slot.kind === 'group') {
-          slot.group.setWidth(
-            slot.group.isPinned
-              ? (chipWidths.get(slot.group.id) || 0) * fixedScale
-              : sharedWidth,
-            animation,
-          );
+          slot.group.setWidth(chipWidths.get(slot.group.id) || 0, animation);
           continue;
         }
-        slot.tab.setWidth(
-          slot.tab.isPinned ? TAB_PINNED_WIDTH * fixedScale : sharedWidth,
-          animation,
-        );
+        const tab = slot.tab;
+        let width = TAB_MAX_WIDTH;
+        if (tab.isPinned) width = TAB_PINNED_WIDTH;
+        else if (shareTabs > 0) {
+          width = (containerWidth - reserved) / shareTabs - this.slotPadding;
+          width = Math.max(TAB_MIN_WIDTH, Math.min(TAB_MAX_WIDTH, width));
+        }
+        tab.setWidth(width, animation);
+        if (!tab.isPinned && width <= TAB_MIN_WIDTH) scrollable = true;
       }
+    });
 
-      this.scrollable = false;
-      return;
-    }
-
-    const shareTabs =
-      slots.filter((s) => s.kind === 'tab' && !s.tab.isPinned).length +
-      this.removedTabs;
-
-    for (const slot of slots) {
-      if (slot.kind === 'group') {
-        slot.group.setWidth(chipWidths.get(slot.group.id) || 0, animation);
-      }
-    }
-
-    const reserved =
-      ADD_TAB_BUTTON_WIDTH +
-      6 +
-      pinnedWidthsTotal +
-      chipWidthsTotal +
-      this.leftMargins;
-
-    for (const slot of slots) {
-      if (slot.kind !== 'tab') continue;
-      const tab = slot.tab;
-      let width: number;
-      if (tab.isPinned) {
-        width = TAB_PINNED_WIDTH;
-      } else if (shareTabs > 0) {
-        width = (containerWidth - reserved) / shareTabs - this.slotPadding;
-        if (width > TAB_MAX_WIDTH) width = TAB_MAX_WIDTH;
-        if (width < TAB_MIN_WIDTH) width = TAB_MIN_WIDTH;
-      } else {
-        width = TAB_MAX_WIDTH;
-      }
-      tab.setWidth(width, animation);
-      if (!tab.isPinned && width <= TAB_MIN_WIDTH) scrollable = true;
-    }
-
-    this.scrollable = scrollable;
+    this.scrollable = shrinkTabs ? false : scrollable;
   }
 
   @action
   public setTabsLefts(animation: boolean) {
     const slots = this.getSlots();
     const { containerWidth } = store.tabs;
+    const rows = this.getRows(slots);
+    let maxRight = 0;
+    let lastLeft = 0;
+    let lastRow = 0;
 
-    let left = 0;
-
-    for (let i = 0; i < slots.length; i++) {
-      const slot = slots[i];
-      // 首个 slot 无左间距,其余按 CHIP_SLOT_MARGIN。
-      left += i === 0 ? 0 : this.slotMargin;
-
-      if (slot.kind === 'group') {
-        // 正在拖动的芯片由指针直接定位；这里只动画其余槽位让位。
-        if (slot.group.id !== this.draggingGroupId) {
-          slot.group.setLeft(left, animation);
+    rows.forEach((row, rowIndex) => {
+      let left = this.getRowLeft(rowIndex);
+      const top = rowIndex * this.tabRowPitch;
+      row.forEach((slot, index) => {
+        left += index === 0 ? 0 : this.slotMargin;
+        if (slot.kind === 'group') {
+          if (slot.group.id !== this.draggingGroupId) {
+            slot.group.setPosition(left, top, animation);
+          }
+        } else if (!slot.tab.isDragging) {
+          slot.tab.setPosition(left, top, animation);
         }
-      } else if (!slot.tab.isDragging) {
-        slot.tab.setLeft(left, animation);
+        left +=
+          (slot.kind === 'group' ? slot.group.width : slot.tab.width) +
+          this.slotPadding;
+      });
+      maxRight = Math.max(maxRight, left);
+      if (rowIndex === rows.length - 1) {
+        lastLeft = left;
+        lastRow = rowIndex;
       }
+    });
 
-      left +=
-        (slot.kind === 'group' ? slot.group.width : slot.tab.width) +
-        this.slotPadding;
-    }
-
-    store.addTab.setLeft(
-      Math.min(left, Math.max(0, containerWidth - ADD_TAB_BUTTON_WIDTH)),
+    // Width calculation reserves the button plus a 6px trailing gap. Use the
+    // same boundary here so a wide final row cannot push the button into the
+    // fixed controls at the end of the tab bar.
+    const visibleRight = Math.max(
+      0,
+      this.getRowLeft(lastRow) +
+        this.getRowWidth(lastRow) -
+        ADD_TAB_BUTTON_WIDTH -
+        6,
+    );
+    // 「+」按钮定位在 StyledTabbar 坐标系;独立成栏时容器左移了 fullRowInset.left。
+    const addTabOffset = this.fullWidthRows ? this.fullRowInset.left : 0;
+    store.addTab.setPosition(
+      Math.min(lastLeft, visibleRight) - addTabOffset,
+      lastRow * this.tabRowPitch,
       animation,
     );
+    this.scrollContentWidth = Math.max(
+      containerWidth,
+      maxRight + ADD_TAB_BUTTON_WIDTH + 6,
+    );
+    if (
+      store.settings.object.tabOverflowBehavior === 'scroll' &&
+      this.scrollContentWidth > containerWidth + 1
+    ) {
+      this.scrollable = true;
+    }
   }
 
   // 取消分组:解散整组——所有成员变回散落标签,组记录从内存与持久层移除。
@@ -1254,13 +1788,13 @@ export class TabsStore {
     // 成员此前在芯片内,无独立 <Tab> DOM;解散后它们才作为 slot 挂载。同步调
     // updateTabsBounds 时 ref 还是 null → animateTab 失效 → 标签停在 StyledTab
     // 默认的 width:0(表现为原组位置一片空白,直到下次新建标签才补上)。延迟到
-    // rAF:先 snap 到目标位(无动画,避免从 0 滑入),再 updateTabsBounds 动画其余。
+    // rAF:先完成布局，再把新挂载成员从默认位置无动画吸附到计算结果。
     requestAnimationFrame(() => {
-      for (const t of members) {
-        t.setLeft(t.getLeft(), false);
-        t.setWidth(t.getWidth(), false);
-      }
       this.updateTabsBounds(true);
+      for (const t of members) {
+        t.setPosition(t.left, t.top, false);
+        t.setWidth(t.width, false);
+      }
     });
   }
 
@@ -1338,6 +1872,21 @@ export class TabsStore {
     }
 
     this.updateTabsBounds(true);
+  }
+
+  @action
+  public moveTabToIndex(id: number, index: number) {
+    const tab = this.getTabById(id);
+    if (!tab) return;
+    const list = [...this.list];
+    const from = list.indexOf(tab);
+    if (from === -1) return;
+    list.splice(from, 1);
+    const to = Math.max(0, Math.min(Number(index) || 0, list.length));
+    list.splice(to, 0, tab);
+    this.list = list;
+    this.updateTabsBounds(true);
+    tab.updateData();
   }
 
   // 把 tab 移到 anchor 之前(before=true)或之后。用于悬停弹窗/侧栏内组内重排、
@@ -1749,7 +2298,7 @@ export class TabsStore {
   }
 
   @action
-  public beginGroupDrag(group: ITabGroup, pageX: number) {
+  public beginGroupDrag(group: ITabGroup, pageX: number, pageY: number) {
     if (!group || group.tabs.length === 0 || !this.containerRef.current) return;
 
     this.draggingGroupId = group.id;
@@ -1757,7 +2306,9 @@ export class TabsStore {
     this.lastMouseX = 0;
     this.isDragging = true;
     this.mouseStartX = pageX;
+    this.mouseStartY = pageY;
     this.tabStartX = group.left;
+    this.tabStartY = group.top;
     this.lastScrollLeft = this.containerRef.current.scrollLeft;
     this.pendingGroupDropId = -1;
     this.hideGroupPreview();
@@ -1859,12 +2410,18 @@ export class TabsStore {
     }
 
     const center = callingTab.left + callingTab.width / 2;
+    const centerY = callingTab.top + this.tabRowPitch / 2;
     let target = -1;
 
     for (const slot of this.getSlots()) {
       if (slot.kind !== 'group') continue;
       const g = slot.group;
-      if (center >= g.left && center <= g.left + g.width) {
+      if (
+        center >= g.left &&
+        center <= g.left + g.width &&
+        centerY >= g.top &&
+        centerY <= g.top + this.tabRowPitch
+      ) {
         target = g.id;
         break;
       }
@@ -1904,6 +2461,7 @@ export class TabsStore {
     }
 
     const selectedTab = this.selectedTab;
+    const didDragSelectedTab = !!selectedTab?.isDragging;
 
     // 标签页拖到书签栏（或书签栏中的文件夹）时直接收藏。顶部标签拖拽使用
     // mousemove/mouseup，因此要在“拖出标签栏后撕离成窗口”之前抢先处理。
@@ -1948,6 +2506,7 @@ export class TabsStore {
           favicon: tab.favicon,
           pinned: tab.isPinned,
           incognito: tab.incognito,
+          thumbKey: tab.thumbKey,
         },
       });
 
@@ -1990,11 +2549,23 @@ export class TabsStore {
       return;
     }
 
-    if (isImmersiveHeaderWindow() && selectedTab) {
-      ipcRenderer.send(`immersive-header-cmd-${store.windowId}`, {
-        type: 'reorder',
-        order: this.list.map((tab) => tab.id),
-      });
+    if (isImmersiveHeaderWindow()) {
+      if (process.env.DEBUG_IMMERSIVE_HEADER === '1') {
+        ipcRenderer.send(`immersive-tab-trace-${store.windowId}`, {
+          role: 'mirror',
+          phase: 'mouse-up',
+          selectedTabId: selectedTab?.id,
+          didDragSelectedTab,
+          reorderSent: !!selectedTab && didDragSelectedTab,
+          tabIds: this.list.map((tab) => tab.id),
+        });
+      }
+      if (selectedTab && didDragSelectedTab) {
+        ipcRenderer.send(`immersive-header-cmd-${store.windowId}`, {
+          type: 'reorder',
+          order: this.list.map((tab) => tab.id),
+        });
+      }
     }
     this.updateTabsBounds(true);
   };
@@ -2005,12 +2576,19 @@ export class TabsStore {
 
     if (this.isDragging) {
       const container = this.containerRef;
-      const { tabStartX, mouseStartX, lastMouseX, lastScrollLeft } = store.tabs;
+      const {
+        tabStartX,
+        tabStartY,
+        mouseStartX,
+        mouseStartY,
+        lastMouseX,
+        lastScrollLeft,
+      } = store.tabs;
 
       if (!container.current) return;
       const boundingRect = container.current.getBoundingClientRect();
 
-      if (Math.abs(e.pageX - mouseStartX) < 5) {
+      if (Math.hypot(e.pageX - mouseStartX, e.pageY - mouseStartY) < 5) {
         return;
       }
 
@@ -2035,7 +2613,21 @@ export class TabsStore {
           group.width -
           this.slotPadding +
           20;
-        group.setLeft(Math.max(0, Math.min(newLeft, maxLeft)), false);
+        const newTop = tabStartY + e.pageY - mouseStartY;
+        group.setPosition(
+          Math.max(0, Math.min(newLeft, maxLeft)),
+          Math.max(
+            0,
+            Math.min(newTop, (this.topTabRowsUsed - 1) * this.tabRowPitch),
+          ),
+          false,
+        );
+
+        if (this.topTabRowsUsed > 1) {
+          this.reorderTopGroupAtPoint(group, e.clientX, e.clientY);
+          this.lastMouseX = e.pageX;
+          return;
+        }
 
         const direction =
           lastMouseX === 0
@@ -2057,10 +2649,10 @@ export class TabsStore {
       // 侧边栏布局几何不同,v1 仅在顶部标签栏启用撕离。
       const tornOut =
         !store.isSidebar &&
-        (e.pageY > TOOLBAR_HEIGHT + 32 ||
-          e.pageY < -24 ||
-          e.pageX < boundingRect.left - 40 ||
-          e.pageX > boundingRect.right + 40);
+        (e.clientY > boundingRect.bottom + 32 ||
+          e.clientY < boundingRect.top - 24 ||
+          e.clientX < boundingRect.left - 40 ||
+          e.clientX > boundingRect.right + 40);
 
       if (tornOut) {
         if (!this.isTearing) {
@@ -2109,12 +2701,24 @@ export class TabsStore {
           20;
       }
 
-      selectedTab.setLeft(left, false);
-
-      this.getTabsToReplace(
-        selectedTab,
-        lastMouseX - e.pageX >= 1 ? 'left' : 'right',
+      const newTop = tabStartY + e.pageY - mouseStartY;
+      selectedTab.setPosition(
+        left,
+        Math.max(
+          0,
+          Math.min(newTop, (this.topTabRowsUsed - 1) * this.tabRowPitch),
+        ),
+        false,
       );
+
+      if (this.topTabRowsUsed > 1) {
+        this.reorderTopTabAtPoint(selectedTab, e.clientX, e.clientY);
+      } else {
+        this.getTabsToReplace(
+          selectedTab,
+          lastMouseX - e.pageX >= 1 ? 'left' : 'right',
+        );
+      }
 
       // 高亮当前悬停到的组芯片(不合入),松手时再确认。
       this.updatePendingGroupDrop(selectedTab);
@@ -2131,11 +2735,13 @@ export class TabsStore {
   // 标签插到固定标签左侧)。
   public computeLinkDrop(
     clientX: number,
-  ): { listIndex: number; indicatorLeft: number } | null {
+    clientY: number,
+  ): { listIndex: number; indicatorLeft: number; indicatorTop: number } | null {
     const container = this.containerRef.current;
     if (!container) return null;
     const rect = container.getBoundingClientRect();
     const contentX = clientX - rect.left + container.scrollLeft;
+    const contentY = clientY - rect.top - this.getTabsBlockOffset();
 
     const slots = this.getSlots();
     const slotLeft = (
@@ -2144,18 +2750,37 @@ export class TabsStore {
     const slotWidth = (
       s: { kind: 'tab'; tab: ITab } | { kind: 'group'; group: ITabGroup },
     ) => (s.kind === 'group' ? s.group.width : s.tab.width);
+    const slotTop = (
+      s: { kind: 'tab'; tab: ITab } | { kind: 'group'; group: ITabGroup },
+    ) => this.getSlotRow(s) * this.tabRowPitch;
 
-    // 第一个「中点在 contentX 右侧」的 slot —— 投放点应在它之前。
-    let target = slots.length;
-    for (let i = 0; i < slots.length; i++) {
-      if (contentX < slotLeft(slots[i]) + slotWidth(slots[i]) / 2) {
-        target = i;
+    const row = Math.max(
+      0,
+      Math.min(
+        this.topTabRowsUsed - 1,
+        Math.floor(Math.max(0, contentY) / this.tabRowPitch),
+      ),
+    );
+    const rowEntries = slots
+      .map((slot, index) => ({ slot, index }))
+      .filter(({ slot }) => this.getSlotRow(slot) === row);
+    if (rowEntries.length === 0) return null;
+
+    // 当前行第一个「中点在 contentX 右侧」的 slot，投放点应在它之前。
+    let localTarget = rowEntries.length;
+    for (let i = 0; i < rowEntries.length; i++) {
+      const slot = rowEntries[i].slot;
+      if (contentX < slotLeft(slot) + slotWidth(slot) / 2) {
+        localTarget = i;
         break;
       }
     }
+    let insert =
+      localTarget < rowEntries.length
+        ? rowEntries[localTarget].index
+        : rowEntries[rowEntries.length - 1].index + 1;
 
     // 越过固定 slot:非固定新标签不可落在固定标签的左侧。
-    let insert = target;
     while (insert < slots.length && slots[insert].kind === 'tab') {
       const slot = slots[insert];
       if (slot.kind !== 'tab' || !slot.tab.isPinned) break;
@@ -2169,26 +2794,29 @@ export class TabsStore {
       const listIndex = firstMember
         ? this.list.indexOf(firstMember)
         : this.list.length;
-      return { listIndex: Math.max(0, listIndex), indicatorLeft: slotLeft(s) };
+      return {
+        listIndex: Math.max(0, listIndex),
+        indicatorLeft: slotLeft(s),
+        indicatorTop: slotTop(s),
+      };
     }
 
-    // 落在所有 slot 之后:指示线放最后一条 slot 的右沿(无 slot 时放 0)。
-    let endLeft = 0;
-    if (slots.length > 0) {
-      const last = slots[slots.length - 1];
-      endLeft = slotLeft(last) + slotWidth(last);
-    }
-    return { listIndex: this.list.length, indicatorLeft: endLeft };
+    const last = rowEntries[rowEntries.length - 1].slot;
+    return {
+      listIndex: this.list.length,
+      indicatorLeft: slotLeft(last) + slotWidth(last),
+      indicatorTop: slotTop(last),
+    };
   }
 
   @action
-  public setLinkDropLeft(x: number | null) {
-    this.linkDropLeft = x;
+  public setLinkDropPosition(position: { left: number; top: number } | null) {
+    this.linkDropPosition = position;
   }
 
   @action
   public clearLinkDrop() {
-    this.linkDropLeft = null;
+    this.linkDropPosition = null;
   }
 
   // 在指定 list 索引处用网页链接新建标签(标签栏 HTML5 拖放落点)。复用 view-create
@@ -2241,6 +2869,59 @@ export class TabsStore {
     if (this.recentlyClosed.length > 50) {
       this.recentlyClosed = this.recentlyClosed.slice(0, 50);
     }
+    this.showRestoreHint();
+  }
+
+  // ===== 工具箱「恢复刚关闭」提示 =====
+  private static readonly RESTORE_HINT_MS = 3000;
+  // 悬停期间暂停倒计时;指针离开后再留一点余量才收起。
+  private static readonly RESTORE_HINT_LEAVE_MS = 800;
+
+  private scheduleRestoreHintHide(ms: number) {
+    if (this.restoreHintTimer) clearTimeout(this.restoreHintTimer);
+    this.restoreHintTimer = setTimeout(() => {
+      this.restoreHintTimer = null;
+      runInAction(() => {
+        this.restoreHintVisible = false;
+      });
+    }, ms);
+  }
+
+  @action
+  public showRestoreHint() {
+    this.restoreHintVisible = true;
+    if (this.restoreHintHeld) {
+      if (this.restoreHintTimer) clearTimeout(this.restoreHintTimer);
+      this.restoreHintTimer = null;
+      return;
+    }
+    this.scheduleRestoreHintHide(TabsStore.RESTORE_HINT_MS);
+  }
+
+  @action
+  public hideRestoreHint() {
+    if (this.restoreHintTimer) clearTimeout(this.restoreHintTimer);
+    this.restoreHintTimer = null;
+    this.restoreHintVisible = false;
+  }
+
+  // 指针悬停在按钮上时暂停倒计时,避免用户正要点时图标切回工具箱。
+  public holdRestoreHint(hold: boolean) {
+    this.restoreHintHeld = hold;
+    if (!this.restoreHintVisible) return;
+    if (hold) {
+      if (this.restoreHintTimer) clearTimeout(this.restoreHintTimer);
+      this.restoreHintTimer = null;
+    } else {
+      this.scheduleRestoreHintHide(TabsStore.RESTORE_HINT_LEAVE_MS);
+    }
+  }
+
+  // 按快照 id 恢复(历史弹窗「最近关闭」区经主进程回传)。
+  @action
+  public restoreClosedById(id: number) {
+    const entry = this.recentlyClosed.find((t) => t.id === id);
+    if (entry) this.restoreClosedTab(entry);
   }
 
   // 列表视图:30 分钟内全部(最新在前),不足 10 个则用更早的补足,最多 10。
@@ -2270,6 +2951,7 @@ export class TabsStore {
       -1,
     );
     this.recentlyClosed = this.recentlyClosed.filter((t) => t !== entry);
+    this.hideRestoreHint();
   }
 
   // 恢复最近一个(右键 / revertClosed 用)。空历史返回 false。
@@ -2278,6 +2960,7 @@ export class TabsStore {
     if (this.recentlyClosed.length === 0) return false;
     const [first, ...rest] = this.recentlyClosed;
     this.recentlyClosed = rest;
+    this.hideRestoreHint();
     this.addTab(
       {
         active: true,
@@ -2304,7 +2987,9 @@ export class TabsStore {
     const tabs = group.tabs.map((t) => ({
       id: t.id,
       title: t.title,
-      favicon: t.favicon,
+      // 与标签栏一致的图标兜底:favicon 为空(占位标签/抓取失败)时用网络图标
+      // 服务,避免弹窗行内露出默认地球。字段仅供弹窗展示,不回写模型。
+      favicon: t.favicon || (t.url ? getIconByUrlNet(t.url) : ''),
       selected: t.isSelected,
       loading: t.loading,
       discarded: t.discarded,
@@ -2446,20 +3131,230 @@ export class TabsStore {
     }
   }
 
+  // ===== 标签组总览(点击分组芯片,内容区卡片网格) =====
+  // 总览是独立 BrowserView(铺满网页内容区),展示被点分组内的每个标签页(一个标签
+  // 一张卡片),顶部可切换到其他分组。本窗口构建 payload 经主进程补缩略图后透传;
+  // 卡片内的交互经主进程回传这里执行。沉浸模式下主渲染进程与头部镜像都会收到
+  // 回传,只有打开它的那一侧(overviewVisible=true)处理,避免双执行。
+  public overviewVisible = false;
+  private overviewFocusGroupId = -1;
+
+  private buildGroupOverviewPayload() {
+    const live = this.getSlots()
+      .filter(
+        (slot): slot is { kind: 'group'; group: ITabGroup } =>
+          slot.kind === 'group',
+      )
+      .map(({ group }) => ({
+        group,
+        tabs: group.tabs.filter((t) => !t.isClosing),
+      }))
+      .filter((entry) => entry.tabs.length > 0);
+
+    // 聚焦分组:点击的那个;它被解散/关空后退回含当前标签的分组,再退回第一个。
+    const focus =
+      live.find((entry) => entry.group.id === this.overviewFocusGroupId) ||
+      live.find((entry) => entry.tabs.some((t) => t.isSelected)) ||
+      live[0];
+
+    return {
+      focusGroupId: focus ? focus.group.id : -1,
+      selectedTabId: this.selectedTabId,
+      palette: store.tabGroups.palette,
+      groups: live.map(({ group, tabs }) => ({
+        id: group.id,
+        name: group.name,
+        color: group.color,
+        pinned: group.isPinned,
+        count: tabs.length,
+        containsActive: tabs.some((t) => t.isSelected),
+      })),
+      tabs: (focus ? focus.tabs : []).map((t) => ({
+        id: t.id,
+        title: t.displayTitle || t.title,
+        url: t.url,
+        // 与芯片/悬停弹窗一致的图标兜底链,仅供展示。
+        favicon: t.favicon || (t.url ? getIconByUrlNet(t.url) : ''),
+        selected: t.isSelected,
+        loading: t.loading,
+        discarded: t.discarded,
+        // 无内存截图(未加载的占位标签等)时,主进程按它读磁盘预览图。
+        thumbKey: t.thumbKey,
+      })),
+    };
+  }
+
+  // 刷新签名:分组/标签的增删、改名改色、标题图标、选中态变化时才重发。
+  private get groupOverviewSignature() {
+    if (!this.overviewVisible) return '';
+    return JSON.stringify(this.buildGroupOverviewPayload());
+  }
+
+  @action
+  public openGroupOverview(group?: ITabGroup) {
+    this.overviewFocusGroupId = group ? group.id : -1;
+    const payload = this.buildGroupOverviewPayload();
+    if (payload.groups.length === 0) return;
+    this.hideGroupPreview();
+    this.overviewVisible = true;
+    ipcRenderer.send(`show-tabgroup-overview-${store.windowId}`, payload);
+  }
+
+  // 总览开着时点另一个分组芯片 = 切过去;点同一个 = 收起。
+  public toggleGroupOverview(group?: ITabGroup) {
+    if (!this.overviewVisible) {
+      this.openGroupOverview(group);
+    } else if (
+      group &&
+      group.id !== this.buildGroupOverviewPayload().focusGroupId
+    ) {
+      this.focusGroupOverview(group.id);
+    } else {
+      this.closeGroupOverview();
+    }
+  }
+
+  private focusGroupOverview(groupId: number) {
+    this.overviewFocusGroupId = groupId;
+    this.refreshGroupOverview();
+  }
+
+  @action
+  public closeGroupOverview() {
+    if (!this.overviewVisible) return;
+    this.overviewVisible = false;
+    ipcRenderer.send(`hide-tabgroup-overview-${store.windowId}`);
+  }
+
+  private refreshGroupOverview() {
+    if (!this.overviewVisible) return;
+    const payload = this.buildGroupOverviewPayload();
+    // 最后一个分组没了(解散/全关),总览随之收起。
+    if (payload.groups.length === 0) {
+      this.closeGroupOverview();
+      return;
+    }
+    ipcRenderer.send(`refresh-tabgroup-overview-${store.windowId}`, payload);
+  }
+
+  private setupGroupOverview() {
+    ipcRenderer.on('tabgroup-overview-action', (e, payload) => {
+      this.onOverviewAction(payload);
+    });
+    // 主进程侧收起(切标签 hideAllPersistent、Esc、点空白)后同步开关态。
+    ipcRenderer.on('tabgroup-overview-visibility', (e, visible: boolean) => {
+      if (!visible && this.overviewVisible) {
+        runInAction(() => {
+          this.overviewVisible = false;
+        });
+      }
+    });
+    reaction(
+      () => this.groupOverviewSignature,
+      (signature) => {
+        if (signature) this.refreshGroupOverview();
+      },
+      { delay: 60 },
+    );
+  }
+
+  public onOverviewAction(payload: any) {
+    if (!payload || !this.overviewVisible) return;
+    const group =
+      payload.groupId != null
+        ? store.tabGroups.getGroupById(payload.groupId)
+        : undefined;
+    const tab = payload.tabId != null ? this.getTabById(payload.tabId) : null;
+
+    switch (payload.type) {
+      case 'close-overview':
+        this.closeGroupOverview();
+        break;
+      case 'focus-group':
+        if (group) this.focusGroupOverview(group.id);
+        break;
+      case 'select-tab':
+        // select 会经 ViewManager.select → hideAllPersistent 收起总览;先本地
+        // 收起,当前标签被再次选中(主进程不重挂)时也能关掉。
+        this.closeGroupOverview();
+        tab?.select();
+        break;
+      case 'open-group': {
+        this.closeGroupOverview();
+        group?.activeTab?.select();
+        break;
+      }
+      case 'close-tab':
+        tab?.close();
+        break;
+      case 'new-tab':
+        if (group) {
+          this.closeGroupOverview();
+          void this.addTab(undefined, group.id);
+        }
+        break;
+      case 'rename':
+        if (group) store.tabGroups.rename(group.id, payload.name);
+        break;
+      case 'setcolor':
+        if (group) store.tabGroups.setColor(group.id, payload.color);
+        break;
+      case 'toggle-pin':
+        if (!group) break;
+        if (isImmersiveHeaderWindow()) {
+          ipcRenderer.send(`immersive-header-cmd-${store.windowId}`, {
+            type: 'group-pin',
+            groupId: group.id,
+            pinned: !group.isPinned,
+          });
+        } else {
+          this.setGroupPinned(group, !group.isPinned);
+        }
+        break;
+      case 'ungroup':
+        if (group) this.dissolveGroup(group);
+        break;
+      case 'close-group':
+        if (group) {
+          for (const member of [...group.tabs]) member.close();
+        }
+        break;
+      case 'group-menu':
+        if (group) {
+          import('../utils/tab-context-menu').then((m) =>
+            m.showTabGroupContextMenu(group),
+          );
+        }
+        break;
+      case 'tab-menu':
+        if (tab) {
+          import('../utils/tab-context-menu').then((m) =>
+            m.showTabContextMenu(tab),
+          );
+        }
+        break;
+    }
+  }
+
   // ===== 侧边栏缩放模式悬停浮层协调 =====
   // 缩放模式下侧边栏收成 62px 窄轨,鼠标移入窄轨时弹出这个浮层(独立 BrowserView,
   // 浮于网页之上),展示与固定模式一致的完整侧边栏。显隐/内容由本窗口经主进程驱动;
   // 浮层内交互(选中/关闭/新建/折叠分组/切回固定)经主进程回传这里执行。
   // 与标签组悬停弹窗同构。
   public panelVisible = false;
+  private panelSide: 'left' | 'right' | null = null;
   private panelHideTimer: any;
   // 原生右键菜单打开时,指针会短暂离开悬浮 BrowserView;此时不能执行自动收起。
   private sidebarPanelMenuOpen = false;
+  private sidebarPanelHovered = false;
   // 浮层内分组折叠态(按组 id)。默认展开。与顶部窄轨互不影响。
   public panelGroupCollapsed: { [gid: number]: boolean } = {};
 
-  private buildSidebarPanelPayload() {
-    const side = store.tabsLayout === 'right' ? 'right' : 'left';
+  private buildSidebarPanelPayload(sideOverride?: 'left' | 'right') {
+    const side =
+      sideOverride ||
+      this.panelSide ||
+      (store.tabsLayout === 'right' ? 'right' : 'left');
     const tabs = this.list
       .filter((t) => !t.isClosing)
       .map((t) => {
@@ -2496,6 +3391,16 @@ export class TabsStore {
     const height = window.innerHeight;
     const winW = window.innerWidth;
     const x = side === 'left' ? 0 : winW - width;
+    if (process.env.DEBUG_IMMERSIVE_HEADER === '1') {
+      console.log('[immersive-sidebar] payload', {
+        side,
+        x,
+        width,
+        windowWidth: winW,
+        sideOverride,
+        panelSide: this.panelSide,
+      });
+    }
     return {
       side,
       pinned: false,
@@ -2515,11 +3420,15 @@ export class TabsStore {
     };
   }
 
-  public openSidebarPanel() {
+  public openSidebarPanel(sideOverride?: 'left' | 'right') {
     this.cancelSidebarPanelHide();
+    this.panelSide = sideOverride || null;
     // 已可见时只取消待定收起,绝不重发 show——重发会让浮层重放滑入动画。
     // 指针在「窄轨↔浮层」边界抖动时,这一守卫避免动画反复触发。
-    if (this.panelVisible) return;
+    if (this.panelVisible) {
+      this.refreshSidebarPanel(sideOverride);
+      return;
+    }
     this.panelVisible = true;
     ipcRenderer.send(
       `show-sidebar-panel-${store.windowId}`,
@@ -2527,17 +3436,19 @@ export class TabsStore {
     );
   }
 
-  public refreshSidebarPanel() {
+  public refreshSidebarPanel(sideOverride?: 'left' | 'right') {
     if (!this.panelVisible) return;
     ipcRenderer.send(
       `refresh-sidebar-panel-${store.windowId}`,
-      this.buildSidebarPanelPayload(),
+      this.buildSidebarPanelPayload(sideOverride),
     );
   }
 
   public hideSidebarPanel() {
     if (this.sidebarPanelMenuOpen) return;
     this.panelVisible = false;
+    this.panelSide = null;
+    this.sidebarPanelHovered = false;
     ipcRenderer.send(`hide-sidebar-panel-${store.windowId}`);
   }
 

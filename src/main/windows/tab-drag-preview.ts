@@ -61,12 +61,24 @@ const ensureWindow = () => {
   return previewWin;
 };
 
+// Windows 非 100% 缩放下 setPosition 每次 DIP→像素取整会让窗口逐次变大
+// (拖动中 mousemove 高频调用,预览越拖越宽),所以每次都带固定宽高定位。
+// 注意:不要对透明无边框窗口加 setMinimumSize/setMaximumSize,会导致预览不显示。
+const placeAt = (win: BrowserWindow, screenX: number, screenY: number) => {
+  win.setBounds({
+    x: Math.round(screenX) + 12,
+    y: Math.round(screenY) + 12,
+    width: WIDTH,
+    height: HEIGHT,
+  });
+};
+
 export const setupTabDragPreview = () => {
   ipcMain.on('tab-drag-preview-show', (e, payload) => {
     const {title, favicon, screenX, screenY} = payload || {};
     const win = ensureWindow();
     win.loadURL(buildHtml(title, favicon));
-    win.setPosition(Math.round(screenX) + 12, Math.round(screenY) + 12);
+    placeAt(win, screenX, screenY);
     win.setAlwaysOnTop(true, 'screen-saver');
     win.showInactive();
   });
@@ -75,7 +87,7 @@ export const setupTabDragPreview = () => {
     if (!previewWin || previewWin.isDestroyed() || !previewWin.isVisible()) {
       return;
     }
-    previewWin.setPosition(Math.round(screenX) + 12, Math.round(screenY) + 12);
+    placeAt(previewWin, screenX, screenY);
   });
 
   ipcMain.on('tab-drag-preview-hide', () => {

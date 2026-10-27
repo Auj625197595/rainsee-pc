@@ -27,6 +27,13 @@ const ICON_MAX = (
   </svg>
 );
 
+const ICON_RESTORE = (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M8.5 8.5V6.8a2.3 2.3 0 0 1 2.3-2.3h6.4a2.3 2.3 0 0 1 2.3 2.3v6.4a2.3 2.3 0 0 1-2.3 2.3h-1.7"></path>
+    <rect x="4.5" y="8.5" width="11" height="11" rx="2.3"></rect>
+  </svg>
+);
+
 const ICON_CLOSE = (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round">
     <path d="M18 6L6 18M6 6l12 12"></path>
@@ -49,9 +56,9 @@ export const WindowControls = observer(() => {
       <ControlButton
         data-rainsee-action="window-maximize"
         onClick={onMaximizeClick}
-        title={t('shellMaximize')}
+        title={t(store.isMaximized ? 'shellRestore' : 'shellMaximize')}
       >
-        {ICON_MAX}
+        {store.isMaximized ? ICON_RESTORE : ICON_MAX}
       </ControlButton>
       <ControlButton
         data-rainsee-action="window-close"

@@ -5,6 +5,7 @@ import {
   CHIP_FAV_W,
   CHIP_ACTIVE_TITLE_W,
 } from '../../constants';
+import { tabsBlockTop, topHitExtension } from '../Tab/style';
 
 // hex 组色 → rgba(用于淡/浓基准色叠加)。
 function tint(hex: string, alpha: number): string {
@@ -17,17 +18,20 @@ function tint(hex: string, alpha: number): string {
 }
 
 // 芯片 slot 容器:由布局引擎经 transform/width 动画驱动(等同单个标签的位置)。
-// 不设 align-items(沿用默认 stretch),与普通标签 StyledTab 一致——Chip 靠
-// margin-top:tabMarginTop 下沉,与 TabContainer 处于同一水平基线。
-export const StyledTabGroup = styled.div<{ $dragging: boolean }>`
+// 与普通标签 StyledTab 共用 tabsBlockTop 原点与表面高度,处于同一水平基线。
+export const StyledTabGroup = styled.div<{ $dragging: boolean; $row: number }>`
   position: absolute;
   left: 0;
   display: flex;
-  height: 100%;
+  top: ${({ theme }: { theme: any }) => tabsBlockTop(theme)};
+  height: ${({ theme }: { theme: any }) => theme.tabSurfaceHeight}px;
   -webkit-app-region: no-drag;
   user-select: none;
   cursor: ${({ $dragging }) => ($dragging ? 'grabbing' : 'grab')};
-  z-index: ${({ $dragging }) => ($dragging ? 20 : 'auto')};
+  z-index: ${({ $dragging, $row }) => ($dragging ? 20 : $row * 2)};
+  pointer-events: auto;
+  ${({ $row, theme }: { $row: number; theme?: any }) =>
+    $row === 0 && topHitExtension(theme)};
 `;
 
 interface ChipProps {
@@ -54,11 +58,11 @@ export const Chip = styled.div`
   box-sizing: border-box;
   transition: 0.12s background-color, 0.12s box-shadow, 0.12s border-color;
   cursor: inherit;
+  pointer-events: auto;
 
   ${({ color, containsActive, pinned, dropTarget, $density, theme }: ChipProps) => css`
-    height: ${theme.isCompact ? theme.tabHeight : 34}px;
+    height: ${theme.tabSurfaceHeight}px;
     padding: 0 ${CHIP_PAD_LR * $density}px;
-    margin: ${theme.isCompact ? 'auto 0' : `${theme.tabMarginTop}px 0 4px`};
     background: ${pinned
       ? color
       : `linear-gradient(180deg, ${tint(color, 0.16)} 0%, ${tint(color, 0.08)} 100%)`};

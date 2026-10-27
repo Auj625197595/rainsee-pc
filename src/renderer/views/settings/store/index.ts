@@ -2,6 +2,7 @@ import { observable, computed, makeObservable } from 'mobx';
 import * as React from 'react';
 import { ISettings, ITheme, ISearchEngine } from '~/interfaces';
 import { AutoFillStore } from './autofill';
+import { AutofillProfilesStore } from './autofill-profiles';
 import { StartupTabsStore } from './startup-tabs';
 import { getTheme } from '~/utils/themes';
 import { DEFAULT_SETTINGS } from '~/constants';
@@ -34,6 +35,8 @@ const normalizeSettings = (settings?: Partial<ISettings>): ISettings => {
 export type SettingsSection =
   | 'appearance'
   | 'autofill'
+  | 'payment-methods'
+  | 'addresses'
   | 'address-bar'
   | 'privacy'
   | 'web-browsing'
@@ -43,16 +46,19 @@ export type SettingsSection =
   | 'shortcuts'
   | 'mouse-gestures'
   | 'selection-translate'
+  | 'image-upload'
   | 'downloads'
   | 'system'
   | 'default-browser'
   | 'search-engines'
   | 'extensions'
   | 'customize-toolbar'
+  | 'apps'
   | 'about';
 
 export class Store {
   public autoFill = new AutoFillStore();
+  public autofillProfiles = new AutofillProfilesStore();
   public startupTabs = new StartupTabsStore();
 
   public menuRef = React.createRef<HTMLDivElement>();
@@ -62,6 +68,14 @@ export class Store {
   public searchEngineInputRef = React.createRef<HTMLInputElement>();
   public searchEngineKeywordInputRef = React.createRef<HTMLInputElement>();
   public searchEngineUrlInputRef = React.createRef<HTMLInputElement>();
+  public searchEngineShortcutInputRef = React.createRef<HTMLInputElement>();
+
+  // 引擎编辑弹窗:快捷字词输入框的占位(名称首字母默认值)与校验错误。
+  @observable
+  public searchEngineShortcutPlaceholder = '';
+
+  @observable
+  public searchEngineShortcutError = '';
 
   @observable
   public menuInfo = {
@@ -93,6 +107,7 @@ export class Store {
     | 'edit-search-engine'
     | 'add-search-engine'
     | 'edit-address'
+    | 'edit-card'
     | 'edit-password'
     | 'browsing-data'
     | 'clear-on-exit'

@@ -11,10 +11,24 @@ import {
   TAB_PINNED_WIDTH,
 } from '../constants';
 import { callViewMethod } from '~/utils/view';
-import { animateTab } from '../utils/tabs';
+import { animateTab, animateTabPosition } from '../utils/tabs';
 import { getWebUIURL } from '~/common/webui';
 import { ADD_TAB_BUTTON_WIDTH } from '~/constants/design';
 import { isImmersiveHeaderWindow } from '../utils/windows';
+
+// 与主进程 services/tab-thumbnails 的 KEY_RE 保持一致(键会拼进文件路径)。
+export const isValidThumbKey = (key: unknown): key is string =>
+  typeof key === 'string' && /^[a-z0-9]{8,48}$/.test(key);
+
+const createThumbKey = () =>
+  Date.now().toString(36) +
+  Math.random().toString(36).slice(2, 10).padEnd(8, '0');
+
+const logTabLifecycle = (...args: any[]) => {
+  if (process.env.DEBUG_IMMERSIVE_HEADER === '1') {
+    console.log('[immersive-tab]', ...args);
+  }
+};
 
 export class ITab {
   // 工作区文档中的稳定键。普通窗口留空;工作区重开后用它维持标签身份。
@@ -23,6 +37,10 @@ export class ITab {
 
   public readonly viewKey = `tab-${++ITab.nextViewKey}`;
 
+  // 预览图落盘键:标签生命周期内稳定(跨重启、占位→真实 id、撕离到其它窗口都不变),
+  // 主进程按它把截图存到 userData/tab-thumbnails/,标签真正关闭时删除。
+  public thumbKey = '';
+
   public id = -1;
 
   public addressbarFocused = false;
@@ -30,6 +48,7 @@ export class ITab {
 
   public width = 0;
   public left = 0;
+  public top = 0;
 
   public lastUrl = '';
   public isClosing = false;
@@ -105,6 +124,9 @@ export class ITab {
   // 本站是否已安装为 PWA。已安装时图标呈"已安装"态(蓝色)。
   public pwaInstalled = false;
 
+  // IPTV 直播源检测结果(txt/m3u/TVBox json);非空时地址栏显示「检测到可播放链接」。
+  public iptvDetected: {format: string; count: number; truncated?: boolean} | null = null;
+
   // Computed
   public get isSelected() {
     return this.id !== -1 && store.tabs.selectedTabId === this.id;
@@ -126,6 +148,13 @@ export class ITab {
     return this.favicon !== '' || this.loading;
   }
 
+  // 页面标题缺失(加载中/页面未设 title)时的展示兜底:先用 host,避免标签栏空白。
+  public get displayTitle() {
+    if (this.title) return this.title;
+    const { hostname } = parseUrl(this.url);
+    return hostname || this.url;
+  }
+
   public constructor(
     {
       active,
@@ -135,11 +164,13 @@ export class ITab {
       title,
       favicon,
       discarded,
+      thumbKey,
     }: chrome.tabs.CreateProperties & {
       incognito?: boolean;
       title?: string;
       favicon?: string;
       discarded?: boolean;
+      thumbKey?: string;
     },
     id: number,
   ) {
@@ -147,6 +178,7 @@ export class ITab {
       // 顶部标签的关闭按钮密度取决于 width。新标签首帧宽度为 0，布局完成
       // 后必须通知 React 重渲染，否则悬停按钮会一直维持 0 宽。
       width: observable,
+      isClosing: observable,
       addressbarValue: observable,
       url: observable,
       favicon: observable,
@@ -170,10 +202,12 @@ export class ITab {
       canInstallPwa: observable,
       pwaManifest: observable,
       pwaInstalled: observable,
+      iptvDetected: observable.ref,
       isSelected: computed,
       isHovered: computed,
       isExpanded: computed,
       isIconSet: computed,
+      displayTitle: computed,
     });
 
     this.url = url;
@@ -182,6 +216,7 @@ export class ITab {
     // Either an explicitly-opened incognito tab, or any tab in an incognito
     // window.
     this.incognito = !!incognito || store.isIncognito;
+    this.thumbKey = isValidThumbKey(thumbKey) ? thumbKey : createThumbKey();
 
     // 延迟标签(内存节省):用恢复时持久化的标题/图标填充标签栏,
     // 且不显示 loading 转圈(尚未 loadURL,由主进程 materialize 后触发加载)。
@@ -224,6 +259,7 @@ export class ITab {
         tabGroupId: this.tabGroupId,
         isUserDefined: false,
         order: store.tabs.list.indexOf(this),
+        thumbKey: this.thumbKey,
       });
     }
   }
@@ -252,6 +288,10 @@ export class ITab {
   @action
   public async select() {
     if (this.isClosing) return;
+    // Active tabs schedule selection from the constructor. The tab can be
+    // closed, detached, or replaced before that frame runs; never publish an
+    // id whose model is no longer the live object in this store.
+    if (store.tabs.getTabById(this.id) !== this) return;
 
     // 沉浸悬浮头部:标签操作回传主渲染进程执行(单一数据源),本地仅乐观更新高亮。
     if (isImmersiveHeaderWindow()) {
@@ -298,6 +338,18 @@ export class ITab {
   // 悬停可只在后台恢复，也可恢复后切换到该标签。
   public async activateOnHover(switchToTab = false) {
     if (this.isClosing) return;
+    // 沉浸悬浮头部只持有标签镜像。休眠标签若在这里直接 materialize，
+    // view-create 会被主窗口当成全新的标签追加到末尾，而原占位标签仍保留。
+    // 把恢复动作交给主渲染进程，让它在真实标签对象上原位替换 id。
+    if (isImmersiveHeaderWindow()) {
+      if (switchToTab) store.tabs.selectedTabId = this.id;
+      ipcRenderer.send(`immersive-header-cmd-${store.windowId}`, {
+        type: 'activate',
+        id: this.id,
+        switchToTab,
+      });
+      return;
+    }
     if (this.discarded) {
       await store.tabs.loadDiscardedTab(this, switchToTab);
     } else if (switchToTab && !this.isSelected) {
@@ -311,9 +363,11 @@ export class ITab {
     // 组内标签无独立 strip 宽度(它们在芯片 favicon 行里)。返回最近宽度(或最小
     // 宽度)供关闭动画等路径使用,避免参与非分组标签的平分计算。
     if (this.tabGroupId !== -1) return this.width || TAB_MIN_WIDTH;
+    if (store.tabs.topTabRowsUsed > 1 && this.width > 0) return this.width;
 
     if (containerWidth === null) {
-      containerWidth = store.tabs.containerWidth;
+      // 独立成栏模式下容器横跨整条标题栏,单行时标签只占第 0 行宽度。
+      containerWidth = store.tabs.getRowWidth(0);
     }
 
     const slots = store.tabs.getSlots();
@@ -352,29 +406,7 @@ export class ITab {
   }
 
   public getLeft(calcNewLeft = false) {
-    const slots = store.tabs.getSlots();
-
-    if (calcNewLeft) store.tabs.calculateTabMargins();
-
-    let left = 0;
-
-    for (let i = 0; i < slots.length; i++) {
-      const slot = slots[i];
-      left += i === 0 ? 0 : store.tabs.slotMargin;
-
-      const isSelf =
-        slot.kind === 'tab'
-          ? slot.tab === this
-          : slot.group.tabs.some((t) => t === this);
-
-      if (isSelf) return left;
-
-      left +=
-        (slot.kind === 'group' ? slot.group.width : slot.tab.width) +
-        store.tabs.slotPadding;
-    }
-
-    return left;
+    return store.tabs.getTabTargetLeft(this, calcNewLeft);
   }
 
   public removeFromGroup() {
@@ -393,11 +425,11 @@ export class ITab {
     this.tabGroupId = -1;
     // 离组后本标签才作为独立 slot 挂载 <Tab>(此前在芯片内无独立 DOM)。同步
     // updateTabsBounds 时 ref 还是 null → animateTab 失效 → 停在 width:0 的
-    // 空白态。延迟到 rAF,snap 到位后再布局动画(同 dissolveGroup / createTab)。
+    // 空白态。延迟到 rAF,先布局再将新挂载 slot 无动画吸附到二维目标。
     requestAnimationFrame(() => {
-      this.setLeft(this.getLeft(), false);
-      this.setWidth(this.getWidth(), false);
       store.tabs.updateTabsBounds(true);
+      this.setPosition(this.left, this.top, false);
+      this.setWidth(this.width, false);
     });
     // 持久化"已离组"(此前只改内存,重启后仍带旧 tabGroupId)。
     store.startupTabs.updateStartupTabItem(this);
@@ -410,6 +442,19 @@ export class ITab {
     this.left = left;
   }
 
+  public setTop(top: number, animation: boolean) {
+    if (animation && this.top === top) return;
+    animateTab('translateY', top, this.ref.current, animation);
+    this.top = top;
+  }
+
+  public setPosition(left: number, top: number, animation: boolean) {
+    if (animation && this.left === left && this.top === top) return;
+    animateTabPosition(left, top, this.ref.current, animation);
+    this.left = left;
+    this.top = top;
+  }
+
   @action
   public setWidth(width: number, animation: boolean) {
     if (animation && this.width === width) return;
@@ -419,11 +464,23 @@ export class ITab {
 
   @action
   public close() {
-    if (this.isClosing) return;
+    if (this.isClosing) {
+      logTabLifecycle('close ignored: already closing', {id: this.id});
+      return;
+    }
 
     // 沉浸悬浮头部:关闭回传主渲染进程执行(在真实 store 上销毁 view + 写库),
     // 本地不直接毁 view/删库,避免孤儿 view 与 startupTabs 污染。
     if (isImmersiveHeaderWindow()) {
+      // 先在镜像窗口本地标记关闭态并隐藏标签，等待主窗口快照确认移除。
+      // 否则主窗口的 200ms 关闭动画期间，悬浮层仍可重复点击同一标签。
+      this.isClosing = true;
+      store.tabs.updateTabsBounds(false);
+      logTabLifecycle('close command', {
+        id: this.id,
+        selected: this.isSelected,
+        tabs: store.tabs.list.map((tab) => tab.id),
+      });
       ipcRenderer.send(`immersive-header-cmd-${store.windowId}`, {
         type: 'close',
         id: this.id,
@@ -442,8 +499,18 @@ export class ITab {
     ipcRenderer.send(`hide-tab-preview-${store.windowId}`);
 
     const selected = this.isSelected;
+    const closeStartedAt = Date.now();
+    logTabLifecycle('close start', {
+      id: this.id,
+      selected,
+      pinned: this.isPinned,
+      groupId: this.tabGroupId,
+      tabs: store.tabs.list.map((tab) => tab.id),
+    });
 
     store.startupTabs.removeStartupTabItem(this.id);
+    // 标签真正关闭:删除磁盘预览图(撕离/合并走 detachTabLocally,不经这里)。
+    ipcRenderer.send('tab-thumbnail-delete', store.windowId, this.thumbKey);
 
     // 占位标签未创建 View,无需销毁主进程 view。
     if (!this.discarded) {
@@ -464,13 +531,25 @@ export class ITab {
     if (notClosingTabs.length - 1 === index) {
       const previousTab = store.tabs.list[index - 1];
       if (previousTab) {
-        this.setLeft(previousTab.getLeft(true) + this.getWidth(), true);
+        this.setPosition(
+          previousTab.getLeft(true) + this.getWidth(),
+          previousTab.top,
+          true,
+        );
       }
       store.tabs.updateTabsBounds(true);
     } else {
       // 仅非分组标签占用平分宽度槽位:关闭时用 removedTabs 维持分母稳定,避免
       // 动画期间其它标签抖动。组内标签在芯片里不参与平分,关闭不应计入。
-      if (this.tabGroupId === -1) store.tabs.removedTabs++;
+      if (this.tabGroupId === -1) {
+        store.tabs.removedTabs++;
+        store.tabs.removedTabRows.push(
+          Math.max(
+            0,
+            Math.round(this.top / Math.max(1, store.tabs.tabRowPitch)),
+          ),
+        );
+      }
     }
 
     this.removeFromGroup();
@@ -487,6 +566,11 @@ export class ITab {
     }
 
     this.removeTimeout = setTimeout(() => {
+      logTabLifecycle('close remove', {
+        id: this.id,
+        elapsedMs: Date.now() - closeStartedAt,
+        tabsBeforeRemove: store.tabs.list.map((tab) => tab.id),
+      });
       store.tabs.removeTab(this.id);
     }, TAB_ANIMATION_DURATION);
   }

@@ -257,9 +257,6 @@ export const MenuButton = observer(() => (
     rainseeAction="menu"
     divRef={(r) => (menuRef = r)}
     toggled={store.dialogsVisibility['menu']}
-    badge={store.updateAvailable}
-    badgeRight={10}
-    badgeTop={6}
     onMouseDown={onMenuClick}
     icon={ICON_MORE}
     size={18}

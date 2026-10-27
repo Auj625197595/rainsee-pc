@@ -18,10 +18,9 @@ import { ICON_VOLUME_HIGH, ICON_VOLUME_OFF } from '~/renderer/constants';
 import { ITab } from '../../models';
 import store from '../../store';
 import { ipcRenderer } from 'electron';
-import { COMPACT_TAB_MARGIN_TOP } from '~/constants/design';
 import { handleTabContextMenu } from '../../utils/tab-context-menu';
 import { getIconByUrlNet } from '~/utils/url';
-import { animateTab } from '../../utils/tabs';
+import { animateTab, animateTabPosition } from '../../utils/tabs';
 import { TAB_MIN_WIDTH, TAB_PINNED_WIDTH } from '../../constants';
 import { useTabHoverActivation } from '~/renderer/utils/tab-hover-activation';
 
@@ -55,11 +54,25 @@ const onVolumeMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
   e.stopPropagation();
 };
 
+// 紧凑(融合)标题栏:单击已选中标签=唤起地址栏,双击=关闭标签。
+// 若单击立即聚焦,地址栏浮层(z-index 999)会盖住标签,第二击落到浮层上,
+// 双击永远触发不了。故开启双击关闭时,单击延迟一个双击窗口再唤起,
+// 期间出现第二击则取消。
+const COMPACT_OPEN_SEARCH_DELAY = 300;
+let compactOpenSearchTimer: ReturnType<typeof setTimeout> | null = null;
+
+const cancelCompactOpenSearch = () => {
+  if (compactOpenSearchTimer) {
+    clearTimeout(compactOpenSearchTimer);
+    compactOpenSearchTimer = null;
+  }
+};
+
 const onMouseDown = (tab: ITab, cancel: () => void) => (
   e: React.MouseEvent<HTMLDivElement>,
 ) => {
   cancel();
-  const { pageX, button } = e;
+  const { pageX, pageY, button } = e;
 
   console.log("onMouseDown", store.addressbarEditing);
   if (store.addressbarEditing) {
@@ -67,7 +80,11 @@ const onMouseDown = (tab: ITab, cancel: () => void) => (
   }
 
   if (button === 0) {
-    if (!tab.isSelected) {
+    if (e.detail >= 2) {
+      // 双击的第二击:不再唤起地址栏,交给 onDoubleClick 处理。
+      cancelCompactOpenSearch();
+      store.canOpenSearch = false;
+    } else if (!tab.isSelected) {
       tab.select();
     } else {
       store.canOpenSearch = true;
@@ -76,7 +93,9 @@ const onMouseDown = (tab: ITab, cancel: () => void) => (
     store.tabs.lastMouseX = 0;
     store.tabs.isDragging = true;
     store.tabs.mouseStartX = pageX;
+    store.tabs.mouseStartY = pageY;
     store.tabs.tabStartX = tab.left;
+    store.tabs.tabStartY = tab.top;
 
     store.tabs.lastScrollLeft = store.tabs.containerRef.current.scrollLeft;
   }
@@ -95,7 +114,7 @@ const onMouseEnter = (tab: ITab, schedule: () => void) => (
   const { bottom, left } = tab.ref.current.getBoundingClientRect();
 
   const x = left + 8;
-  const y = store.isCompact ? bottom - COMPACT_TAB_MARGIN_TOP : bottom;
+  const y = bottom;
 
   if (store.tabs.canShowPreview && !store.tabs.isDragging) {
     ipcRenderer.send(`show-tab-preview-${store.windowId}`, {
@@ -120,8 +139,21 @@ const onClick = (tab: ITab) => (e: React.MouseEvent<HTMLDivElement>) => {
   }
 
   if (store.isCompact && e.button === 0 && store.canOpenSearch) {
-    store.inputRef.focus();
     store.canOpenSearch = false;
+    cancelCompactOpenSearch();
+
+    // 未开启双击关闭时无冲突,保持即时唤起。
+    if (!store.settings.object.closeTabOnDoubleClick) {
+      store.inputRef.focus();
+      return;
+    }
+
+    compactOpenSearchTimer = setTimeout(() => {
+      compactOpenSearchTimer = null;
+      // 等待期间可能已切换标签、开始拖拽或退出紧凑模式。
+      if (!store.isCompact || !tab.isSelected || store.tabs.isDragging) return;
+      store.inputRef?.focus();
+    }, COMPACT_OPEN_SEARCH_DELAY);
   }
 };
 
@@ -132,6 +164,7 @@ const onMouseUp = (tab: ITab) => (e: React.MouseEvent<HTMLDivElement>) => {
 };
 
 const onDoubleClick = (tab: ITab) => (e: React.MouseEvent<HTMLDivElement>) => {
+  cancelCompactOpenSearch();
   if (store.settings.object.closeTabOnDoubleClick) {
     tab.close();
   }
@@ -210,9 +243,9 @@ const Content = observer(({ tab }: { tab: ITab }) => {
         >
           {tab.isSelected && store.isCompact
             ? tab.url
-            : tab.title === '新标签页'
+            : tab.displayTitle === '新标签页'
             ? t('newTab')
-            : tab.title}
+            : tab.displayTitle}
         </StyledTitle>
       )}
       <ExpandedVolume tab={tab} density={density} />
@@ -237,6 +270,8 @@ const ExpandedVolume = observer(
 );
 
 const PinnedVolume = observer(({ tab }: { tab: ITab }) => {
+  const t = useI18n();
+
   return (
     <StyledPinAction
       data-rainsee-part="tab-audio"
@@ -244,6 +279,8 @@ const PinnedVolume = observer(({ tab }: { tab: ITab }) => {
       onClick={toggleMuteTab(tab)}
       visible={tab.isPinned && tab.isPlaying}
       icon={tab.isMuted ? ICON_VOLUME_OFF : ICON_VOLUME_HIGH}
+      title={tab.isMuted ? t('tcmUnmute') : t('tcmMute')}
+      aria-label={tab.isMuted ? t('tcmUnmute') : t('tcmMute')}
     />
   );
 });
@@ -280,7 +317,7 @@ export default observer(({ tab }: { tab: ITab }) => {
     const el = tab.ref.current;
     if (!el) return;
     animateTab('width', tab.width, el, false);
-    animateTab('translateX', tab.left, el, false);
+    animateTabPosition(tab.left, tab.top, el, false);
   }, [tab]);
   const hoverActivation = useTabHoverActivation({
     enabled:
@@ -335,6 +372,7 @@ export default observer(({ tab }: { tab: ITab }) => {
       data-rainsee-selected={tab.isSelected ? 'true' : 'false'}
       data-rainsee-pinned={tab.isPinned ? 'true' : 'false'}
       selected={tab.isSelected}
+      $row={Math.round(tab.top / Math.max(1, store.tabs.tabRowPitch))}
       onMouseDown={onMouseDown(tab, hoverActivation.cancel)}
       onMouseUp={onMouseUp(tab)}
       onMouseEnter={onMouseEnter(tab, hoverActivation.schedule)}

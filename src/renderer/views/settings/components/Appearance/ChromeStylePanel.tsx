@@ -5,6 +5,7 @@ import { PaintBrushHousehold } from '@phosphor-icons/react';
 
 import { NormalButton } from '../App';
 import { Switch } from '~/renderer/components/Switch';
+import { Dropdown } from '~/renderer/components/Dropdown';
 import store from '../../store';
 import { getPalette } from '../../utils/palette';
 import { getSettingsTranslator } from '../../utils';
@@ -20,6 +21,15 @@ import {
   getChromePanelFieldDefault,
   sanitizeChromePanelValues,
 } from '~/common/chrome-style-panel';
+
+const emitChromeStyleHover = (key: string | null) => {
+  ipcRenderer.send('chrome-style-hover', key);
+};
+
+const chromeStyleHoverProps = (key: string) => ({
+  onMouseEnter: () => emitChromeStyleHover(key),
+  onMouseLeave: () => emitChromeStyleHover(null),
+});
 
 // ===== 布局骨架 =====
 
@@ -339,7 +349,8 @@ const ChromeStylePanel = observer(() => {
         value === '' ||
         (field.type === 'slider' &&
           value === getChromePanelFieldDefault(field.key)) ||
-        (field.type === 'toggle' && value === true)
+        (field.type === 'toggle' && value === true) ||
+        (field.type === 'select' && value === getChromePanelFieldDefault(field.key))
       ) {
         // 恢复默认 → 移除键,让 CSS 生成器回到「不覆盖」。
         delete next[field.key];
@@ -420,7 +431,7 @@ const ChromePanelFieldRow = React.memo(
     t: Translator;
   }) => {
     // 滑条显示值:未设置时回落 schema 默认,保证拖把从默认位置开始。
-    const sliderDefault = getChromePanelFieldDefault(field.key);
+    const sliderDefault = Number(getChromePanelFieldDefault(field.key));
     const sliderCurrent =
       typeof value === 'number'
         ? value
@@ -430,7 +441,7 @@ const ChromePanelFieldRow = React.memo(
 
     if (field.type === 'color') {
       return (
-        <FieldRow>
+        <FieldRow {...chromeStyleHoverProps(field.key)}>
           <FieldHead>
             <FieldLabel>{t(field.labelKey)}</FieldLabel>
             <ColorSwatch>
@@ -460,11 +471,32 @@ const ChromePanelFieldRow = React.memo(
       );
     }
 
+    if (field.type === 'select') {
+      const selected =
+        typeof value === 'string'
+          ? value
+          : String(getChromePanelFieldDefault(field.key));
+      return (
+        <FieldRow {...chromeStyleHoverProps(field.key)}>
+          <FieldHead>
+            <FieldLabel>{t(field.labelKey)}</FieldLabel>
+            <Dropdown defaultValue={selected} onChange={(next) => onChange(field, next)}>
+              {field.options?.map((option) => (
+                <Dropdown.Item key={option.value} value={option.value}>
+                  {t(option.labelKey)}
+                </Dropdown.Item>
+              ))}
+            </Dropdown>
+          </FieldHead>
+        </FieldRow>
+      );
+    }
+
     // 开关行:缺省 = 默认开启;拨回开由 setField 删键回到「不覆盖」。
     if (field.type === 'toggle') {
       const on = value !== false;
       return (
-        <FieldRow style={{ cursor: 'pointer' }} onClick={() => onChange(field, !on)}>
+        <FieldRow style={{ cursor: 'pointer' }} onClick={() => onChange(field, !on)} {...chromeStyleHoverProps(field.key)}>
           <FieldHead>
             <FieldLabel>{t(field.labelKey)}</FieldLabel>
             <Switch value={on} />
@@ -551,7 +583,7 @@ const ChromePanelSliderFieldRow = React.memo(
     const ResetBtn = isCustomized ? ResetFieldButtonVisible : ResetFieldButton;
 
     return (
-      <FieldRow>
+      <FieldRow {...chromeStyleHoverProps(field.key)}>
         <FieldHead>
           <FieldLabel>{t(field.labelKey)}</FieldLabel>
           <FieldValue>

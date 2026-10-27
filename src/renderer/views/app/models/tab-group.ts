@@ -4,7 +4,7 @@ import { observable, action, computed, makeObservable } from 'mobx';
 import { LIGHT_BLUE_500 } from '~/renderer/constants';
 import { Store } from '../store';
 import { TabGroupsStore } from '../store/tab-groups';
-import { animateTab } from '../utils/tabs';
+import { animateTab, animateTabPosition } from '../utils/tabs';
 import { ITab } from './tab';
 
 export class ITabGroup {
@@ -12,11 +12,7 @@ export class ITabGroup {
   public workspaceKey?: string;
   public width = 0;
   public left = 8;
-
-  // 是否已完成首次定位。新组的芯片 DOM 首次挂载时位于 CSS 默认位(left:0),
-  // 若直接动画定位会"从左飞入"。芯片组件挂载时(useLayoutEffect,早于绘制)
-  // 用 animation=false snap 到 left/width 目标位并置 true,消除飞入。
-  public positioned = false;
+  public top = 0;
 
   // 芯片本体元素(承载 transform/width 动画)。组在标签栏里是单个折叠 slot,
   // 该 ref 即 slot 元素,由 setTabsLefts/setTabsWidths 直接驱动。
@@ -54,6 +50,8 @@ export class ITabGroup {
       isPinned: observable,
       selectedTabId: observable,
       setLeft: action,
+      setTop: action,
+      setPosition: action,
       setWidth: action,
       activeTab: computed,
     });
@@ -84,7 +82,20 @@ export class ITabGroup {
     this.left = left;
   }
 
+  public setTop(top: number, animation: boolean) {
+    animateTab('translateY', top, this.ref.current, animation);
+    this.top = top;
+  }
+
+  public setPosition(left: number, top: number, animation: boolean) {
+    if (animation && this.left === left && this.top === top) return;
+    animateTabPosition(left, top, this.ref.current, animation);
+    this.left = left;
+    this.top = top;
+  }
+
   public setWidth(width: number, animation: boolean) {
+    if (animation && this.width === width) return;
     animateTab('width', width, this.ref.current, animation);
     this.width = width;
   }

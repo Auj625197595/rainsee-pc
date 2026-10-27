@@ -648,6 +648,13 @@ const CssModalTab = styled.button<{ $active: boolean }>`
   }}
 `;
 
+const CssModalTabRow = styled.div`
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+`;
+
 const CUSTOM_CSS_EXAMPLE = `/*
  * 雨见浏览器框架 CSS 选择器示例
  * 属性目前均被注释，取消属性前后的注释即可生效。
@@ -1148,6 +1155,38 @@ const TabOverflowVariant = observer(() => {
         >
           <Dropdown.Item value="shrink">{t('tabOverflowShrink')}</Dropdown.Item>
           <Dropdown.Item value="scroll">{t('tabOverflowScroll')}</Dropdown.Item>
+        </Dropdown>
+      </Control>
+    </Row>
+  );
+});
+
+const TopTabRows = observer(() => {
+  const t = getSettingsTranslator();
+  const rows = store.settings.topTabRows || 1;
+
+  return (
+    <Row>
+      <SettingIcon tone="cyan">
+        <ListNumbers size={19} weight="fill" />
+      </SettingIcon>
+      <SettingCopy>
+        <Title>{t('topTabRowsTitle')}</Title>
+        <SecondaryText>{t('topTabRowsHint', { count: rows })}</SecondaryText>
+      </SettingCopy>
+      <Control>
+        <Dropdown
+          defaultValue={String(rows)}
+          onChange={(value: string) => {
+            store.settings.topTabRows = parseInt(value, 10);
+            store.save();
+          }}
+        >
+          {[1, 2, 3, 4, 5].map((count) => (
+            <Dropdown.Item key={count} value={String(count)}>
+              {t('topTabRowsCount', { count })}
+            </Dropdown.Item>
+          ))}
         </Dropdown>
       </Control>
     </Row>
@@ -1961,9 +2000,12 @@ const ImmersiveBrowsing = observer(() => {
   );
 });
 
+// 「显示顶部指示条」从属于沉浸浏览：未开启沉浸浏览时整行隐藏。
 const ImmersivePageIndicator = observer(() => {
   const t = getSettingsTranslator();
-  const { immersivePageIndicator } = store.settings;
+  const { immersiveBrowsing, immersivePageIndicator } = store.settings;
+
+  if (!immersiveBrowsing) return null;
 
   return (
     <Row onClick={onSwitchChange('immersivePageIndicator')}>
@@ -2008,7 +2050,10 @@ export const Appearance = observer(() => {
     event: React.MouseEvent<HTMLButtonElement>,
   ) => {
     lastTrigger.current = event.currentTarget;
-    if (type === 'browser-css') setCssTab('visual');
+    if (type === 'browser-css') {
+      setCssTab('visual');
+      setAskAiOpen(false);
+    }
     setModal(type);
   };
 
@@ -2039,6 +2084,7 @@ export const Appearance = observer(() => {
         <SettingGroup>
           <TopBarVariant />
           <TabsLayoutVariant />
+          <TopTabRows />
           <TabOverflowVariant />
           <TabHoverActivationBehaviorSetting />
           <TabHoverActivationDelay />
@@ -2148,6 +2194,7 @@ export const Appearance = observer(() => {
                 )}
                 {modal === 'browser-css' && (
                   <>
+                    <CssModalTabRow>
                     <CssModalTabs role="tablist">
                       <CssModalTab
                         role="tab"
@@ -2166,6 +2213,7 @@ export const Appearance = observer(() => {
                         {t('customCssTab')}
                       </CssModalTab>
                     </CssModalTabs>
+                    </CssModalTabRow>
                     {cssTab === 'visual' ? (
                       <ChromeStylePanel />
                     ) : (

@@ -6,23 +6,33 @@ import {
   ADD_TAB_BUTTON_HEIGHT,
 } from '~/constants/design';
 import { ITheme } from '~/interfaces';
+import { tabsBlockTop, topHitExtension } from '../Tab/style';
 
-export const StyledTabbar = styled.div`
+export const StyledTabbar = styled.div<{ $fullRows?: boolean }>`
   height: 100%;
   flex: 1;
   min-width: 0;
   position: relative;
-  overflow: hidden;
-  align-items: center;
+  /* 独立成栏时标签容器向两侧外扩到整条标题栏,不能被本层裁掉 */
+  overflow: ${({ $fullRows }) => ($fullRows ? 'visible' : 'hidden')};
+  /* 工具箱等尾部按钮(单行高度)与第 0 行标签对齐;TabsContainer 为 100% 高不受影响 */
+  align-items: flex-start;
   display: flex;
   margin-left: 0px;
 `;
 
-export const TabsContainer = styled.div<{ $allowScroll: boolean }>`
+// $inset:多行「独立成栏」模式下容器向左外扩品牌块宽度、向右外扩工具箱+窗口控制宽度,
+// 使第 1 行起占满整条标题栏;第 0 行由 TabsStore.getRowLeft/getRowWidth 留在两者之间。
+export const TabsContainer = styled.div<{
+  $allowScroll: boolean;
+  $inset?: { left: number; right: number };
+}>`
   height: 100%;
   flex: 1;
   min-width: 0;
   position: relative;
+  margin-left: ${({ $inset }) => -($inset?.left || 0)}px;
+  margin-right: ${({ $inset }) => -($inset?.right || 0)}px;
   overflow: hidden;
   overflow-x: ${({$allowScroll}) => ($allowScroll ? 'overlay' : 'hidden')};
   white-space: nowrap;
@@ -38,12 +48,21 @@ export const TabsContainer = styled.div<{ $allowScroll: boolean }>`
   }
 `;
 
+export const TabScrollExtent = styled.div<{ $width: number }>`
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: ${({ $width }) => `${$width}px`};
+  height: 1px;
+  pointer-events: none;
+`;
+
 // 网页链接拖入标签栏时的投放指示线:绝对定位在 TabsContainer 内容坐标系内
 // (与 tab.left 同坐标系,用 transform 平移),随容器滚动跟随标签一起移动。
 export const LinkDropIndicator = styled.div`
   position: absolute;
-  top: 6px;
-  bottom: 6px;
+  top: ${({ theme }: { theme: ITheme }) => tabsBlockTop(theme)};
+  height: ${({ theme }: { theme: ITheme }) => theme.tabSurfaceHeight}px;
   width: 2px;
   left: 0;
   border-radius: 2px;
@@ -57,9 +76,12 @@ export const LinkDropIndicator = styled.div`
 `;
 
 export const TabbarEnd = styled.div`
+  /* 叠在外扩的标签容器之上 */
+  position: relative;
+  z-index: 3;
   display: flex;
   align-items: center;
-  height: 100%;
+  height: ${({ theme }: { theme: ITheme }) => theme.titlebarBaseHeight}px;
   flex-shrink: 0;
   padding-left: 6px;
   padding-right: 4px;
@@ -76,6 +98,14 @@ export const AddTab = styled(ToolbarButton)`
   border-radius: 99999px;
 
   ${({ theme }: { theme: ITheme }) => css`
-    top: ${theme.isCompact ? 'auto' : theme.tabMarginTop + 2}px;
+    top: calc(
+      ${tabsBlockTop(theme)} +
+        ${(theme.tabSurfaceHeight - ADD_TAB_BUTTON_HEIGHT) / 2}px
+    );
   `};
+  ${({ theme }: { theme: ITheme }) =>
+    topHitExtension(
+      theme,
+      Math.max(0, (theme.tabSurfaceHeight - ADD_TAB_BUTTON_HEIGHT) / 2),
+    )};
 `;

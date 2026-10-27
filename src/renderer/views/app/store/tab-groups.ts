@@ -4,6 +4,7 @@ import { ipcRenderer } from 'electron';
 import { ITabGroup } from '../models';
 import { Store } from '.';
 import { Database } from '~/models/database';
+import { IWorkspaceSnapshot } from '~/interfaces';
 import { isImmersiveHeaderWindow } from '../utils/windows';
 import {
   BLUE_500,
@@ -119,8 +120,74 @@ export class TabGroupsStore {
     return tabGroup;
   }
 
+  // 按工作区快照追加分组(追加不清空:原地切换工作区时旧分组随旧标签关闭自行清理)。
+  public addWorkspaceGroups(groups: IWorkspaceSnapshot['groups']) {
+    for (const group of groups) {
+      const item = this.addGroup(undefined, group.key);
+      item.name = group.name;
+      item.color = group.color;
+      item.isPinned = !!group.isPinned;
+    }
+  }
+
   public getGroups(): ITabGroup[] {
     return this.list;
+  }
+
+  // startupTabs 与 tabGroups 分属两个数据库，异常退出或旧版本写入中断时，
+  // 可能只留下标签上的 tabGroupId。恢复缺失的组记录，避免成员标签因找不到
+  // ITabGroup 而在顶部栏被折叠成一个没有 DOM 的空白槽位。
+  public async ensureRestoredGroups(ids: number[]) {
+    if (isImmersiveHeaderWindow() || this.store.workspaceContext) return;
+
+    const groupIds = Array.from(
+      new Set(
+        ids.filter(
+          (id) =>
+            Number.isFinite(id) && id >= 0 && !this.getGroupById(id),
+        ),
+      ),
+    );
+
+    for (const id of groupIds) {
+      let doc: ITabGroupDoc | undefined;
+      try {
+        const docs = await this.db.get({
+          id,
+          windowId: this.store.windowId,
+        } as any);
+        doc = docs[0];
+      } catch (error) {
+        console.error('[tab-groups] failed to query missing group', {
+          id,
+          error,
+        });
+      }
+
+      const group = this.addGroup(id);
+      if (doc) {
+        if (doc.name) group.name = doc.name;
+        if (doc.color) group.color = doc.color;
+        group.isPinned = !!doc.isPinned;
+        continue;
+      }
+
+      if (!this.store.canPersistNormalSession) continue;
+      try {
+        await this.db.insert({
+          id: group.id,
+          windowId: this.store.windowId,
+          name: group.name,
+          color: group.color,
+          isPinned: group.isPinned,
+        });
+      } catch (error) {
+        console.error('[tab-groups] failed to repair missing group', {
+          id,
+          error,
+        });
+      }
+    }
   }
 
   // 组内最后一个成员离开 → 删除持久化的组记录。失败静默(DB 与内存可能瞬时不同步,
@@ -163,6 +230,15 @@ export class TabGroupsStore {
     }
   }
 
+  // 主会话认领后,主进程可能已把上一个主窗口的组记录迁到本窗口 id 名下。
+  // 标签尚未创建,直接按本窗口 id 重新读库即可。
+  public async reloadForSession() {
+    if (isImmersiveHeaderWindow() || this.store.workspaceContext) return;
+    this.list = [];
+    this.nextId = 0;
+    await this.load();
+  }
+
   // 从持久层恢复组记录。必须在 startupTabs.load() 之前完成,使标签恢复时
   // tabGroupId 有对应的 ITabGroup 可绑定。空组(无成员)在此不删除——由
   // removeFromGroup 在运行时关掉最后一个成员时清理,避免 empty 启动模式误删。
@@ -173,12 +249,7 @@ export class TabGroupsStore {
 
     if (this.store.workspaceContext) {
       this.list = [];
-      for (const group of this.store.workspaceContext.groups || []) {
-        const item = this.addGroup(undefined, group.key);
-        item.name = group.name;
-        item.color = group.color;
-        item.isPinned = !!group.isPinned;
-      }
+      this.addWorkspaceGroups(this.store.workspaceContext.groups || []);
       return;
     }
     let docs: ITabGroupDoc[] = [];

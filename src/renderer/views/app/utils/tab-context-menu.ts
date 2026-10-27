@@ -27,6 +27,7 @@ import * as remote from '@electron/remote';
 import { ITab, ITabGroup } from '../models';
 import store from '../store';
 import { getShellTranslator } from './i18n';
+import { isImmersiveHeaderWindow } from './windows';
 
 // 将 phosphor 图标渲染为 nativeImage,用于原生右键菜单。
 // Electron 的 nativeImage 不支持 SVG,需经 canvas 栅格化为 PNG。
@@ -273,8 +274,14 @@ export const showTabContextMenu = async (tab: ITab, onClose?: () => void) => {
       label: t('tcmDuplicate'),
       icon: icCopy,
       click: async () => {
-        // Chrome:复制固定标签得到紧邻其右侧的固定副本(pinTab 把副本插到固定块末尾)。
-        const newTab = await store.tabs.addTab({ active: true, url: tab.url });
+        // Chrome:副本插到原标签紧后,而不是追加到标签栏末尾。固定标签的副本
+        // 同样紧随其后创建,pinTab 再把它落进固定区(单独固定块末尾、分组之前)。
+        const index = store.tabs.list.indexOf(tab) + 1;
+        const newTab = await store.tabs.addTab({
+          active: true,
+          url: tab.url,
+          index,
+        });
         if (newTab && tab.isPinned) {
           store.tabs.pinTab(newTab);
         }
@@ -295,7 +302,15 @@ export const showTabContextMenu = async (tab: ITab, onClose?: () => void) => {
       label: tab.isPinned ? t('tcmUnpin') : t('tcmPin'),
       icon: icPin,
       click: () => {
-        tab.isPinned ? store.tabs.unpinTab(tab) : store.tabs.pinTab(tab);
+        if (isImmersiveHeaderWindow()) {
+          ipcRenderer.send(`immersive-header-cmd-${store.windowId}`, {
+            type: 'pin',
+            id: tab.id,
+            pinned: !tab.isPinned,
+          });
+        } else {
+          tab.isPinned ? store.tabs.unpinTab(tab) : store.tabs.pinTab(tab);
+        }
       },
     },
     {
@@ -329,6 +344,7 @@ export const showTabContextMenu = async (tab: ITab, onClose?: () => void) => {
             favicon: tab.favicon,
             pinned: tab.isPinned,
             incognito: tab.incognito,
+            thumbKey: tab.thumbKey,
           },
         });
       },
@@ -435,7 +451,15 @@ export const showTabGroupContextMenu = async (
       label: tabGroup.isPinned ? t('tcmUnpinGroup') : t('tcmPinGroup'),
       icon: icPin,
       click: () => {
-        store.tabs.setGroupPinned(tabGroup, !tabGroup.isPinned);
+        if (isImmersiveHeaderWindow()) {
+          ipcRenderer.send(`immersive-header-cmd-${store.windowId}`, {
+            type: 'group-pin',
+            groupId: tabGroup.id,
+            pinned: !tabGroup.isPinned,
+          });
+        } else {
+          store.tabs.setGroupPinned(tabGroup, !tabGroup.isPinned);
+        }
       },
     },
     {

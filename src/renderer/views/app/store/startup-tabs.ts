@@ -184,6 +184,141 @@ export class StartupTabsStore {
     }
   }
 
+  // 把已保存的标签记录建成占位标签,返回是否还需补一个新标签页。
+  // beforeAdd:确有标签可恢复时、建标签前清理旧记录(新 id 的标签会重新落库)。
+  private async addRestoredTabs(
+    tabsToLoad: IStartupTab[],
+    options: {
+      initialTab?: ITab;
+      dedupe: boolean;
+      suppressActive: boolean;
+      beforeAdd: () => Promise<void>;
+    },
+  ) {
+    const {initialTab} = options;
+    // 组元数据与标签快照分别落库。若上次异常退出发生在两次写入之间，标签会
+    // 保留 tabGroupId，而组记录可能缺失。必须在创建标签模型前补齐，否则布局
+    // 会为该成员预留 slot，顶部 React 树却没有可渲染的 TabGroup。
+    await this.store.tabGroups.ensureRestoredGroups(
+      tabsToLoad
+        .filter((tab) => !tab.pinned)
+        .map((tab) => tab.tabGroupId)
+        .filter((id): id is number => typeof id === 'number' && id >= 0),
+    );
+
+    let needsNewTabPage = false;
+    // If we have tabs saved, load them
+    if (tabsToLoad && tabsToLoad.length > 0) {
+      // 崩溃恢复时同一 URL 可能本来就在多个窗口各开了一份,不能去重。
+      if (options.dedupe) tabsToLoad = this.dedupeRestoredTabs(tabsToLoad);
+      await options.beforeAdd();
+
+      const sortedTabs = tabsToLoad.sort((x, y) =>
+        x.pinned && y.pinned
+          ? x.order - y.order
+          : x.pinned
+            ? -1
+            : y.pinned
+              ? 1
+              : x.order - y.order,
+      );
+      const savedActiveIndex = sortedTabs.findIndex((tab) => tab.active);
+      const activeIndex = savedActiveIndex >= 0
+        ? savedActiveIndex
+        : sortedTabs.length - 1;
+
+      const placeholderTimer = rendererStartupTimer();
+      rendererStartupMark('renderer.session_restore.placeholders.begin', {
+        count: sortedTabs.length,
+        activeIndex,
+      });
+      await this.addTabs(
+        sortedTabs.map((tab, i) => {
+            const active =
+              !initialTab &&
+              i === activeIndex &&
+              !options.suppressActive;
+            // 内存节省:恢复时全部建占位标签(含 active)。active 占位标签启动时
+            // 由 requestAnimationFrame→select→loadDiscardedTab 自动加载(走新建流程);
+            // 其余标签点击时才加载。
+            const discarded = this.store.settings.object.memorySaver;
+            // 延迟标签不重新加载,标题/图标只能来自上次持久化的值。历史标签的
+            // title 可能停留在创建时的'新标签页'(此前 title 变化未回写 DB),
+            // favicon 可能为空。这里对 http(s) 标签退回 url 域名 + 在线图标,
+            // 避免标签栏一片'新标签页'/无图标;newtab/file 等非 http 标签保留原值。
+            let title = tab.title;
+            let favicon = tab.favicon;
+            const fullUrl = prefixHttp(tab.url || '');
+            if (discarded && /^https?:\/\//.test(fullUrl)) {
+              if (!title || title === '新标签页') {
+                try {
+                  title = new URL(fullUrl).hostname;
+                } catch {
+                  title = tab.title;
+                }
+              }
+              if (!favicon) {
+                favicon = getIconByUrlNet(fullUrl);
+              }
+            }
+            return {
+              url: prefixHttp(tab.url),
+              pinned: tab.pinned,
+              active,
+              title,
+              favicon,
+              discarded,
+              // 沿用上次会话的预览图落盘键,占位标签据此显示磁盘里的预览图。
+              thumbKey: tab.thumbKey,
+              // 恢复持久化的分组归属(-1 = 未分组),经 createTabs 回填到 ITab.tabGroupId。
+              tabGroupId: typeof tab.tabGroupId === 'number' ? tab.tabGroupId : -1,
+            };
+          }),
+        {preserveActiveTab: !!initialTab},
+      );
+      rendererStartupMark('renderer.session_restore.placeholders.end', {
+        count: sortedTabs.length,
+        durationMs: placeholderTimer(),
+      });
+
+      // If we only load up pinned tabs, add a new tab page
+      if (tabsToLoad.filter((x) => !x.pinned).length == 0) {
+        needsNewTabPage = true;
+      }
+    } else {
+      // No tabs saved. Just load a new tab page.
+      needsNewTabPage = true;
+    }
+
+    return needsNewTabPage;
+  }
+
+  // 由「在当前窗口打开工作区」切走的窗口切回普通会话。工作区期间本窗口的
+  // startupTabs/tabGroups 记录未被改写(canPersistNormalSession 守卫),按原样恢复。
+  // 调用方须已清空 workspaceContext。
+  public async restoreNormalSession() {
+    const windowId = this.store.windowId;
+    try {
+      await ipcRenderer.invoke('claim-main-session', windowId, {migrate: true});
+    } catch (error) {
+      console.error('[startup-tabs] failed to claim main session', error);
+    }
+    await this.store.tabGroups.reloadForSession();
+    const tabsToLoad = await this.db.get({windowId});
+    const needsNewTabPage = await this.addRestoredTabs(tabsToLoad, {
+      dedupe: true,
+      suppressActive: false,
+      beforeAdd: async () => {
+        // 只清本窗口的记录,不能用 clearStartupTabs(不带 windowId 会波及其他窗口)。
+        await this.db.remove({windowId} as any, true);
+        this.list = [];
+      },
+    });
+    if (needsNewTabPage) {
+      await this.addTabs([{url: getWebUIURL('newtab'), active: true}]);
+    }
+  }
+
   private dedupeRestoredTabs(tabs: IStartupTab[]) {
     const map = new Map<string, IStartupTab>();
     const result: IStartupTab[] = [];
@@ -229,6 +364,34 @@ export class StartupTabsStore {
     }
   }
 
+  // 按 workspaceContext 快照创建标签(分组须已由 tabGroups 建好)。启动恢复与
+  // 「在当前窗口打开工作区」原地切换共用。preserveActiveTab:保留已有当前标签。
+  public async loadWorkspaceTabs(preserveActiveTab = false) {
+    const context = this.store.workspaceContext;
+    if (!context) return [];
+    const groups = new Map(
+      this.store.tabGroups.list.map((group) => [group.workspaceKey, group.id]),
+    );
+    const sourceTabs = [...(context.tabs || [])].sort(
+      (left, right) => left.order - right.order,
+    );
+    return this.addTabs(
+      (sourceTabs.length ? sourceTabs : [{ url: getWebUIURL('newtab'), order: 0 } as any]).map(
+        (tab, index) => ({
+          url: tab.url,
+          title: tab.title,
+          favicon: tab.favicon,
+          pinned: !!tab.pinned,
+          active: !preserveActiveTab && (sourceTabs.length ? !!tab.active : true),
+          order: index,
+          workspaceKey: tab.key,
+          tabGroupId: tab.groupKey ? groups.get(tab.groupKey) : -1,
+        } as any),
+      ),
+      {preserveActiveTab},
+    );
+  }
+
   private async loadSession() {
 
     // 沉浸悬浮头部(镜像):标签由主渲染进程经 immersive-header-sync 推来重建,
@@ -246,27 +409,7 @@ export class StartupTabsStore {
     }
 
     if (this.store.workspaceContext) {
-      const groups = new Map(
-        this.store.tabGroups.list.map((group) => [group.workspaceKey, group.id]),
-      );
-      const sourceTabs = [...(this.store.workspaceContext.tabs || [])].sort(
-        (left, right) => left.order - right.order,
-      );
-      await this.addTabs(
-        (sourceTabs.length ? sourceTabs : [{ url: getWebUIURL('newtab'), order: 0 } as any]).map(
-          (tab, index) => ({
-            url: tab.url,
-            title: tab.title,
-            favicon: tab.favicon,
-            pinned: !!tab.pinned,
-            active: !initialTab && (sourceTabs.length ? !!tab.active : true),
-            order: index,
-            workspaceKey: tab.key,
-            tabGroupId: tab.groupKey ? groups.get(tab.groupKey) : -1,
-          } as any),
-        ),
-        {preserveActiveTab: !!initialTab},
-      );
+      await this.loadWorkspaceTabs(!!initialTab);
       if (initialTab) {
         await this.finalizeInitialTab(initialTab);
       }
@@ -345,10 +488,30 @@ export class StartupTabsStore {
           return windowDiff || (left.order || 0) - (right.order || 0);
         })
         .map((tab, order) => ({...tab, order}));
+    }
+
+    // 主窗口关闭后重开会拿到新的运行时 windowId。先向主进程认领主会话:
+    // 主进程把上次主会话的 startupTabs/tabGroups 记录迁到本窗口 id 名下。
+    // 崩溃恢复已按原窗口 id 读出标签,只认领不迁移。
+    let isPrimarySession = false;
+    try {
+      const claim = await ipcRenderer.invoke('claim-main-session', this.store.windowId, {
+        migrate: !isCrashRecovery,
+      });
+      isPrimarySession = !!claim?.primary;
+    } catch (error) {
+      console.error('[startup-tabs] failed to claim main session', error);
+    }
+    if (isPrimarySession && !isCrashRecovery) {
+      await this.store.tabGroups.reloadForSession();
+    }
+
+    if (isCrashRecovery) {
+      // 已在上方处理。
     } else if (this.store.settings.object.startupBehavior.type === 'continue') {
       restoreSource = 'continue';
       tabsToLoad = await this.db.get({windowId: this.store.windowId});
-    } else if (this.store.windowId === 1) {
+    } else if (isPrimarySession) {
       if (this.store.settings.object.startupBehavior.type === 'urls') {
         restoreSource = 'configured-url';
         // 「打开特定页面」:单一网址来自 settings.startupBehavior.url(与新建标签页同一真相源),
@@ -386,88 +549,12 @@ export class StartupTabsStore {
       await this.clearStartupTabs(false, false);
     }
 
-    let needsNewTabPage = false;
-    // If we have tabs saved, load them
-    if (tabsToLoad && tabsToLoad.length > 0) {
-      // 崩溃恢复时同一 URL 可能本来就在多个窗口各开了一份,不能去重。
-      if (!isCrashRecovery) tabsToLoad = this.dedupeRestoredTabs(tabsToLoad);
-      await this.clearStartupTabs(true, false);
-
-      const sortedTabs = tabsToLoad.sort((x, y) =>
-        x.pinned && y.pinned
-          ? x.order - y.order
-          : x.pinned
-            ? -1
-            : y.pinned
-              ? 1
-              : x.order - y.order,
-      );
-      const savedActiveIndex = sortedTabs.findIndex((tab) => tab.active);
-      const activeIndex = savedActiveIndex >= 0
-        ? savedActiveIndex
-        : sortedTabs.length - 1;
-
-      const placeholderTimer = rendererStartupTimer();
-      rendererStartupMark('renderer.session_restore.placeholders.begin', {
-        count: sortedTabs.length,
-        activeIndex,
-      });
-      await this.addTabs(
-        sortedTabs.map((tab, i) => {
-            const active =
-              !initialTab &&
-              i === activeIndex &&
-              !(args.length > 1 && isURL(args[args.length - 1]));
-            // 内存节省:恢复时全部建占位标签(含 active)。active 占位标签启动时
-            // 由 requestAnimationFrame→select→loadDiscardedTab 自动加载(走新建流程);
-            // 其余标签点击时才加载。
-            const discarded = this.store.settings.object.memorySaver;
-            // 延迟标签不重新加载,标题/图标只能来自上次持久化的值。历史标签的
-            // title 可能停留在创建时的'新标签页'(此前 title 变化未回写 DB),
-            // favicon 可能为空。这里对 http(s) 标签退回 url 域名 + 在线图标,
-            // 避免标签栏一片'新标签页'/无图标;newtab/file 等非 http 标签保留原值。
-            let title = tab.title;
-            let favicon = tab.favicon;
-            const fullUrl = prefixHttp(tab.url || '');
-            if (discarded && /^https?:\/\//.test(fullUrl)) {
-              if (!title || title === '新标签页') {
-                try {
-                  title = new URL(fullUrl).hostname;
-                } catch {
-                  title = tab.title;
-                }
-              }
-              if (!favicon) {
-                favicon = getIconByUrlNet(fullUrl);
-              }
-            }
-            return {
-              url: prefixHttp(tab.url),
-              pinned: tab.pinned,
-              active,
-              title,
-              favicon,
-              discarded,
-              // 恢复持久化的分组归属(-1 = 未分组),经 createTabs 回填到 ITab.tabGroupId。
-              tabGroupId: typeof tab.tabGroupId === 'number' ? tab.tabGroupId : -1,
-            };
-          }),
-        {preserveActiveTab: !!initialTab},
-      );
-      rendererStartupMark('renderer.session_restore.placeholders.end', {
-        count: sortedTabs.length,
-        durationMs: placeholderTimer(),
-      });
-
-      // If we only load up pinned tabs, add a new tab page
-      if (tabsToLoad.filter((x) => !x.pinned).length == 0) {
-        needsNewTabPage = true;
-      }
-    } else {
-      // No tabs saved. Just load a new tab page.
-      needsNewTabPage = true;
-    }
-
+    let needsNewTabPage = await this.addRestoredTabs(tabsToLoad, {
+      initialTab,
+      dedupe: !isCrashRecovery,
+      suppressActive: args.length > 1 && isURL(args[args.length - 1]),
+      beforeAdd: () => this.clearStartupTabs(true, false),
+    });
     if (initialTab) needsNewTabPage = false;
 
     if (needsNewTabPage) {
@@ -573,6 +660,7 @@ export class StartupTabsStore {
       isUserDefined: false,
       order: this.store.tabs.list.indexOf(tab),
       active: tab.isSelected,
+      thumbKey: tab.thumbKey,
     });
   }
 

@@ -60,6 +60,33 @@ const Status = styled.span<{ tone: 'ok' | 'err' }>`
   `}
 `;
 
+// 「应用到新标签页」勾选项:原生 checkbox + 主题色 accent-color。
+const ApplyToNewTab = styled.label`
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+
+  input {
+    width: 15px;
+    height: 15px;
+    margin: 0;
+    cursor: pointer;
+  }
+
+  ${({ theme }: { theme?: ITheme }) => {
+    const p = getPalette(theme!);
+    return css`
+      color: ${p.textMain};
+      input {
+        accent-color: ${p.primary};
+      }
+    `;
+  }}
+`;
+
 const StartupOptions = styled(SettingGroup)`
   margin-top: 24px;
 `;
@@ -79,11 +106,13 @@ const StartupOption = styled(Row)<{ $selected: boolean }>`
 interface Props {
   initialValue: StartupType;
   initialURL: string;
+  initialApplyToNewTab: boolean;
 }
 
 interface State {
   value: StartupType;
   url: string;
+  applyToNewTab: boolean;
   // 存消息 key 而非文案:语言切换后 render 重新翻译。
   statusKey: MessageKey | null;
   statusTone: 'ok' | 'err';
@@ -95,6 +124,7 @@ class StartupControl extends React.Component<Props, State> {
   public state: State = {
     value: this.props.initialValue,
     url: this.props.initialURL || '',
+    applyToNewTab: this.props.initialApplyToNewTab,
     statusKey: null,
     statusTone: 'ok',
   };
@@ -111,6 +141,14 @@ class StartupControl extends React.Component<Props, State> {
   private onURLChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     // 编辑即清除上次保存结果提示。
     this.setState({ url: e.target.value, statusKey: null });
+  };
+
+  // 勾选即持久化,不依赖「保存」按钮(与单选项一致)。
+  private onApplyToNewTabChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const applyToNewTab = e.target.checked;
+    this.setState({ applyToNewTab });
+    store.settings.startupBehavior.applyToNewTab = applyToNewTab;
+    store.save();
   };
 
   // 阻止点击输入框触发行的 radio 切换 / 抢走输入焦点。
@@ -212,6 +250,14 @@ class StartupControl extends React.Component<Props, State> {
               marginTop: 16,
             }}
           >
+            <ApplyToNewTab>
+              <input
+                type="checkbox"
+                checked={this.state.applyToNewTab}
+                onChange={this.onApplyToNewTabChange}
+              />
+              {t('suApplyToNewTab')}
+            </ApplyToNewTab>
             <NormalButton variant="soft" onClick={this.onSave}>
               {t('save')}
             </NormalButton>
@@ -228,6 +274,12 @@ class StartupControl extends React.Component<Props, State> {
 }
 
 export const OnStartup = observer(() => {
-  const { type, url } = store.settings.startupBehavior;
-  return <StartupControl initialValue={type} initialURL={url || ''} />;
+  const { type, url, applyToNewTab } = store.settings.startupBehavior;
+  return (
+    <StartupControl
+      initialValue={type}
+      initialURL={url || ''}
+      initialApplyToNewTab={applyToNewTab !== false}
+    />
+  );
 });

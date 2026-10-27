@@ -98,11 +98,6 @@ export class Store {
 
   public titlebarVisible = false;
 
-  public updateAvailable = false;
-
-  public updateVersion = '';
-
-  public updateNotes = '';
 
   public navigationState = {
     canGoBack: false,
@@ -328,9 +323,6 @@ export class Store {
       isFullscreen: observable,
       isHTMLFullscreen: observable,
       titlebarVisible: observable,
-      updateAvailable: observable,
-      updateVersion: observable,
-      updateNotes: observable,
       navigationState: observable,
       downloadsButtonVisible: observable,
       downloadNotification: observable,
@@ -373,13 +365,6 @@ export class Store {
       this.isHTMLFullscreen = fullscreen;
     });
 
-    ipcRenderer.on('update-available', (e, data) => {
-      this.updateAvailable = true;
-      if (data) {
-        this.updateVersion = data.version || '';
-        this.updateNotes = data.notes || '';
-      }
-    });
 
     // 「正在清理浏览数据」覆盖层:主进程驱动显示/进度/隐藏。
     ipcRenderer.on('clear-overlay-show', (e, data: {mode: 'exit' | 'manual'}) => {
@@ -714,10 +699,6 @@ export class Store {
         this.adblockBtnRef.click();
       }
     });
-
-    if (!isImmersiveHeaderWindow()) {
-      ipcRenderer.send('update-check');
-    }
 
     // 沉浸悬浮头部标签同步:overlay 作为主渲染进程标签状态的实时镜像;
     // 主渲染进程作为快照来源 + 遥控指令执行者(单一数据源)。

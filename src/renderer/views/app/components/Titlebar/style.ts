@@ -32,11 +32,21 @@ export const StyledTitlebar = styled.div`
 }) => css`
     background-color: ${theme['titlebar.backgroundColor']};
     height: ${theme.titlebarHeight}px;
-    align-items: ${theme.isCompact ? 'center' : 'initial'};
+    /* 子元素顶部对齐:品牌/按钮/窗口控制均为单行高度(titlebarBaseHeight),
+       多行标签时与第 0 行标签同一水平中线,下方行视为额外的标签栏 */
+    align-items: flex-start;
     padding-left: ${platform() === 'darwin' && !isFullscreen ? 78 : 4}px;
     /* 跟随主题的前景色,供依赖 currentColor 的图标(紧凑模式下标题栏内的导航/集群按钮)继承;
        深色/无痕背景下用白色,否则保持近黑深灰。 */
     color: ${theme['toolbar.lightForeground'] ? '#fff' : 'rgba(0, 0, 0, 0.8)'};
+
+    > [data-rainsee-part='brand'],
+    > [data-rainsee-part='navigation-buttons'],
+    > [data-rainsee-part='right-buttons'],
+    > [data-rainsee-part='window-controls'] {
+      height: ${theme.titlebarBaseHeight}px;
+      flex-shrink: 0;
+    }
 
     &:before {
       -webkit-app-region: ${isFullscreen ? 'no-drag' : 'drag'};
@@ -48,6 +58,8 @@ export const StyledTitlebar = styled.div`
 // "雨见浏览器 / RainPC"). Hidden in compact mode where space is tight.
 export const Brand = styled.div`
   position: relative;
+  /* 叠在多行独立成栏时外扩到左侧的标签容器之上 */
+  z-index: 3;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -117,11 +129,25 @@ export const BrandSub = styled.div`
   color: #a8b2c7;
 `;
 
-// RainPC 与工作区圆点同一行
+// RainPC 与在线绿点同一行
 export const BrandSubRow = styled.div`
   display: flex;
   align-items: center;
   gap: 5px;
+`;
+
+// 互联状态点:已开启在线=绿、已开启离线=琥珀(互联未开启时不渲染)
+export const OnlineDot = styled.div`
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+
+  ${({ online }: { online: boolean }) => css`
+    background-color: ${online ? '#2ecc71' : '#f5a623'};
+    box-shadow: 0 0 0 2px
+      ${online ? 'rgba(46, 204, 113, 0.25)' : 'rgba(245, 166, 35, 0.25)'};
+  `}
 `;
 
 export const WorkspaceDot = styled.div<{ color: string }>`

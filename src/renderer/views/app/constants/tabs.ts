@@ -1,5 +1,8 @@
 export const TAB_MAX_WIDTH = 240;
 export const TAB_MIN_WIDTH = 72;
+// 多行 shrink 模式的舒适换行宽度。标签先从最大宽度收缩到该值，继续变窄
+// 才增加一行；达到配置行数上限后仍可继续缩到 TAB_MIN_WIDTH。
+export const TAB_WRAP_WIDTH = 180;
 export const TAB_PINNED_WIDTH = 40;
 export const TAB_ANIMATION_DURATION = 200;
 export const TABS_PADDING = 2;

@@ -2,7 +2,14 @@ import { observer } from 'mobx-react-lite';
 import * as React from 'react';
 import { ipcRenderer, clipboard } from 'electron';
 
-import { AddTab, StyledTabbar, TabsContainer, TabbarEnd, LinkDropIndicator } from './style';
+import {
+  AddTab,
+  StyledTabbar,
+  TabsContainer,
+  TabbarEnd,
+  LinkDropIndicator,
+  TabScrollExtent,
+} from './style';
 import { Tabs } from '../Tabs';
 import store from '../../store';
 import { TabGroup } from '../TabGroup';
@@ -59,6 +66,7 @@ const onTabsMouseLeave = () => {
 
   timeout = setTimeout(() => {
     store.tabs.removedTabs = 0;
+    store.tabs.removedTabRows = [];
     store.tabs.updateTabsBounds(true);
   }, 300);
 };
@@ -72,8 +80,13 @@ const onTabsDragOver = (e: React.DragEvent<HTMLDivElement>) => {
   // 必须 preventDefault 才能在松手时触发 drop。
   e.preventDefault();
   if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
-  const res = store.tabs.computeLinkDrop(e.clientX);
-  if (res) store.tabs.setLinkDropLeft(res.indicatorLeft);
+  const res = store.tabs.computeLinkDrop(e.clientX, e.clientY);
+  if (res) {
+    store.tabs.setLinkDropPosition({
+      left: res.indicatorLeft,
+      top: res.indicatorTop,
+    });
+  }
 };
 
 const onTabsDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
@@ -93,7 +106,7 @@ const onTabsDrop = (e: React.DragEvent<HTMLDivElement>) => {
   const url = getDraggedLinkURL(e.dataTransfer);
   if (!url) return;
 
-  const res = store.tabs.computeLinkDrop(e.clientX);
+  const res = store.tabs.computeLinkDrop(e.clientX, e.clientY);
   if (!res) return;
   // Left-button gesture drags carry a private MIME marker. Their foreground /
   // background preference is read from the gesture settings; ordinary
@@ -136,6 +149,55 @@ export const Tabbar = observer(() => {
     return () => container.removeEventListener('wheel', onWheel);
   }, []);
 
+  React.useLayoutEffect(() => {
+    const container = store.tabs.containerRef.current;
+    if (!container || typeof ResizeObserver === 'undefined') return undefined;
+    let frame = 0;
+    // 同时观察 StyledTabbar:品牌块宽度变化会移动第 0 行起点,而独立成栏时
+    // 外扩后的容器总宽度可能不变。
+    const bar = store.tabs.tabbarRef.current;
+    const lastWidths = new Map<Element, number>();
+    lastWidths.set(container, Math.round(container.getBoundingClientRect().width));
+    if (bar) lastWidths.set(bar, Math.round(bar.getBoundingClientRect().width));
+    const observer = new ResizeObserver((entries) => {
+      let changed = false;
+      for (const entry of entries) {
+        const width = Math.round(entry.contentRect.width || 0);
+        if (!width || width === lastWidths.get(entry.target)) continue;
+        lastWidths.set(entry.target, width);
+        changed = true;
+      }
+      if (!changed) return;
+      if (frame) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        store.tabs.updateTabsBounds(false);
+      });
+    });
+    observer.observe(container);
+    if (bar) observer.observe(bar);
+    return () => {
+      observer.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, []);
+
+  React.useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const container = store.tabs.containerRef.current;
+      const selected = getSelectedTopTabElement();
+      if (!container || !selected) return;
+      const containerRect = container.getBoundingClientRect();
+      const selectedRect = selected.getBoundingClientRect();
+      if (selectedRect.left < containerRect.left) {
+        container.scrollLeft -= containerRect.left - selectedRect.left;
+      } else if (selectedRect.right > containerRect.right) {
+        container.scrollLeft += selectedRect.right - containerRect.right;
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [store.tabs.selectedTabId, store.tabs.scrollable]);
+
   // 右键「+ 新建标签」按钮 → 读剪贴板:网址则新建标签打开、文本则搜索、空则提示。
   const onAddTabContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
     const t = getShellTranslator();
@@ -163,9 +225,14 @@ export const Tabbar = observer(() => {
   };
 
   return (
-    <StyledTabbar data-rainsee-part="tab-bar">
+    <StyledTabbar
+      data-rainsee-part="tab-bar"
+      ref={store.tabs.tabbarRef}
+      $fullRows={store.tabs.fullWidthRows}
+    >
       <TabsContainer
         $allowScroll={store.settings.object.tabOverflowBehavior !== 'shrink'}
+        $inset={store.tabs.fullWidthRows ? store.tabs.fullRowInset : undefined}
         data-rainsee-part="tabs"
         onMouseEnter={onMouseEnter}
         onMouseLeave={onTabsMouseLeave}
@@ -174,12 +241,15 @@ export const Tabbar = observer(() => {
         onDrop={onTabsDrop}
         ref={store.tabs.containerRef}
       >
+        <TabScrollExtent $width={store.tabs.scrollContentWidth} />
         <TabGroups />
         <Tabs />
         {/* 网页链接拖入时的投放指示线,与标签同坐标系,随容器滚动跟随。 */}
-        {store.tabs.linkDropLeft != null && (
+        {store.tabs.linkDropPosition != null && (
           <LinkDropIndicator
-            style={{transform: `translateX(${store.tabs.linkDropLeft}px)`}}
+            style={{
+              transform: `translate(${store.tabs.linkDropPosition.left}px, ${store.tabs.linkDropPosition.top}px)`,
+            }}
           />
         )}
       </TabsContainer>
@@ -193,7 +263,7 @@ export const Tabbar = observer(() => {
           divRef={store.addTab.setRef}
         />
       )}
-      <TabbarEnd>
+      <TabbarEnd ref={store.tabs.tabbarEndRef}>
         {store.tabs.scrollable && (
           <ToolbarButton
             rainseeAction="new-tab"

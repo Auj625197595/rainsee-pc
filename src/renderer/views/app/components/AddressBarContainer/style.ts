@@ -6,8 +6,8 @@ export const StyledAddressBarContainer = styled.div`
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 0;
   top: 0;
+  height: ${({ theme }: { theme?: ITheme }) => theme.titlebarBaseHeight}px;
   will-change: transform, opacity;
   z-index: 999;
   align-items: center;

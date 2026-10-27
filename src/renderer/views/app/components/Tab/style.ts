@@ -84,45 +84,109 @@ interface PinActionProps {
 }
 
 export const StyledPinAction = styled.div`
-  height: 12px;
-  width: 12px;
-  border-radius: 100%;
-  transition: 0.1s background-color;
+  height: 16px;
+  width: 16px;
+  border-radius: 50%;
+  box-sizing: border-box;
+  transition: 0.12s background-color, 0.12s box-shadow, 0.12s transform;
   z-index: 10;
   position: fixed;
-  right: 8px;
-  top: 8px;
-  ${centerIcon(10)};
+  right: 6px;
+  top: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
 
   ${({ visible, theme, icon }: PinActionProps) => css`
-      display: ${visible ? 'block' : 'none'};
-      background-color: ${
-        theme['toolbar.lightForeground'] ? 'rgb(255, 255, 255)' : 'rgb(0, 0, 0)'
-      };
-      background-image: url('${icon}');
+      display: ${visible ? 'flex' : 'none'};
+      /* Keep the glyph and its circular hit target contrasting in either theme. */
+      background-color: ${theme['toolbar.lightForeground']
+        ? 'rgba(255, 255, 255, 0.94)'
+        : 'rgba(255, 255, 255, 0.96)'};
+      border: 1px solid ${theme['toolbar.lightForeground']
+        ? 'rgba(0, 0, 0, 0.28)'
+        : 'rgba(0, 0, 0, 0.18)'};
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
+
+      &::after {
+        content: '';
+        width: 10px;
+        height: 10px;
+        background-color: #182033;
+        -webkit-mask-image: url('${icon}');
+        mask-image: url('${icon}');
+        -webkit-mask-position: center;
+        mask-position: center;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+      }
     `}
 
   &:hover {
-    filter: invert(100%);
+    transform: scale(1.08);
+    background-color: #ffffff;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.36);
   }
 `;
 
 interface TabProps {
   selected: boolean;
+  $row: number;
 }
+
+// 第 0 行标签的顶部偏移:在单行高度(titlebarBaseHeight)内垂直居中,与品牌块/工具箱/
+// 窗口控制同一中线;第 1 行起按 row * pitch 向下叠加(transform 驱动),视为额外的标签栏。
+// 标签/芯片/新建按钮/拖入指示线共用此原点;指针命中换算见 TabsStore.getTabsBlockOffset,两者须一致。
+export const tabsBlockTop = (theme: ITheme) =>
+  `${Math.max(0, (theme.titlebarBaseHeight - theme.tabSurfaceHeight) / 2)}px`;
+
+// 窗口最大化/全屏时,第 0 行标签上方 tabsBlockTop 的空隙是屏幕顶边的「盲点」区域:
+// 用透明伪元素把命中区向上补到容器顶部(=窗口顶边),鼠标顶到屏幕最上沿也能点中/悬停/拖拽
+// (Fitts 定律,同 Chrome)。非贴顶时保留这条空隙给窗口拖动与顶边缩放,不延伸。
+// extra:元素自身相对标签表面的额外下移量(如新建按钮在表面内再居中的偏移)。
+export const topHitExtension = (theme: ITheme, extra = 0) => {
+  if (!theme.tabHitExtendTop) return '';
+  const gap =
+    Math.max(0, (theme.titlebarBaseHeight - theme.tabSurfaceHeight) / 2) + extra;
+  if (gap <= 0) return '';
+  return css`
+    &::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: -${gap}px;
+      height: ${gap}px;
+      /* 盖住标题栏 ::before 的拖动区,否则这条带仍被系统当作标题栏拖动 */
+      -webkit-app-region: no-drag;
+    }
+  `;
+};
 
 export const StyledTab = styled.div`
   position: absolute;
-  height: 100%;
+  top: ${({ theme }: { theme: ITheme }) => tabsBlockTop(theme)};
+  height: ${({ theme }: { theme: ITheme }) => theme.tabSurfaceHeight}px;
   width: 0;
   left: 0;
   will-change: width, transform;
   -webkit-app-region: no-drag;
   display: flex;
   backface-visibility: hidden;
+  /* The parent owns the complete tab gesture surface. */
+  pointer-events: auto;
 
-  ${({ selected }: TabProps) => css`
-    z-index: ${selected ? 2 : 1};
+  ${({ $row, theme }: TabProps & { theme: ITheme }) =>
+    $row === 0 && topHitExtension(theme)};
+
+  ${({ selected, $row }: TabProps) => css`
+    /* Rows overlap by the top margin. Give the lower row precedence in the
+       overlap, while keeping the selected tab above its siblings in the same
+       row. */
+    z-index: ${$row * 2 + (selected ? 1 : 0)};
   `};
 `;
 
@@ -214,15 +278,13 @@ export const TabContainer = styled.div`
   height: 100%;
   backface-visibility: hidden;
   transition: 0.12s background-color, 0.12s box-shadow, 0.12s border-color;
+  pointer-events: auto;
   border-radius: 9999px;
 
   ${({ pinned, theme, hasTabGroup, selected, incognito, $density }: TabContainerProps) => css`
     max-width: ${pinned ? `${TAB_PINNED_WIDTH}px` : '100%'};
     padding-right: ${selected ? `${8 * $density}px` : 0};
-    margin: ${theme.isCompact
-      ? 'auto 0'
-      : `${theme.tabMarginTop}px 0 ${4 * $density}px`};
-    height: ${theme.isCompact ? theme.tabHeight : 34}px;
+    height: ${theme.tabSurfaceHeight}px;
     border: 1px solid
       ${incognito
         ? selected
