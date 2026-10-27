@@ -1,0 +1,242 @@
+{
+  "apDragHandle": [
+    "拖动面板",
+    "Drag panel"
+  ],
+  "apParent": [
+    "上一层",
+    "Parent layer"
+  ],
+  "apChild": [
+    "下一层",
+    "Child layer"
+  ],
+  "apBack": [
+    "返回",
+    "Back"
+  ],
+  "apPreviewHide": [
+    "预览隐藏",
+    "Preview hiding"
+  ],
+  "apPreviewCancel": [
+    "取消预览",
+    "Cancel preview"
+  ],
+  "apHideElement": [
+    "隐藏元素",
+    "Hide element"
+  ],
+  "apBlockResource": [
+    "拦截资源",
+    "Block resource"
+  ],
+  "apMatchesN": [
+    "匹配 {count} 个",
+    "{count} matches"
+  ],
+  "apSize": [
+    "尺寸 {w}×{h}",
+    "Size {w}×{h}"
+  ],
+  "apChildHistoryN": [
+    "已展开 {count} 层",
+    "Expanded {count} layers"
+  ],
+  "apUnableBuildRule": [
+    "无法生成规则",
+    "Couldn't generate a rule"
+  ],
+  "apElement": [
+    "元素",
+    "Element"
+  ],
+  "adSubEmpty": [
+    "地址不能为空",
+    "The URL can't be empty"
+  ],
+  "adSubInvalidUrl": [
+    "地址需以 http(s):// 开头",
+    "The URL must start with http(s)://"
+  ],
+  "adSubExists": [
+    "该订阅已存在",
+    "This subscription already exists"
+  ],
+  "adSubFetchFailed": [
+    "无法拉取该订阅地址",
+    "Couldn't fetch this subscription URL"
+  ],
+  "adWhitelistEmpty": [
+    "域名不能为空",
+    "The domain can't be empty"
+  ],
+  "adWhitelistExists": [
+    "该域名已在白名单",
+    "This domain is already whitelisted"
+  ],
+  "xdLaunchFailed": [
+    "唤起{name}失败,请确认已安装{name}。",
+    "Couldn't launch {name}. Make sure {name} is installed."
+  ],
+  "xdPathNotFound": [
+    "未找到{name},请在设置中确认路径。",
+    "{name} wasn't found. Check its path in Settings."
+  ],
+  "ivCollectFailed": [
+    "收集图片失败",
+    "Failed to collect images"
+  ],
+  "ivOpenFailed": [
+    "打开失败",
+    "Failed to open"
+  ],
+  "ivCollectedN": [
+    "已收集 {count} 张图片",
+    "Collected {count} images"
+  ],
+  "mdInvalidPageUrl": [
+    "请输入有效的网页地址",
+    "Enter a valid web page address"
+  ],
+  "mdPageUrlHttpOnly": [
+    "仅支持 http/https 网页地址",
+    "Only http/https pages are supported"
+  ],
+  "mdNoBrowserWindow": [
+    "没有可用的浏览器窗口",
+    "No browser window is available"
+  ],
+  "mdNoVideoSniffed": [
+    "未嗅探到可下载的视频资源",
+    "No downloadable video was detected"
+  ],
+  "mdSniffPageClosed": [
+    "嗅探页面已关闭",
+    "The sniffing page was closed"
+  ],
+  "mdSegFileMissing": [
+    "切片 {index} 下载文件不存在",
+    "Segment {index} download file doesn't exist"
+  ],
+  "mdSegNotMp4Compatible": [
+    "切片 {index} 无法转换为 MP4，仅支持 H.264/AAC 的 MPEG-TS 流",
+    "Segment {index} can't be converted to MP4; only H.264/AAC MPEG-TS streams are supported"
+  ],
+  "mdMp4InitMissing": [
+    "未生成 MP4 初始化数据，请确认视频为 H.264/AAC 的 MPEG-TS 流",
+    "MP4 initialization data wasn't generated; make sure the video is an H.264/AAC MPEG-TS stream"
+  ],
+  "mdPlaylistNoSegments": [
+    "m3u8 中未解析到任何切片",
+    "No segments were parsed from the m3u8 playlist"
+  ],
+  "mdHlsHevcUnsupported": [
+    "当前 HLS 视频不是 H.264/AAC，纯 JS MP4 封装无法处理 HEVC/H.265 流",
+    "This HLS video isn't H.264/AAC; pure-JS MP4 muxing can't handle HEVC/H.265 streams"
+  ],
+  "mdHlsRemuxUnsupported": [
+    "当前 HLS 视频无法使用纯 JS 封装为 MP4（仅支持 H.264/AAC）",
+    "This HLS video can't be muxed to MP4 in pure JS (H.264/AAC only)"
+  ],
+  "srWorkDefault": [
+    "坐得有点久了，起来活动一下吧",
+    "You've been sitting for a while — time to stretch!"
+  ],
+  "srBreakDefault": [
+    "休息结束，开始下一轮吧",
+    "Break over — time to start the next round"
+  ],
+  "srTitleReminderTest": [
+    "久坐提醒（测试）",
+    "Sedentary reminder (test)"
+  ],
+  "srTitleReminder": [
+    "久坐提醒",
+    "Sedentary reminder"
+  ],
+  "srTitleBreakEnd": [
+    "休息结束",
+    "Break finished"
+  ],
+  "srTitleCompleted": [
+    "久坐循环已完成",
+    "Sedentary cycle complete"
+  ],
+  "bmioImportFilterName": [
+    "选择要导入的书签文件",
+    "Choose a bookmarks file to import"
+  ],
+  "bmioUntitledFolderName": [
+    "文件夹",
+    "Folder"
+  ],
+  "bmioExportFilterName": [
+    "选择导出书签文件路径",
+    "Choose where to save the exported bookmarks"
+  ],
+  "trCustomLlmMissingConfig": [
+    "请先在设置中填写自定义翻译的接口地址与密钥",
+    "Configure the custom translation endpoint and API key in Settings first"
+  ],
+  "trErrTimeout": [
+    "翻译请求超时,请重试",
+    "The translation request timed out. Try again."
+  ],
+  "trErrQuota": [
+    "雨见翻译额度不足,请登录或升级会员",
+    "Your Rainsee translation quota is used up. Sign in or upgrade to continue."
+  ],
+  "trErrRateLimited": [
+    "翻译请求过于频繁,请稍后再试",
+    "Too many translation requests. Try again later."
+  ],
+  "trErrAuth": [
+    "翻译服务鉴权失败,请重新登录",
+    "Translation authentication failed. Sign in again."
+  ],
+  "trErrUnavailable": [
+    "翻译服务暂时不可用,请稍后再试",
+    "The translation service is temporarily unavailable. Try again later."
+  ],
+  "trErrResponseParse": [
+    "翻译响应解析失败,请重试",
+    "Couldn't parse the translation response. Try again."
+  ],
+  "trErrGeneric": [
+    "翻译失败,请稍后再试",
+    "Translation failed. Try again later."
+  ],
+  "trErrBadFormat": [
+    "翻译响应格式异常",
+    "The translation response has an unexpected format."
+  ],
+  "trErrHttp": [
+    "翻译服务返回 {status} {detail}",
+    "The translation service returned {status} {detail}"
+  ],
+  "trErrParse": [
+    "翻译结果解析失败,请重试",
+    "Couldn't parse the translation result. Try again."
+  ],
+  "shotSaveDialogTitle": [
+    "保存截图",
+    "Save screenshot"
+  ],
+  "shotFilterPng": [
+    "PNG 图片",
+    "PNG image"
+  ],
+  "coePageUnsupported": [
+    "当前页面不支持清理",
+    "This page doesn't support clearing"
+  ],
+  "incognitoTitle": [
+    "无痕浏览",
+    "Incognito browsing"
+  ],
+  "afTriedAutofill": [
+    "已尝试自动填充（如果没有反应，请确定是否是登录页）",
+    "Autofill attempted (if nothing happened, check that this is the login page)"
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "vwPermBlockedNotice": ["已跟随权限管理进行拦截，如有修改请前往权限管理修改", "Blocked following your permission rules. To change this, go to permission management."],
+  "vwFlashTitle": ["Flash 支持", "Flash support"],
+  "vwFlashDetected": ["检测到网页正在使用 Flash，Flash 兼容插件已安装。", "This page is using Flash, and the Flash compatibility plugin has been installed."],
+  "vwFlashConfirmReload": ["点击“确认并刷新”让兼容插件在当前页面生效。", "Click \"Confirm and reload\" to apply the plugin to this page."],
+  "vwConfirmReload": ["确认并刷新", "Confirm and reload"],
+  "vwLater": ["稍后", "Later"],
+  "vwNoReloadPermission": ["无权重新加载该页面", "Not allowed to reload this page"],
+  "vwNoRetryUrl": ["无法获取待重试的网址", "Could not get the URL to retry"],
+  "vwNoCertIgnore": ["无权忽略该证书错误", "Not allowed to ignore this certificate error"],
+  "vwPotPlayerNotFound": ["未找到PotPlayer的安装路径", "PotPlayer installation path not found"],
+  "vwFriendlyNotice": ["温馨提示", "Friendly reminder"],
+  "vwPotPlayerMissing": ["请确认你有安装PotPlayer，安装后才能唤起播放视频", "Please make sure PotPlayer is installed before using it to play videos"],
+  "vwNoDomain": ["无法获取当前域名", "Could not get the current domain"],
+  "vwNoDowngrade": ["当前地址无法降级", "The current address cannot be downgraded"],
+  "vwCertRecoverFailed": ["证书错误自动恢复失败", "Failed to recover from the certificate error automatically"]
+}

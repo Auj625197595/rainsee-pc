@@ -1,0 +1,10 @@
+{
+  "sdSelectedN": ["已选中 {count} 项", "{count} selected"],
+  "sdPinToTop": ["置顶", "Pin to top"],
+  "ontOpenNewTabHint": ["勾选后,单击/点标题在新标签页打开", "When checked, a single click or clicking the title opens the link in a new tab"],
+  "ontOpenNewPage": ["在新页面打开", "Open in new page"],
+  "acDeleteRecord": ["删除这条记录", "Delete this entry"],
+  "acDeleteRecordConfirm": ["确定要删除这条记录吗?", "Delete this entry?"],
+  "acGoManage": ["去管理", "Manage"],
+  "amMoreOptions": ["更多应用选项", "More app options"]
+}

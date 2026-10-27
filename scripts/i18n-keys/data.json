@@ -1,0 +1,234 @@
+{
+  "dlocErrNoDirSelected": [
+    "未选择目录",
+    "No directory selected"
+  ],
+  "dlocErrInvalidPath": [
+    "目录路径无效",
+    "Invalid directory path"
+  ],
+  "dlocErrSameDir": [
+    "新目录与当前数据目录相同,无需迁移",
+    "The new directory is the same as the current data directory; no migration is needed"
+  ],
+  "dlocErrParentDir": [
+    "新目录不能是当前数据目录,也不能是它的上级目录(会递归复制)",
+    "The new directory cannot be the current data directory or one of its parent directories (data would be copied recursively)"
+  ],
+  "dlocErrInsideCurrent": [
+    "新目录不能位于当前数据目录内(会递归复制)",
+    "The new directory cannot be inside the current data directory (data would be copied recursively)"
+  ],
+  "dlocErrSystemDir": [
+    "不能使用系统关键目录(系统盘根 / Windows / Program Files / 用户主目录等)",
+    "Critical system directories are not allowed (system drive root, Windows, Program Files, user home directory, etc.)"
+  ],
+  "dlocErrNotWritable": [
+    "目录不可写(权限不足或不可达)",
+    "The directory is not writable (insufficient permissions or unreachable)"
+  ],
+  "dlocSpaceWarnN": [
+    "目标磁盘剩余空间不足(数据约 {need} MB,目标可用约 {have} MB),迁移可能失败",
+    "Not enough free space on the target disk (about {need} MB of data, about {have} MB available); migration may fail"
+  ],
+  "dlocExistingNoteN": [
+    "目标目录非空(已有 {count} 项),迁移可能与既有文件混存。",
+    "The target directory is not empty ({count} items); migrated data may mix with existing files."
+  ],
+  "dlocErrSavePointer": [
+    "无法保存数据目录设置,请检查系统 AppData 目录权限后重试",
+    "Could not save the data directory setting; check the permissions of the system AppData directory and try again"
+  ],
+  "dlocMigrationFailedTitle": [
+    "数据迁移失败",
+    "Data migration failed"
+  ],
+  "dlocMigrationFailedBody": [
+    "迁移数据到 {to} 失败,数据仍保留在原位置 {from}。",
+    "Failed to migrate data to {to}; your data is still at the original location {from}."
+  ],
+  "dlocAltManagedByMain": [
+    "小号数据由主账号统一管理，不能单独迁移数据目录",
+    "Alt-account data is managed by the main account and cannot be migrated separately"
+  ],
+  "dlocCloseRunningProfiles": [
+    "请先关闭正在运行的小号：{names}",
+    "Close the running alt accounts first: {names}"
+  ],
+  "dlocChooseDialogTitle": [
+    "选择数据存储位置",
+    "Choose data storage location"
+  ],
+  "dlocDataLossTitle": [
+    "数据可能丢失",
+    "Data may be lost"
+  ],
+  "dlocInInstallDirMsg": [
+    "所选目录位于当前安装目录内",
+    "The selected directory is inside the current installation directory"
+  ],
+  "dlocInInstallDirDetail": [
+    "后续版本覆盖安装时，系统会先卸载旧版本，存放在安装目录内的数据可能被删除。您确定要这么做吗？",
+    "When a newer version is installed, the old version is uninstalled first, and data stored inside the installation directory may be deleted. Are you sure you want to continue?"
+  ],
+  "dlocKeepUsing": [
+    "仍然使用",
+    "Use anyway"
+  ],
+  "dlocAlreadyDefault": [
+    "当前已是默认数据目录",
+    "The current data directory is already the default one"
+  ],
+  "dlocCannotMigrateNow": [
+    "暂时无法迁移",
+    "Cannot migrate right now"
+  ],
+  "dlocCloseAltWindows": [
+    "请先关闭所有小号窗口",
+    "Close all alt account windows first"
+  ],
+  "dlocStillRunning": [
+    "仍在运行：{names}",
+    "Still running: {names}"
+  ],
+  "bkErrNoManifest": [
+    "未找到雨见备份清单",
+    "Rainsee backup manifest not found"
+  ],
+  "bkErrUnsupported": [
+    "不是受支持的雨见备份文件",
+    "Not a supported Rainsee backup file"
+  ],
+  "bkErrNoItems": [
+    "备份文件未包含可还原的数据",
+    "The backup file contains no restorable data"
+  ],
+  "bkErrInvalidEntryPath": [
+    "备份文件包含无效路径",
+    "The backup file contains an invalid path"
+  ],
+  "bkErrEscapePath": [
+    "备份文件包含越界路径",
+    "The backup file contains a path outside its root"
+  ],
+  "bkErrEmptySelection": [
+    "请至少选择一项要备份的数据",
+    "Select at least one type of data to back up"
+  ],
+  "bkChooseDirTitle": [
+    "选择备份保存位置",
+    "Choose where to save the backup"
+  ],
+  "bkCreateFailedFull": [
+    "创建备份失败，请检查目录权限和剩余空间",
+    "Failed to create the backup; check the folder permissions and free disk space"
+  ],
+  "bkErrInvalidPath": [
+    "备份路径无效",
+    "Invalid backup path"
+  ],
+  "bkErrNoRecord": [
+    "备份记录不存在",
+    "Backup record not found"
+  ],
+  "bkChooseFileTitle": [
+    "选择雨见备份文件",
+    "Choose a Rainsee backup file"
+  ],
+  "bkFileFilterName": [
+    "雨见备份文件",
+    "Rainsee backup file"
+  ],
+  "bkRestoreAllData": [
+    "全部数据（包括 Cookie、书签、历史、密码和扩展）",
+    "All data (including cookies, bookmarks, history, passwords and extensions)"
+  ],
+  "bkRestoreConfirmTitle": [
+    "确认覆盖还原",
+    "Confirm overwrite restore"
+  ],
+  "bkRestoreWarnMessage": [
+    "即将覆盖当前数据",
+    "Your current data is about to be overwritten"
+  ],
+  "bkRestoreWarnDetail": [
+    "将还原：{items}。当前对应数据会被覆盖，此操作无法撤销；还原完成后需要立即重启浏览器。",
+    "The following will be restored: {items}. The corresponding current data will be overwritten and this cannot be undone; the browser must be restarted immediately after the restore."
+  ],
+  "bkOverwriteRestore": [
+    "覆盖并还原",
+    "Overwrite and restore"
+  ],
+  "bkRestoreFailed": [
+    "还原失败，请稍后重试",
+    "Restore failed; please try again later"
+  ],
+  "pnetErrSettingsOnly": [
+    "该操作只能从浏览器设置页执行",
+    "This action can only be performed from the browser settings page"
+  ],
+  "pnetErrDetectStatus": [
+    "检测服务返回 {status}",
+    "The detection service returned {status}"
+  ],
+  "pnetErrNoIp": [
+    "检测服务未返回出口 IP",
+    "The detection service did not return an exit IP"
+  ],
+  "pnetErrTimeout": [
+    "连接超时，请检查代理地址和端口",
+    "Connection timed out; check the proxy address and port"
+  ],
+  "pnetErrConnect": [
+    "无法连接代理",
+    "Could not connect to the proxy"
+  ],
+  "pnetErrNotAltWindow": [
+    "当前不是小号窗口",
+    "This is not an alt account window"
+  ],
+  "pnetErrInvalidProxy": [
+    "代理配置无效",
+    "Invalid proxy configuration"
+  ],
+  "pnetErrInvalidType": [
+    "请选择有效的代理类型",
+    "Choose a valid proxy type"
+  ],
+  "pnetErrPacRequired": [
+    "请提供 PAC 脚本或 URL",
+    "Provide a PAC script or URL"
+  ],
+  "pnetErrPacMissingFn": [
+    "PAC 脚本必须包含 FindProxyForURL 函数",
+    "The PAC script must define FindProxyForURL"
+  ],
+  "pnetErrPacTooLong": [
+    "PAC 脚本过长",
+    "The PAC script is too long"
+  ],
+  "pnetErrBypassInvalid": [
+    "不代理地址列表格式不正确",
+    "The bypass list format is invalid"
+  ],
+  "pnetErrHostRequired": [
+    "请输入代理服务器地址",
+    "Enter a proxy server address"
+  ],
+  "pnetErrHostInvalid": [
+    "代理服务器地址格式不正确",
+    "The proxy server address format is invalid"
+  ],
+  "pnetErrIpv6Brackets": [
+    "IPv6 地址需要使用方括号，例如 [::1]",
+    "IPv6 addresses need brackets, e.g. [::1]"
+  ],
+  "pnetErrPortRange": [
+    "代理端口必须在 1 到 65535 之间",
+    "The proxy port must be between 1 and 65535"
+  ],
+  "pnetErrCredentialTooLong": [
+    "代理账号或密码过长",
+    "The proxy username or password is too long"
+  ]
+}

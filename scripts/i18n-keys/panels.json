@@ -1,0 +1,158 @@
+{
+  "dseSettings": [
+    "双引擎搜索设置",
+    "Dual-engine search settings"
+  ],
+  "spnlExtFallback": [
+    "扩展程序",
+    "Extension"
+  ],
+  "spnlPinToToolbar": [
+    "固定到工具栏",
+    "Pin to toolbar"
+  ],
+  "spnlUnpinFromToolbar": [
+    "从工具栏取消固定",
+    "Unpin from toolbar"
+  ],
+  "spnlClose": [
+    "关闭侧边栏",
+    "Close side panel"
+  ],
+  "subsBack": [
+    "后退",
+    "Back"
+  ],
+  "subsTitle": [
+    "网站订阅",
+    "Website subscriptions"
+  ],
+  "wspLogPathUnknown": [
+    "(日志路径未知)",
+    "(log path unknown)"
+  ],
+  "wspLogReadFailed": [
+    "(无法读取日志文件)",
+    "(unable to read log file)"
+  ],
+  "wspLogEmpty": [
+    "(日志为空)",
+    "(log is empty)"
+  ],
+  "wspHeader": [
+    "===== 雨见浏览器 白屏/卡死诊断 =====",
+    "===== Rainsee Browser white-screen/freeze diagnostics ====="
+  ],
+  "wspUnknown": [
+    "(未知)",
+    "(unknown)"
+  ],
+  "wspOverlayTitle": [
+    "浏览器白屏恢复",
+    "Browser white-screen recovery"
+  ],
+  "wspOomTitle": [
+    "系统内存不足",
+    "Insufficient system memory"
+  ],
+  "wspOomMessage": [
+    "当前系统可用内存不足",
+    "The system is running out of available memory"
+  ],
+  "wspOomDetail": [
+    "系统暂时无法为浏览器分配足够的运行内存，页面已无法继续正常显示。请关闭其他占用内存较多的程序，然后重启浏览器。重启后将自动恢复本次打开的标签页。",
+    "The system can no longer allocate enough memory for the browser, so pages cannot display properly. Close other memory-heavy programs, then restart the browser. Your open tabs will be restored automatically after the restart."
+  ],
+  "wspRestartBrowser": [
+    "重启浏览器",
+    "Restart browser"
+  ],
+  "wspLogTruncated": [
+    "(…日志已截断,仅显示最后 60KB;完整日志点\"{action}\")",
+    "(…log truncated, showing the last 60KB only; click \"{action}\" to open the full log)"
+  ],
+  "bxmLocalBrowser": [
+    "本地浏览器",
+    "Local browser"
+  ],
+  "bxmDefaultProfile": [
+    "默认配置",
+    "Default profile"
+  ],
+  "bxmSelectedProfile": [
+    "所选配置",
+    "Selected profile"
+  ],
+  "whVerified": [
+    "已验证",
+    "Verified"
+  ],
+  "whNotSupported": [
+    "当前设备不支持 Windows Hello",
+    "This device does not support Windows Hello"
+  ],
+  "whNotConfigured": [
+    "未配置 Windows Hello,请先在「设置 - 账户 - 登录选项」中设置 PIN",
+    "Windows Hello is not configured. Set up a PIN in Settings > Accounts > Sign-in options first"
+  ],
+  "whDisabledByPolicy": [
+    "Windows Hello 被组策略禁用",
+    "Windows Hello is disabled by group policy"
+  ],
+  "whRetriesExhausted": [
+    "验证失败次数过多",
+    "Too many failed verification attempts"
+  ],
+  "whCanceled": [
+    "已取消验证",
+    "Verification canceled"
+  ],
+  "whNotVerified": [
+    "验证未通过",
+    "Verification failed"
+  ],
+  "whScriptMissing": [
+    "Windows Hello 脚本缺失,请重装应用",
+    "Windows Hello script is missing. Please reinstall the app"
+  ],
+  "whLaunchFailed": [
+    "无法启动 Windows Hello 验证",
+    "Failed to start Windows Hello verification"
+  ],
+  "whBadResponse": [
+    "Windows Hello 响应异常",
+    "Unexpected Windows Hello response"
+  ],
+  "mrSvcNetwork": [
+    "网络服务",
+    "Network service"
+  ],
+  "mrSvcAudio": [
+    "音频服务",
+    "Audio service"
+  ],
+  "mrSvcStorage": [
+    "存储服务",
+    "Storage service"
+  ],
+  "mrSvcMedia": [
+    "视频与采集服务",
+    "Video & capture service"
+  ],
+  "mrSvcDecoder": [
+    "数据解码服务",
+    "Data decoder service"
+  ],
+  "mrSvcProxy": [
+    "代理解析服务",
+    "Proxy resolver service"
+  ],
+  "mrSvcPrint": [
+    "打印服务",
+    "Printing service"
+  ],
+  "mrSvcOther": [
+    "系统辅助服务",
+    "System utility service"
+  ]
+}

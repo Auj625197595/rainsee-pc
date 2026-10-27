@@ -1,0 +1,258 @@
+{
+  "accLoginRequired": [
+    "请先登录账号",
+    "Sign in to your account first"
+  ],
+  "accDeviceAuthFailed": [
+    "设备授权失败",
+    "Device authorization failed"
+  ],
+  "accDeviceAuthFailedHttp": [
+    "设备授权失败 (HTTP {status})",
+    "Device authorization failed (HTTP {status})"
+  ],
+  "pwNoLocalToUpload": [
+    "本地没有可上传的密码",
+    "No saved passwords to upload"
+  ],
+  "pwUploadFailedNetwork": [
+    "上传失败(网络错误)",
+    "Upload failed (network error)"
+  ],
+  "pwUploadSuccessN": [
+    "已上传 {count} 条密码到云端",
+    "Uploaded {count} passwords to the cloud"
+  ],
+  "pwUploadFailed": [
+    "上传失败",
+    "Upload failed"
+  ],
+  "pwDownloadFailedNetwork": [
+    "下载失败(网络错误)",
+    "Download failed (network error)"
+  ],
+  "pwCloudEmpty": [
+    "云端没有密码数据",
+    "No password data in the cloud"
+  ],
+  "pwDownloadFailedParse": [
+    "下载失败(数据解析错误)",
+    "Download failed (data parsing error)"
+  ],
+  "pwImportedFromCloudN": [
+    "已从云端导入 {count} 条新密码",
+    "Imported {count} new passwords from the cloud"
+  ],
+  "pwCloudAllExist": [
+    "云端密码均已存在",
+    "All cloud passwords already exist locally"
+  ],
+  "pwExportVerifyIdentity": [
+    "导出密码需要验证身份",
+    "Verify your identity to export passwords"
+  ],
+  "pwNoLocalToExport": [
+    "本地没有可导出的密码",
+    "No saved passwords to export"
+  ],
+  "pwCsvFileFilter": [
+    "CSV 文件",
+    "CSV files"
+  ],
+  "pwExportCancelled": [
+    "已取消导出",
+    "Export cancelled"
+  ],
+  "pwWriteFileFailed": [
+    "写入文件失败",
+    "Failed to write the file"
+  ],
+  "pwExportedN": [
+    "已导出 {count} 条密码",
+    "Exported {count} passwords"
+  ],
+  "pwImportCancelled": [
+    "已取消导入",
+    "Import cancelled"
+  ],
+  "pwReadFileFailed": [
+    "读取文件失败",
+    "Failed to read the file"
+  ],
+  "pwImportUnrecognized": [
+    "未识别到密码(请用 Chrome/Firefox 导出的 CSV)",
+    "No passwords recognized (use a CSV exported from Chrome/Firefox)"
+  ],
+  "pwImportedN": [
+    "已导入 {count} 条新密码(共 {total} 行)",
+    "Imported {count} new passwords ({total} rows in total)"
+  ],
+  "pwFileAllExist": [
+    "文件中的密码均已存在",
+    "All passwords in the file already exist"
+  ],
+  "pwSettingsSaveFailed": [
+    "无法保存密码云服务设置，请稍后重试",
+    "Couldn't save the password sync settings. Try again later"
+  ],
+  "pwSyncedToggleSaveFailed": [
+    "密码已同步，但云服务开关保存失败，请稍后重试",
+    "Passwords synced, but the service toggle couldn't be saved. Try again later"
+  ],
+  "pwDivergedData": [
+    "本地和云端都有不同的密码数据",
+    "This device and the cloud hold different passwords"
+  ],
+  "pwDivergedDetail": [
+    "本地 {local} 条，云端 {cloud} 条。请选择首次同步方式。",
+    "{local} on this device, {cloud} in the cloud. Choose how to sync for the first time."
+  ],
+  "pwMergeBoth": [
+    "合并两端",
+    "Merge both"
+  ],
+  "pwUseLocal": [
+    "使用本地",
+    "Use this device"
+  ],
+  "pwUseCloud": [
+    "使用云端",
+    "Use the cloud"
+  ],
+  "pwServiceUnavailable": [
+    "无法连接密码云服务，请稍后重试",
+    "Couldn't reach the password sync service. Try again later"
+  ],
+  "pwClearCloudQuestion": [
+    "是否同时清空云端密码？",
+    "Also clear the passwords in the cloud?"
+  ],
+  "pwClearCloudDetail": [
+    "清空会删除云端当前数据、最近 5 个每日备份以及旧客户端兼容副本。本机密码不会删除。",
+    "Clearing deletes the current cloud data, the last 5 daily backups and the legacy client copy. Passwords on this device are kept."
+  ],
+  "pwStopOnly": [
+    "仅停止同步",
+    "Stop syncing only"
+  ],
+  "pwStopAndClear": [
+    "停止并清空云端",
+    "Stop and clear the cloud"
+  ],
+  "pwClearFailed": [
+    "清空云端失败，未关闭同步",
+    "Failed to clear the cloud; sync is still on"
+  ],
+  "pwToggleSaveFailed": [
+    "无法保存密码云服务开关，请稍后重试",
+    "Couldn't save the password sync toggle. Try again later"
+  ],
+  "pwRestoreBackupTitle": [
+    "恢复密码备份",
+    "Restore password backup"
+  ],
+  "pwRestoreConfirm": [
+    "恢复 {date} 的密码备份？",
+    "Restore the password backup from {date}?"
+  ],
+  "pwRestoreDetail": [
+    "恢复后会生成新的云端版本，并同步到其他设备。",
+    "Restoring creates a new cloud revision and syncs it to your other devices."
+  ],
+  "pwRestoreFailed": [
+    "恢复失败，请稍后重试",
+    "Restore failed. Try again later"
+  ],
+  "pwSafetyModeTitle": [
+    "密码同步安全模式",
+    "Password sync safe mode"
+  ],
+  "pwSafetyDeletedN": [
+    "另一台设备删除了 {count} 条密码",
+    "Another device deleted {count} passwords"
+  ],
+  "pwSafetyDetailSync": [
+    "删除前共有 {before} 条。可同步云端删除，也可保留本机密码并覆盖云端；暂不同步会继续保留本机数据并暂停同步。",
+    "There were {before} before deletion. You can apply the cloud deletion, or keep local passwords and overwrite the cloud; deferring keeps local data and pauses syncing."
+  ],
+  "pwSafetyDetailReview": [
+    "同步删除会应用云端版本；使用本地会保留本机密码并覆盖云端；暂不同步会继续暂停同步。",
+    "Syncing the deletion applies the cloud version; using local keeps this device's passwords and overwrites the cloud; deferring keeps syncing paused."
+  ],
+  "pwSyncDeletion": [
+    "同步删除",
+    "Sync deletion"
+  ],
+  "pwOverwriteCloudWithLocal": [
+    "使用本地覆盖云端",
+    "Overwrite cloud with local"
+  ],
+  "pwDeferSync": [
+    "暂不同步",
+    "Don't sync for now"
+  ],
+  "pwSyncFailed": [
+    "同步失败，请稍后重试",
+    "Sync failed. Try again later"
+  ],
+  "pwTransportKeyUnavailable": [
+    "密码云服务加密密钥不可用",
+    "Password sync encryption key is unavailable"
+  ],
+  "bcsMobileCloudOverwriteFailed": [
+    "云端覆盖本地移动书签失败",
+    "Failed to overwrite local mobile bookmarks with the cloud version"
+  ],
+  "bcsSettingsSaveFailed": [
+    "无法保存书签云服务设置，请稍后重试",
+    "Couldn't save the bookmark sync settings. Try again later"
+  ],
+  "bcsInvalidSafetyDecision": [
+    "无效的安全提醒处理方式",
+    "Invalid safety notice action"
+  ],
+  "bcsLoginRequired": [
+    "请先登录并开启账号级书签云服务",
+    "Sign in and enable the account-level bookmark service first"
+  ],
+  "bcsSafetyResolveFailed": [
+    "处理书签同步安全提醒失败，请稍后重试",
+    "Failed to resolve the bookmark sync safety notice. Try again later"
+  ],
+  "bcsRestoreTitle": [
+    "恢复书签备份",
+    "Restore bookmark backup"
+  ],
+  "bcsRestoreConfirm": [
+    "恢复 {date} 的桌面书签备份？",
+    "Restore the desktop bookmark backup from {date}?"
+  ],
+  "bcsRestoreDetail": [
+    "恢复会生成新的云端版本，并同步到其他桌面设备。",
+    "Restoring creates a new cloud revision and syncs it to your other desktop devices."
+  ],
+  "bcsRestoreFailed": [
+    "恢复书签备份失败",
+    "Failed to restore the bookmark backup"
+  ],
+  "bcsTransportKeyUnavailable": [
+    "书签云服务加密密钥不可用",
+    "Bookmark sync encryption key is unavailable"
+  ],
+  "bcsMobileOverwriteTitle": [
+    "云端覆盖本地移动书签",
+    "Overwrite local mobile bookmarks from the cloud"
+  ],
+  "bcsMobileOverwriteQuestion": [
+    "使用云端移动书签覆盖本机“移动设备”目录？",
+    "Replace the local \"Mobile devices\" folder with cloud mobile bookmarks?"
+  ],
+  "bcsMobileOverwriteDetail": [
+    "本机移动设备目录中的新增、修改和删除将被云端版本替换。此操作不会修改云端。",
+    "Additions, edits and deletions in the local mobile folder will be replaced by the cloud version. The cloud copy is not modified."
+  ],
+  "bcsMobileOverwriteAction": [
+    "覆盖本地",
+    "Overwrite local"
+  ]
+}
