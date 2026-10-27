@@ -4,6 +4,11 @@ import {createLocaleTranslator} from '~/common/i18n';
 
 const windowId = rendererCapabilities.lifecycle.getWindowId();
 
+// 网页 view 是 contextIsolation:false,与页面共享全局。部分老系统会用只有 put/get 的
+// 自定义实现覆盖全局 Set,调用时再 new Set() 就拿到页面的假 Set → "t.has is not a
+// function"。preload 先于页面脚本执行，在此留存原生构造器。
+const NativeSet = Set;
+
 // 注入面板的可见文案按 --lang 基线(navigator.language)即时翻译;关键词表(KW_*)是
 // 匹配语料而非 UI,保持中英混合不动。
 const acTranslator = () => createLocaleTranslator(undefined);
@@ -53,7 +58,7 @@ interface Credential {
 }
 
 // 元素是否可见(对齐鸿蒙跳过 hidden / 不可见)
-const isVisible = (el: HTMLElement): boolean => {
+export const isVisible = (el: HTMLElement): boolean => {
   if (!el) return false;
   const input = el as HTMLInputElement;
   if (input.type === 'hidden') return false;
@@ -126,7 +131,7 @@ const classify = (el: HTMLInputElement): FieldKind => {
 
 // 原生赋值 + 派发事件:React/Vue 受控组件必须走原生 setter 再 dispatch input,
 // 否则框架内部 state 不更新,提交时拿到的还是空(对齐鸿蒙 d(el,val) 的 dispatchEvent)。
-const setValue = (el: HTMLInputElement, value: string) => {
+export const setValue = (el: HTMLInputElement, value: string) => {
   try {
     const proto = Object.getPrototypeOf(el);
     const desc = Object.getOwnPropertyDescriptor(proto, 'value');
@@ -154,7 +159,7 @@ const scanInputs = (): HTMLInputElement[] => {
   return all.filter((el) => isVisible(el) && classify(el) !== 'none');
 };
 
-const isLikelySubmitControl = (target: HTMLElement | null) => {
+export const isLikelySubmitControl = (target: HTMLElement | null) => {
   if (!target || typeof target.closest !== 'function') return false;
   const control = target.closest(
     'button, input[type="submit"], input[type="image"], [role="button"]',
@@ -199,7 +204,7 @@ const isLikelySubmitControl = (target: HTMLElement | null) => {
 // 递归收集所有同源可访问的 document。登录表单常被放在 iframe 内(如友盟/阿里系
 // passport 登录页),主文档查不到密码框;遍历各 frame 的 document 才能定位。
 // 跨域 frame 访问 contentDocument 会抛 SecurityError,catch 跳过。
-const collectDocs = (win: Window, acc: Document[]): Document[] => {
+export const collectDocs = (win: Window, acc: Document[]): Document[] => {
   try {
     acc.push(win.document);
     for (let i = 0; i < win.frames.length; i++) {
@@ -326,7 +331,8 @@ const isMislabeledLoginPassword = (el: HTMLInputElement) => {
   const controlValues = form
     ? Array.from(
         form.querySelectorAll<HTMLElement>(
-          'button:not([type]),button[type="submit"],input[type="submit"],input[type="image"]',
+          // Element UI 等组件库的登录按钮常为 type=button，由 JS 发起提交。
+          'button:not([type]),button[type="submit"],button[type="button"],input[type="submit"],input[type="image"]',
         ),
       )
         .flatMap((control) => [
@@ -349,11 +355,14 @@ const isMislabeledLoginPassword = (el: HTMLInputElement) => {
   ) {
     return false;
   }
-  const pathname = (
-    el.ownerDocument.defaultView?.location.pathname || ''
-  ).toLowerCase();
-  const loginPath = /(^|[\/_.-])(login|signin|sign-in|logon)([\/_.-]|$)/.test(
-    pathname,
+  const location = el.ownerDocument.defaultView?.location;
+  // hash 路由 SPA(如 /#/login?redirect_uri=...)的登录路径只出现在 hash 中。
+  const routePaths = [
+    location?.pathname || '',
+    (location?.hash || '').replace(/^#!?/, '').split('?')[0],
+  ].map((value) => value.toLowerCase());
+  const loginPath = routePaths.some((value) =>
+    /(^|[\/_.-])(login|signin|sign-in|logon)([\/_.-]|$)/.test(value),
   );
   return (
     hasSemanticKeyword(fieldValues, loginKeywords) ||
@@ -376,7 +385,7 @@ const locateFields = (
     const all = Array.from(doc.querySelectorAll('input')) as HTMLInputElement[];
     const visible = all.filter((el) => isVisible(el));
     const scopes: HTMLInputElement[][] = [];
-    const seenForms = new Set<HTMLFormElement>();
+    const seenForms = new NativeSet<HTMLFormElement>();
     const addForm = (form: HTMLFormElement | null) => {
       if (!form || seenForms.has(form)) return;
       const formInputs = (
@@ -912,7 +921,15 @@ class AutoCompleteEngine {
 
   // 把候选应用到页面:绑定焦点下拉、首条自动填充
   private applyToPage() {
-    const { password, username, isLoginForm } = locateFields();
+    let fields: ReturnType<typeof locateFields>;
+    try {
+      fields = locateFields();
+    } catch (error) {
+      // 页面篡改了内置对象/DOM 时只放弃自动填充，不把异常抛进页面。
+      console.warn('[autofill] locateFields failed', error);
+      return;
+    }
+    const { password, username, isLoginForm } = fields;
     if (!password) return; // 没有密码框 = 不是登录表单
 
     // 改密/注册表单的密码框不展示候选，也不能自动写入旧密码。
@@ -968,7 +985,7 @@ class AutoCompleteEngine {
     store: WeakMap<HTMLInputElement, Set<string>>,
     el: HTMLInputElement,
   ) {
-    const signatures = store.get(el) || new Set<string>();
+    const signatures = store.get(el) || new NativeSet<string>();
     signatures.add(this.fieldSignature(el));
     store.set(el, signatures);
   }

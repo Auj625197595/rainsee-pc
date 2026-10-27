@@ -123,7 +123,7 @@ export const buildAutofillPickerCode = (
         (form.getAttribute('action') || '').split(/[?#]/)[0]
       ].map(function(value) { return value.toLowerCase(); }) : [];
       var controls = form
-        ? Array.prototype.slice.call(form.querySelectorAll('button:not([type]),button[type="submit"],input[type="submit"],input[type="image"]'))
+        ? Array.prototype.slice.call(form.querySelectorAll('button:not([type]),button[type="submit"],button[type="button"],input[type="submit"],input[type="image"]'))
         : [];
       var controlValues = controls.reduce(function(values, control) {
         return values.concat([
@@ -138,8 +138,13 @@ export const buildAutofillPickerCode = (
       var controlHasNonLogin = containsKeyword(controlValues, nonLoginKeywords);
       if ((controlHasNonLogin && !controlHasLogin) ||
           (formHasNonLogin && !controlHasLogin)) return false;
-      var pathname = (window.location.pathname || '').toLowerCase();
-      var loginPath = /(^|[\\/_.-])(login|signin|sign-in|logon)([\\/_.-]|$)/.test(pathname);
+      var routePaths = [
+        window.location.pathname || '',
+        (window.location.hash || '').replace(/^#!?/, '').split('?')[0]
+      ].map(function(value) { return value.toLowerCase(); });
+      var loginPath = routePaths.some(function(value) {
+        return /(^|[\\/_.-])(login|signin|sign-in|logon)([\\/_.-]|$)/.test(value);
+      });
       return containsKeyword(fieldValues, loginKeywords) ||
         formHasLogin || controlHasLogin || loginPath;
     };

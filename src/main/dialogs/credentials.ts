@@ -1,5 +1,6 @@
 import { VIEW_Y_OFFSET } from '~/constants/design';
-import { PersistentDialog } from './dialog';
+import { PersistentDialog, getAppContentBounds } from './dialog';
+import { Application } from '../application';
 
 const WIDTH = 350;
 const HEIGHT = 271;
@@ -37,10 +38,13 @@ export class CredentialsDialog extends PersistentDialog {
 
   public rearrange() {
     if (!this.browserWindow || this.browserWindow.isDestroyed()) return;
-    const { width } = this.browserWindow.getContentBounds();
+    const area = getAppContentBounds(
+      this.browserWindow,
+      Application.instance.windows.fromBrowserWindow(this.browserWindow),
+    );
     super.rearrange({
-      x: width - WIDTH,
-      y: VIEW_Y_OFFSET,
+      x: area.x + area.width - WIDTH,
+      y: area.y,
     });
   }
 }

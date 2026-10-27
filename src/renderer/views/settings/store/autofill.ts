@@ -11,9 +11,6 @@ export class AutoFillStore {
   public credentials: IFormFillData[] = [];
 
   @observable
-  public addresses: IFormFillData[] = [];
-
-  @observable
   public menuVisible = false;
 
   @observable
@@ -45,21 +42,17 @@ export class AutoFillStore {
     ipcRenderer.on('credentials-reload', () => this.load());
   }
 
+  // 地址已迁到 autofillProfiles 库(见 store/autofill-profiles.ts),这里只管密码。
   @action
   public async load() {
     const items = await this.db.get({});
 
     this.credentials = items.filter((r) => r.type === 'password');
-    this.addresses = items.filter((r) => r.type === 'address');
   }
 
   public async removeItem(data: IFormFillData) {
     await this.db.remove({ _id: data._id });
 
-    if (data.type === 'password') {
-      this.credentials = this.credentials.filter((r) => r._id !== data._id);
-    } else {
-      this.addresses = this.addresses.filter((r) => r._id !== data._id);
-    }
+    this.credentials = this.credentials.filter((r) => r._id !== data._id);
   }
 }

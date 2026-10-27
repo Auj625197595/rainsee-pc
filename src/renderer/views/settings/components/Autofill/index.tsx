@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { observer } from 'mobx-react-lite';
-import { Key } from '@phosphor-icons/react';
+import { CaretRight, CreditCard, Key, MapPin } from '@phosphor-icons/react';
 
 import store from '../../store';
 import {
@@ -8,26 +8,23 @@ import {
   ContextMenuItem,
 } from '~/renderer/components/ContextMenu';
 import { Passwords } from './Passwords';
-import { Addresses } from './Addresses';
 import {
   Control,
   Row,
   Title,
+  SecondaryText,
   SettingCopy,
   SettingGroup,
   SettingGroupBlock,
   SettingIcon,
 } from '../App/style';
-import { ICON_EDIT, ICON_TRASH } from '~/renderer/constants';
+import { ICON_TRASH } from '~/renderer/constants';
 import {
   onSwitchChange,
   getSettingsTranslator,
 } from '~/renderer/views/settings/utils';
 import { Switch } from '~/renderer/components/Switch';
-
-const onEditClick = () => {
-  store.dialogContent = 'edit-address';
-};
+import type { SettingsSection } from '../../store';
 
 const onRemoveClick = () => {
   const item = store.autoFill.selectedItem;
@@ -39,8 +36,7 @@ const onMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
 };
 
 const Menu = observer(() => {
-  const item = store.autoFill.selectedItem;
-
+  const t = getSettingsTranslator();
   const style: any = {
     top: store.autoFill.menuTop,
     left: store.autoFill.menuLeft - 130,
@@ -53,13 +49,8 @@ const Menu = observer(() => {
       style={style}
       visible={store.autoFill.menuVisible}
     >
-      {item && item.type === 'address' && (
-        <ContextMenuItem icon={ICON_EDIT} onClick={onEditClick}>
-          Edit
-        </ContextMenuItem>
-      )}
       <ContextMenuItem icon={ICON_TRASH} onClick={onRemoveClick}>
-        Remove
+        {t('remove')}
       </ContextMenuItem>
     </ContextMenu>
   );
@@ -83,16 +74,64 @@ const AutofillSwitch = observer(() => {
   );
 });
 
+const openSubPage = (section: SettingsSection) => () => {
+  store.selectedSection = section;
+};
+
+// 对齐 Chrome「自动填充和密码」:密码管理 / 付款方式 / 地址及更多 三个入口。
+const EntryRows = observer(() => {
+  const t = getSettingsTranslator();
+  const { cards, addresses, loaded } = store.autofillProfiles;
+  return (
+    <SettingGroupBlock>
+      <SettingGroup>
+        <Row onClick={openSubPage('payment-methods')}>
+          <SettingIcon tone="green">
+            <CreditCard size={19} weight="fill" />
+          </SettingIcon>
+          <SettingCopy>
+            <Title>{t('autofillPaymentMethods')}</Title>
+            <SecondaryText>
+              {loaded && cards.length
+                ? `${t('autofillPaymentMethodsDesc')} · ${cards.length}`
+                : t('autofillPaymentMethodsDesc')}
+            </SecondaryText>
+          </SettingCopy>
+          <CaretRight size={17} color="#B0B0BA" />
+        </Row>
+        <Row onClick={openSubPage('addresses')}>
+          <SettingIcon tone="blue">
+            <MapPin size={19} weight="fill" />
+          </SettingIcon>
+          <SettingCopy>
+            <Title>{t('autofillAddressesMore')}</Title>
+            <SecondaryText>
+              {loaded && addresses.length
+                ? `${t('autofillAddressesMoreDesc')} · ${addresses.length}`
+                : t('autofillAddressesMoreDesc')}
+            </SecondaryText>
+          </SettingCopy>
+          <CaretRight size={17} color="#B0B0BA" />
+        </Row>
+      </SettingGroup>
+    </SettingGroupBlock>
+  );
+});
+
 export const Autofill = () => {
+  React.useEffect(() => {
+    void store.autofillProfiles.load();
+  }, []);
+
   return (
     <>
+      <EntryRows />
       <SettingGroupBlock>
         <SettingGroup>
           <AutofillSwitch />
         </SettingGroup>
       </SettingGroupBlock>
       <Passwords />
-      <Addresses />
       <Menu />
     </>
   );

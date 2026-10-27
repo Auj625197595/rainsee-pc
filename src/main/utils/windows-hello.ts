@@ -14,7 +14,8 @@
 //
 // 返回码(UserConsentVerificationResult):
 //   0 Verified            1 DeviceNotPresent    2 NotConfiguredForUser
-//   3 DisabledByPolicy    4 RetriesExhausted    5 Canceled
+//   3 DisabledByPolicy    4 DeviceBusy          5 RetriesExhausted
+//   6 Canceled
 
 import { app } from 'electron';
 import { spawn } from 'child_process';
@@ -32,7 +33,7 @@ export interface IHelloResult {
 }
 
 // 结果文案回给渲染层显示:按当前设置语言即时翻译,不在模块顶层缓存。
-const resultMessage = (result: number, t: Translator): string => {
+export const helloResultMessage = (result: number, t: Translator): string => {
   switch (result) {
     case 0:
       return t('whVerified');
@@ -43,8 +44,10 @@ const resultMessage = (result: number, t: Translator): string => {
     case 3:
       return t('whDisabledByPolicy');
     case 4:
-      return t('whRetriesExhausted');
+      return t('whDeviceBusy');
     case 5:
+      return t('whRetriesExhausted');
+    case 6:
       return t('whCanceled');
     default:
       return t('whNotVerified');
@@ -103,8 +106,12 @@ export function verifyWindowsHello(reason: string): Promise<IHelloResult> {
       });
     });
 
-    child.on('close', () => {
+    child.on('close', (code) => {
       const out = stdout.trim();
+      console.log(
+        `[hello] exit=${code} out=${JSON.stringify(out)}` +
+          (stderr.trim() ? ` stderr=${JSON.stringify(stderr.trim())}` : ''),
+      );
       if (out.startsWith('ERR:')) {
         resolve({ ok: false, result: -1, msg: out.slice(4) });
         return;
@@ -123,7 +130,7 @@ export function verifyWindowsHello(reason: string): Promise<IHelloResult> {
       resolve({
         ok: num === 0,
         result: num,
-        msg: resultMessage(num, t),
+        msg: helloResultMessage(num, t),
       });
     });
   });
