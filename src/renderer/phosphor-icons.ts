@@ -68,9 +68,11 @@ export { CodeBlock } from '@phosphor-icons/react/dist/csr/CodeBlock';
 export { Columns } from '@phosphor-icons/react/dist/csr/Columns';
 export { CompassTool } from '@phosphor-icons/react/dist/csr/CompassTool';
 export { Cookie } from '@phosphor-icons/react/dist/csr/Cookie';
+export { CreditCard } from '@phosphor-icons/react/dist/csr/CreditCard';
 export { Copy } from '@phosphor-icons/react/dist/csr/Copy';
 export { CopySimple } from '@phosphor-icons/react/dist/csr/CopySimple';
 export { Cpu } from '@phosphor-icons/react/dist/csr/Cpu';
+export { Crop } from '@phosphor-icons/react/dist/csr/Crop';
 export { CursorClick } from '@phosphor-icons/react/dist/csr/CursorClick';
 export { Database } from '@phosphor-icons/react/dist/csr/Database';
 export { Desktop } from '@phosphor-icons/react/dist/csr/Desktop';
@@ -78,6 +80,7 @@ export { Detective } from '@phosphor-icons/react/dist/csr/Detective';
 export { DeviceMobile } from '@phosphor-icons/react/dist/csr/DeviceMobile';
 export { DotsSixVertical } from '@phosphor-icons/react/dist/csr/DotsSixVertical';
 export { DotsThree } from '@phosphor-icons/react/dist/csr/DotsThree';
+export { DotsThreeVertical } from '@phosphor-icons/react/dist/csr/DotsThreeVertical';
 export {
   DownloadSimple,
   DownloadSimpleIcon,
@@ -120,6 +123,7 @@ export { LockKey } from '@phosphor-icons/react/dist/csr/LockKey';
 export { MagicWand } from '@phosphor-icons/react/dist/csr/MagicWand';
 export { MagnifyingGlass } from '@phosphor-icons/react/dist/csr/MagnifyingGlass';
 export { MagnifyingGlassPlus } from '@phosphor-icons/react/dist/csr/MagnifyingGlassPlus';
+export { MapPin } from '@phosphor-icons/react/dist/csr/MapPin';
 export { Minus, MinusIcon } from '@phosphor-icons/react/dist/csr/Minus';
 export { Monitor } from '@phosphor-icons/react/dist/csr/Monitor';
 export { Moon } from '@phosphor-icons/react/dist/csr/Moon';
@@ -150,6 +154,7 @@ export { Question } from '@phosphor-icons/react/dist/csr/Question';
 export { Rectangle } from '@phosphor-icons/react/dist/csr/Rectangle';
 export { Repeat } from '@phosphor-icons/react/dist/csr/Repeat';
 export { RocketLaunch } from '@phosphor-icons/react/dist/csr/RocketLaunch';
+export { Screencast } from '@phosphor-icons/react/dist/csr/Screencast';
 export { ShareNetwork } from '@phosphor-icons/react/dist/csr/ShareNetwork';
 export { Shield } from '@phosphor-icons/react/dist/csr/Shield';
 export {
@@ -175,8 +180,10 @@ export { TextAa } from '@phosphor-icons/react/dist/csr/TextAa';
 export { TextT } from '@phosphor-icons/react/dist/csr/TextT';
 export { Timer } from '@phosphor-icons/react/dist/csr/Timer';
 export { Toolbox } from '@phosphor-icons/react/dist/csr/Toolbox';
+export { Television } from '@phosphor-icons/react/dist/csr/Television';
 export { Translate } from '@phosphor-icons/react/dist/csr/Translate';
 export { Trash } from '@phosphor-icons/react/dist/csr/Trash';
+export { UploadSimple } from '@phosphor-icons/react/dist/csr/UploadSimple';
 export { User } from '@phosphor-icons/react/dist/csr/User';
 export { UserCircle } from '@phosphor-icons/react/dist/csr/UserCircle';
 export { UserPlus } from '@phosphor-icons/react/dist/csr/UserPlus';
