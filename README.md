@@ -1,121 +1,72 @@
-# 雨见浏览器(Rainsee PC)— 开源版
+<p align="center">
+  <a href="#"><img src="static/icons/icon.png" width="180"></a>
+</p>
 
-> 桌面端浏览器,轻盈、清爽。本仓库为其**开源版本**。
+<div align="center">
+  <h1>雨见浏览器（开源版）</h1>
 
-## ✨ 功能特性
+一个基于 Electron 与 React 的现代化桌面浏览器。**纯本地优先**：无账号、无云同步、无遥测、不上传任何数据。
 
-- **标签页**:拖拽排序、撕离成新窗口、跨窗口合并、标签分组、横向滚动
-- **地址栏**:Chromium 风格智能搜索与自动补全、外部协议唤起系统应用、PWA 安装提示
-- **鼠标手势**:Edge 风格右键手势(方向可自定义映射)
-- **扩展支持**:部分 Chrome 扩展(MV2/MV3),基于 vendored `electron-chrome-extensions`
-- **广告屏蔽**:基于 [Cliqz adblocker](https://github.com/cliqz-oss/adblocker),含规则订阅 + DNR 双路径
-- **网页翻译**:微软翻译引擎(本地 token 缓存,支持划词 / 整页 / 还原)
-- **智能视频播放器**:视频地址嗅探 + 内置播放器(DPlayer / hls.js)
-- **夜间模式**:基于 Dark Reader,随主题联动
-- **书签 / 历史 / 下载 / 密码**管理(本地)
-- **PDF / epub 阅读**:集成 [Koodo Reader](https://www.koodoreader.com/)(需自行放入,见下文)
-- 暗色 / 明色主题、沉浸模式、看图模式、屏幕截图、网页分享……
+`English below / 简体中文`
 
-## ⚠️ 开源版功能边界
+</div>
 
-为保证账号安全与服务端代码不外泄,以下**依赖闭源云服务**的功能已从开源版剥离,在本仓库中不可用:
+## 特性
 
-| 功能 | 状态 | 说明 |
-|---|:---:|---|
-| 账号登录 | ❌ 已移除 | 登录弹窗、扫码登录、userkey |
-| 云同步 | ❌ 已移除 | 书签 / 历史 / 密码 / 标签的跨设备同步 |
-| 互联(手机扫码) | ❌ 已移除 | 手机在线状态、手机标签页悬停面板 |
-| AI 面板 / 知识库 | ❌ 已移除 | 侧边 AI 助手、右键问 AI |
-| 网站订阅 | ❌ 已移除 | RSS 订阅面板 |
-| 自动更新检查 | ⚠️ 需后端 | 默认指向占位地址 |
-| 广告规则 / 搜索引擎云端拉取 | ⚠️ 需后端 | 同上 |
-| 新标签页个性化(pcapp) | ⚠️ 需后端 | 开源版默认新标签页非该域 |
+| 功能 | 说明 |
+|---|---|
+| 🚄 **多引擎搜索** | 内置百度、搜狗、360、秘塔、夸克等搜索引擎，新标签页一键切换 |
+| 🛡️ **广告过滤** | 基于 [EasyList China](https://easylist-downloads.adblockplus.org/easylistchina+easylist.txt) 官方规则，支持自定义订阅 |
+| ▶️ **智能播放器** | 视频独立弹出播放，支持 m3u8 下载（内置 bilibili / YouTube 等站点白名单） |
+| 🔖 **书签 · 历史 · 下载** | 数据全部保存在本机，可从 Chrome / Firefox 导入 |
+| 📖 **EPUB / PDF 阅读** | 内置 [Koodo Reader](https://www.koodoreader.com/) 本地静态站（AGPL） |
+| 🌐 **网页翻译** | 免费微软翻译接口；划词翻译；也可配置自定义 OpenAI 兼容引擎 |
+| 🌙 **夜间模式** | Dark Reader 引擎注入，网站级明暗跟随系统 |
+| 🧩 **Chrome 扩展** | 完整扩展体系，内置精选 Edge 商店快捷安装 |
+| 🖱️ **鼠标手势** | 上下左右手势、侧键前进后退、长按链接拖拽 |
+| 📸 **截图** | 区域截图标注、长截图、以图搜图 |
+| ⚡ **效率工具** | 标签分组/去重、双列副引擎搜索、侧边栏面板、工作区 |
 
-服务端代码(账号体系、云同步、AI、订阅等后端接口)**不开源**。客户端针对这些功能的调用入口已**剥离**,联网拉取类接口(自动更新、规则同步等)的服务端地址已替换为**占位符**,浏览器主体功能不受影响。
+## 与商业版的差异
 
-如需恢复联网服务,请参照 [SERVER.md](SERVER.md) 自建后端,并在 [`src/constants/hosts.ts`](src/constants/hosts.ts) 填入你的服务地址。
+开源版移除了以下需要服务端支持的能力：
 
+- ❌ 账号登录 / 手机互联 / 云同步（书签 · 密码 · 历史 · 标签）
+- ❌ 「雨见 AI」侧栏、AI 搜索结果标注、AI 标签分组
+- ❌ 云端搜索引擎列表同步、云端 UA 配置
+- ❌ PDF 在线编辑 / 压缩 / 转换、图床上传与短链分享二维码
 
-## 🚀 快速开始
+替代实现：新标签页为纯本地页（搜索框 + 引擎切换 + 书签磁贴）；favicon 使用 DuckDuckGo 公共图标服务；翻译使用微软免费接口；更新走 GitHub Releases。
 
-### 环境要求
-
-- [Node.js](https://nodejs.org/)(推荐 LTS 版本)
-- [yarn](https://classic.yarnpkg.com/) 或 npm
-
-### 安装与运行
+## 开发
 
 ```bash
 # 安装依赖
-yarn install
-# 若 yarn 因 lockfile 解析报错(个别文件系统偶发),可改用:
-# npm install
+npm install
 
-# 开发模式(热重载)
-yarn dev
+# 开发模式（主进程 + 渲染层并行监听）
+npm run dev
 
-# 生产构建(唯一可信的编译门:tsc / eslint 不作为门禁)
-yarn build
+# 构建
+npm run build
 
-# 运行
-yarn start
-
-# 打包当前平台安装包
-yarn compile-win32   # Windows
-yarn compile-darwin  # macOS
-yarn compile-linux   # Linux
+# 打包 Windows x64 安装包
+npm run compile-win32
 ```
 
-> 本仓库不附带 `node_modules`,首次使用需自行 `install`。
-
-## 📖 PDF / epub 阅读器
-
-PDF 与 epub 阅读功能依赖 [Koodo Reader](https://www.koodoreader.com/)(Apache-2.0)的 Web 构建产物。出于仓库体积考虑,本仓库**不含** `web.koodoreader.com/` 目录。
-
-如需阅读功能:
-1. 从 Koodo Reader 官方获取其 Web 版构建产物。
-2. 解压到仓库根目录的 `web.koodoreader.com/`。
-3. 在 `webpack.config.js` 中按注释提示恢复对应 `CopyPlugin` pattern。
-
-## 📂 项目结构
+## 目录速览
 
 ```
-src/
-├── main/                主进程
-│   ├── application.ts   应用入口
-│   ├── view-manager.ts  标签视图管理(创建/销毁/布局/手势)
-│   ├── sessions-service.ts  扩展加载与会话
-│   ├── services/        adblock / 翻译 / 更新 / 存储 / 图标 等
-│   ├── menus/           右键菜单与快捷键/手势分发
-│   ├── windows/         窗口管理
-│   └── network/         网络请求层
-├── renderer/            渲染进程(UI)
-│   └── views/           各 webui 页(设置 / 书签 / 历史 / 新标签页……)
-├── preloads/            预加载脚本(view-preload 等)
-├── vendor/              vendored 代码(electron-chrome-extensions 等)
-├── common/              主进程与渲染进程共享
-└── constants/           常量(含 hosts.ts 服务端地址配置)
+src/main        主进程（窗口/标签/会话/服务）
+src/renderer    渲染层（app 壳层 + 各 WebUI 页面）
+src/preloads    预加载脚本
+static          图标 / 用户脚本 / NSIS 钩子
+web.koodoreader.com  内置阅读器静态资源（AGPL）
 ```
 
-## 🔒 安全说明
+## License
 
-- 客户端代码中**不含**任何账号密钥、签名密钥或加密密钥——这些仅存在于不开源的服务端。
-- 客户端只保存用户登录后下发的 token / cookie(存储在本机用户数据目录)。
-- 开源前已剥离所有指向闭源后端的账号 / 云同步逻辑,剥离边界清晰(见上表)。
+[MIT](./LICENSE) © Auj625197595
 
-## 📜 许可证
-
-本项目基于 [**GPL-3.0**](LICENSE) 许可证开源。任何分发或衍生作品须以兼容许可证开源。
-
-本项目 Fork 自 [wexond](https://github.com/wexond/wexond)(同样为 GPL-3.0),感谢 wexond 团队提供的浏览器框架基础。wexond 原始代码遵循其原始许可证。
-
-### 第三方组件
-
-- [Koodo Reader](https://www.koodoreader.com/) — Apache-2.0(运行时依赖,需自行获取)
-- [Cliqz adblocker](https://github.com/cliqz-oss/adblocker) — MPL-2.0
-- [electron-chrome-extensions](https://github.com/onbjerg/electron-chrome-extensions) — MIT
-- 其余依赖见各自 `package.json` / 许可证
-
-## 🤝 贡献
-
-欢迎提 Issue 与 Pull Request。提交 PR 即表示你同意所提交代码以 GPL-3.0 许可证并入本项目。
+本项目 UI 源自 [Wexond](https://github.com/wexond/desktop)，感谢其作者的出色工作。
+内置阅读器 [Koodo Reader](https://github.com/koodo-reader/koodo-reader) 采用 AGPL-3.0 协议单独授权。
