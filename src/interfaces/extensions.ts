@@ -28,6 +28,9 @@ export interface IExtInspectView {
 }
 
 // 「拓展」管理页前后端共用的扩展信息(精简、可序列化)。
+// 扩展通知策略:允许 / 禁止 / 允许但通知标题不显示扩展名。
+export type ExtensionNotificationMode = 'allow' | 'block' | 'hide-name';
+
 export interface IExtItem {
   id: string;
   name: string;
@@ -43,6 +46,9 @@ export interface IExtItem {
   type?: 'extension' | 'theme';
   // 是否允许在无痕模式运行(白名单 incognitoAllowedExtensions)。
   incognitoAllowed?: boolean;
+  // manifest 声明了 notifications(含可选)权限。
+  hasNotifications?: boolean;
+  notificationMode?: ExtensionNotificationMode;
   // data url 或 chrome-extension://<id>/<相对路径>,前端可直接用作 <img src>
   icon: string;
   homepageUrl: string;

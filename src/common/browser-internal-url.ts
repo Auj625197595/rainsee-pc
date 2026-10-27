@@ -1,4 +1,6 @@
+// 'apps' 不是独立 WebUI 页,而是设置页 #apps 分区的别名(messaging.ts 特判)。
 export const BROWSER_INTERNAL_PAGES = [
+  'apps',
   'bookmarks',
   'downloads',
   'extensions',

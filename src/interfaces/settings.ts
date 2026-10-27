@@ -217,18 +217,31 @@ export interface ISettings {
   // 「重启后保持登录」的主域名白名单。只接受 host,例如 example.com。
   persistSessionCookieHosts: string[];
   // 手动清理浏览数据时使用的勾选项。设置页与工具栏清理入口共用。
-  clearBrowsingData: {
-    cache: boolean;
-    cookies: boolean;
-    history: boolean;
-    searchHistory: boolean;
-  };
+  clearBrowsingData: ClearOnExitItems;
   // 退出时自动清理:关闭最后一个浏览器窗口时,在进度覆盖层下清理勾选项。
   // 至少一项为 true 即视为启用;全为 false 即停用(与多选框产品形态一致)。
-  clearOnExit: {
-    cache: boolean; // 网页缓存 → sessions.view.clearCache()
-    cookies: boolean; // Cookie → sessions.view.clearStorageData({storages:['cookies']})
-    history: boolean; // 历史记录(全清)
-    searchHistory: boolean; // 搜索历史(从 history 中按搜索引擎规则删除)
-  };
+  clearOnExit: ClearOnExitItems;
 }
+
+// 手动清理与退出时清理共用同一组项目；新增项目须同步清理编排与设置界面。
+export interface ClearOnExitItems {
+  history: boolean;
+  searchHistory: boolean;
+  downloads: boolean;
+  cookies: boolean;
+  cache: boolean;
+  passwords: boolean;
+  autofill: boolean;
+  siteSettings: boolean;
+}
+
+export const CLEAR_ON_EXIT_KEYS: (keyof ClearOnExitItems)[] = [
+  'history',
+  'searchHistory',
+  'downloads',
+  'cookies',
+  'cache',
+  'passwords',
+  'autofill',
+  'siteSettings',
+];

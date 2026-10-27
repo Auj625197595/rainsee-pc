@@ -16,6 +16,18 @@ export const resolveInternalFlagsUrl = (
   return `${base}${suffix}`;
 };
 
+const INTERNAL_APPS_PATTERN =
+  /^(chrome:\/\/apps|edge:\/\/apps|yjllq:\/\/apps)([/?#].*)?$/i;
+
+/** chrome://apps / yjllq://apps 是设置页「应用」分区的别名。 */
+export const resolveInternalAppsUrl = (
+  url: string,
+  settingsPageUrl: string,
+): string => {
+  if (!url || !settingsPageUrl || !INTERNAL_APPS_PATTERN.test(url)) return '';
+  return `${settingsPageUrl.replace(/[?#].*$/, '')}#apps`;
+};
+
 /** Return a redirect only when canonicalization actually changes the URL. */
 export const getInternalFlagsRedirectTarget = (
   url: string,

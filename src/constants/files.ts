@@ -1,4 +1,5 @@
 import { DEFAULT_SETTINGS } from './settings';
+import { fileURLToPath } from 'url';
 export {
   ERROR_PROTOCOL,
   NETWORK_ERROR_HOST,
@@ -13,43 +14,17 @@ import {
 
 export const DIRECTORIES = ['adblock', 'extensions', 'storage'];
 
-// koodoreader 支持的电子书格式(扩展名小写,无点)。
-// router/index.tsx 为每种格式注册了 /<ext> 路由(全部指向 HtmlReader),
-// 故路由即扩展名。拖拽/打开这些格式时用 yjllq://web.koodoreader.com/#/<ext>?filePath=<绝对路径> 直开。
-export const KOODO_READER_EXTS = [
-  'pdf', 'epub', 'txt', 'mobi', 'azw3', 'azw',
-  'cbr', 'cbz', 'cbt', 'cb7', 'docx', 'md', 'fb2',
-];
-
-// 地址栏拖拽可直接打开的本地文件:koodoreader 格式 + html(走 file://)。
-export const OPENABLE_FILE_EXTS = [...KOODO_READER_EXTS, 'html', 'htm'];
-
-export const IMAGE_FILE_EXTS = [
-  'jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'avif', 'tif', 'tiff',
-];
-
-export const VIDEO_FILE_EXTS = [
-  'mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'ts', 'mpeg', 'mpg',
-];
-
-export type HeaderDropFileType = 'pdf' | 'image' | 'video' | 'reader' | 'html';
-
-export const getHeaderDropFileType = (filePath: string): HeaderDropFileType | null => {
-  const ext = getFileExt(filePath);
-  if (ext === 'pdf') return 'pdf';
-  if (IMAGE_FILE_EXTS.includes(ext)) return 'image';
-  if (VIDEO_FILE_EXTS.includes(ext)) return 'video';
-  if (KOODO_READER_EXTS.includes(ext)) return 'reader';
-  if (ext === 'html' || ext === 'htm') return 'html';
-  return null;
-};
-
-// 取扩展名(小写,无点)。无扩展名返回空串。
-export const getFileExt = (filePath: string): string => {
-  const idx = filePath.lastIndexOf('.');
-  if (idx < 0) return '';
-  return filePath.slice(idx + 1).toLowerCase();
-};
+export {
+  KOODO_READER_EXTS,
+  OPENABLE_FILE_EXTS,
+  IMAGE_FILE_EXTS,
+  VIDEO_FILE_EXTS,
+  DEFAULT_HEADER_DROP_ACTIONS,
+  getHeaderDropFileType,
+  getFileExt,
+} from './file-drop';
+export type { HeaderDropAction, HeaderDropFileType } from './file-drop';
+import { KOODO_READER_EXTS, getFileExt } from './file-drop';
 
 export const isKoodoReaderFile = (filePath: string): boolean =>
   KOODO_READER_EXTS.includes(getFileExt(filePath));
@@ -63,9 +38,10 @@ export const buildKoodoReaderUrl = (filePath: string): string | null => {
   return `${WEBUI_PROTOCOL}://web.koodoreader.com/#/${ext}?filePath=${encoded}`;
 };
 
-// 反向:file:/// URL → 本地路径(Windows 反斜杠)。URL 解析会剥离查询参数和锚点。
-export const filePathFromFileUrl = (url: string): string =>
-  decodeURIComponent(new URL(url).pathname.replace(/^\//, '')).replace(/\//g, '\\');
+// 反向:file:/// URL → 当前平台的本地路径。fileURLToPath 会正确处理
+// macOS/Linux 的绝对 POSIX 路径以及 Windows 的盘符/反斜杠，不能手工替换
+// URL pathname，否则 macOS 会丢失开头的 `/` 并把路径变成无效的相对路径。
+export const filePathFromFileUrl = (url: string): string => fileURLToPath(url);
 
 export const FILES = {
   'settings.json': DEFAULT_SETTINGS,

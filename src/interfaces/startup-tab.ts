@@ -11,4 +11,6 @@ export interface IStartupTab {
   pinned?: boolean;
   active?: boolean;
   isUserDefined?: boolean;
+  // 预览图落盘键(ITab.thumbKey)。跨重启沿用,占位标签据此读取磁盘预览图。
+  thumbKey?: string;
 }

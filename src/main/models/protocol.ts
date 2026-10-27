@@ -96,6 +96,8 @@ protocol.registerSchemesAsPrivileged([
 const MIME_BY_EXT: Record<string, string> = {
   htm: 'text/html',
   html: 'text/html',
+  mhtml: 'multipart/related',
+  mht: 'multipart/related',
   svg: 'image/svg+xml',
   png: 'image/png',
   jpg: 'image/jpeg',

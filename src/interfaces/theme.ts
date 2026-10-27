@@ -53,9 +53,15 @@ export interface ITheme {
   animations?: boolean;
 
   titlebarHeight?: number;
+  titlebarBaseHeight?: number;
+  tabRowPitch?: number;
+  tabSlotHeight?: number;
   tabHeight?: number;
-  tabMarginTop?: number;
+  /** 顶部标签表面(胶囊)高度 */
+  tabSurfaceHeight?: number;
   isCompact?: boolean;
+  /** 窗口贴顶(最大化/全屏)时第 0 行标签命中区向上延伸到窗口顶边 */
+  tabHitExtendTop?: boolean;
   sidebarWidth?: number;
 
   dark?: boolean;

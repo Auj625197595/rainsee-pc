@@ -28,6 +28,7 @@ import { getMainTranslator } from '../i18n';
 import { WEBUI_BASE_URL } from '~/constants/files';
 import {
   EfficiencySearchMode,
+  CLEAR_ON_EXIT_KEYS,
   ISearchEngine,
   ISettings,
   TabCloseSelectionBehavior,
@@ -255,17 +256,11 @@ const normalizeBrowsingDataSettings = (
     value && typeof value === 'object'
       ? (value as Partial<ISettings['clearBrowsingData']>)
       : {};
-  return {
-    cache: typeof items.cache === 'boolean' ? items.cache : fallback.cache,
-    cookies:
-      typeof items.cookies === 'boolean' ? items.cookies : fallback.cookies,
-    history:
-      typeof items.history === 'boolean' ? items.history : fallback.history,
-    searchHistory:
-      typeof items.searchHistory === 'boolean'
-        ? items.searchHistory
-        : fallback.searchHistory,
-  };
+  const next = {} as ISettings['clearBrowsingData'];
+  for (const key of CLEAR_ON_EXIT_KEYS) {
+    next[key] = typeof items[key] === 'boolean' ? items[key] : fallback[key];
+  }
+  return next;
 };
 
 const normalizeClearOnExitSettings = (
@@ -276,17 +271,11 @@ const normalizeClearOnExitSettings = (
     value && typeof value === 'object'
       ? (value as Partial<ISettings['clearOnExit']>)
       : {};
-  return {
-    cache: typeof items.cache === 'boolean' ? items.cache : fallback.cache,
-    cookies:
-      typeof items.cookies === 'boolean' ? items.cookies : fallback.cookies,
-    history:
-      typeof items.history === 'boolean' ? items.history : fallback.history,
-    searchHistory:
-      typeof items.searchHistory === 'boolean'
-        ? items.searchHistory
-        : fallback.searchHistory,
-  };
+  const next = {} as ISettings['clearOnExit'];
+  for (const key of CLEAR_ON_EXIT_KEYS) {
+    next[key] = typeof items[key] === 'boolean' ? items[key] : fallback[key];
+  }
+  return next;
 };
 
 export class Settings extends EventEmitter {
@@ -1153,23 +1142,17 @@ export class Settings extends EventEmitter {
 
       // 手动清理:设置弹窗与工具栏入口共用这 4 个勾选项。
       const cbd = json.clearBrowsingData;
-      json.clearBrowsingData = {
-        cache: typeof cbd?.cache === 'boolean' ? cbd.cache : true,
-        cookies: typeof cbd?.cookies === 'boolean' ? cbd.cookies : false,
-        history: typeof cbd?.history === 'boolean' ? cbd.history : true,
-        searchHistory:
-          typeof cbd?.searchHistory === 'boolean' ? cbd.searchHistory : false,
-      };
+      json.clearBrowsingData = normalizeBrowsingDataSettings(
+        cbd,
+        DEFAULT_SETTINGS.clearBrowsingData,
+      );
 
       // 退出时自动清理:4 个子项,老配置缺失/类型错误/非对象时按默认补全。
       const coe = json.clearOnExit;
-      json.clearOnExit = {
-        cache: typeof coe?.cache === 'boolean' ? coe.cache : false,
-        cookies: typeof coe?.cookies === 'boolean' ? coe.cookies : false,
-        history: typeof coe?.history === 'boolean' ? coe.history : false,
-        searchHistory:
-          typeof coe?.searchHistory === 'boolean' ? coe.searchHistory : false,
-      };
+      json.clearOnExit = normalizeClearOnExitSettings(
+        coe,
+        DEFAULT_SETTINGS.clearOnExit,
+      );
 
       // 会话 Cookie 持久化:老配置缺失/类型错误时回默认(关)。
       if (typeof json.persistSessionCookies !== 'boolean') {

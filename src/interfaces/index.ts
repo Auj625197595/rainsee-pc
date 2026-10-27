@@ -1,6 +1,7 @@
 export * from './bookmark';
 export * from './download-item';
 export * from './download-prompt';
+export * from './extension-install';
 export * from './favicon';
 export * from './history-item';
 export * from './history-section';
@@ -10,6 +11,7 @@ export * from './theme';
 export * from './weather';
 export * from './workspace';
 export * from './form-fill';
+export * from './autofill-profiles';
 export * from './storage';
 export * from './bounds';
 export * from './extensions';

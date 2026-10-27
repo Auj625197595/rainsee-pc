@@ -18,6 +18,15 @@ export const DEFAULT_TITLEBAR_HEIGHT =
 export const COMPACT_TITLEBAR_HEIGHT =
   2 * COMPACT_TAB_MARGIN_TOP + COMPACT_TAB_HEIGHT;
 
+// 单行布局的历史行距。多行布局会在运行时改用标签表面高度,只保留首尾留白。
+export const DEFAULT_TAB_ROW_PITCH = DEFAULT_TAB_HEIGHT + 8;
+export const COMPACT_TAB_ROW_PITCH = COMPACT_TAB_HEIGHT + 8;
+
+// 顶部标签表面(胶囊)高度与多行标签的行间距。
+// 标签不再靠 margin-top 下沉:整块标签区在标题栏内垂直居中,行与行之间靠 TAB_ROW_GAP 隔开。
+export const DEFAULT_TAB_SURFACE_HEIGHT = 34;
+export const TAB_ROW_GAP = 6;
+
 export const VIEW_Y_OFFSET = TOOLBAR_HEIGHT + DEFAULT_TITLEBAR_HEIGHT;
 
 // Widths

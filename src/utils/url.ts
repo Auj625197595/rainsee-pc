@@ -416,6 +416,21 @@ export const hostMatches = (stored: string, current: string): boolean => {
   return !!da && da === db;
 };
 
+// 书签「已收藏」判定用的 URL 比较键。忽略空锚点以及 URL 构造器可
+// 规范化的主机大小写、默认端口等差异，同时保留有意义的 SPA 路由 hash。
+export const bookmarkUrlKey = (url: string): string => {
+  if (!url) return '';
+  const raw = url.trim();
+  try {
+    return new URL(raw).href.replace(/#$/, '');
+  } catch {
+    return raw.replace(/#$/, '');
+  }
+};
+
+export const isSameBookmarkUrl = (a: string, b: string): boolean =>
+  !!a && !!b && bookmarkUrlKey(a) === bookmarkUrlKey(b);
+
 const getHost = (url: string): string => {
   try {
     return new URL(url).hostname;

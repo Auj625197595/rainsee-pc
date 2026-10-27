@@ -15,4 +15,5 @@ export type TabEvent =
   | 'can-translate'
   | 'translate-state'
   | 'pwa-installable'
-  | 'pwa-installed';
+  | 'pwa-installed'
+  | 'iptv-detected';
