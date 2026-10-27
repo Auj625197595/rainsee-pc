@@ -6,33 +6,24 @@
 //   2) 设置页「立即清除」按钮 → ipcMain.handle('clear-browsing-data-now'),
 //      不显示覆盖层(设置页 BrowserView 会遮挡),仅靠按钮态反馈,完成后 resolve。
 //
-// 4 个清理项按阶段串行,进度区间固定(history 0→25 / searchHistory 25→40 /
-// cache 40→75 / cookies 75→100)。未勾选的阶段直接 report 该段终点跳过执行,
-// 避免动态重算百分比导致进度回退观感。单项失败不阻断整体,finally 必发 done:true。
+// 清理项对齐 Chrome「清除浏览数据」:浏览记录 / 搜索历史 / 下载记录 / Cookie 及其他
+// 网站数据 / 缓存 / 密码 / 自动填充 / 网站设置。阶段按 PHASES 顺序串行,每段进度区间
+// 由权重固定算出;未勾选的阶段直接 report 该段终点跳过,避免动态重算导致进度回退。
+// 单项失败不阻断整体,最后必发 done:true。
 //
-// 不复用 sessions.clearCache('normal'):那个方法 (sessions-service.ts:1561) 会清
-// 8 种 storage,超出「只清缓存/Cookie」的语义边界。这里直接调用 view.clearCache()
-// 与 view.clearStorageData({storages:['cookies']})。
+// 「Cookie 及其他网站数据」用 session.clearData 并 excludeOrigins 留出扩展,否则
+// chrome.storage / 扩展 IndexedDB 会被连带清空。缓存单独走 clearCache()。
 
 import {ipcMain, app, BrowserWindow} from 'electron';
 
 import {Application} from '../application';
 import {getMainTranslator} from '../i18n';
 import {findSearchQuery} from '~/utils/search-engine';
+import {CLEAR_ON_EXIT_KEYS, ClearOnExitItems} from '~/interfaces/settings';
 
-export interface ClearItems {
-  cache: boolean;
-  cookies: boolean;
-  history: boolean;
-  searchHistory: boolean;
-}
+export type ClearItems = ClearOnExitItems;
 
-export type ClearPhase =
-  | 'history'
-  | 'searchHistory'
-  | 'cache'
-  | 'cookies'
-  | 'finalize';
+export type ClearPhase = keyof ClearItems | 'finalize';
 
 export interface ClearProgress {
   phase: ClearPhase;
@@ -46,16 +37,119 @@ export interface ClearOnExitOptions {
   onProgress?: (p: ClearProgress) => void;
 }
 
-export const normalizeItems = (items?: Partial<ClearItems> | null): ClearItems => ({
-  cache: !!items?.cache,
-  cookies: !!items?.cookies,
-  history: !!items?.history,
-  searchHistory: !!items?.searchHistory,
-});
+export const normalizeItems = (items?: Partial<ClearItems> | null): ClearItems => {
+  const next = {} as ClearItems;
+  for (const key of CLEAR_ON_EXIT_KEYS) next[key] = !!items?.[key];
+  return next;
+};
 
 // 是否至少勾了一项(决定是否触发清理)。
-export const hasAnyItem = (items: ClearItems): boolean =>
-  items.cache || items.cookies || items.history || items.searchHistory;
+export const hasAnyItem = (items?: Partial<ClearItems> | null): boolean =>
+  !!items && CLEAR_ON_EXIT_KEYS.some((key) => !!items[key]);
+
+// 阶段顺序与进度权重(耗时越久权重越大)。
+const PHASES: {key: keyof ClearItems; weight: number}[] = [
+  {key: 'history', weight: 20},
+  {key: 'searchHistory', weight: 10},
+  {key: 'downloads', weight: 5},
+  {key: 'passwords', weight: 5},
+  {key: 'autofill', weight: 5},
+  {key: 'siteSettings', weight: 5},
+  {key: 'cache', weight: 25},
+  {key: 'cookies', weight: 25},
+];
+
+// 网站数据只清网页,留出扩展(chrome.storage / 扩展 IndexedDB)。
+const getExtensionOrigins = (): string[] => {
+  try {
+    return Application.instance.sessions.view
+      .getAllExtensions()
+      .map((ext) => `chrome-extension://${ext.id}`);
+  } catch {
+    return [];
+  }
+};
+
+const clearWebSiteData = async (session: Electron.Session) => {
+  const dataTypes: Electron.ClearDataOptions['dataTypes'] = [
+    'cookies',
+    'localStorage',
+    'indexedDB',
+    'serviceWorkers',
+    'fileSystems',
+    'webSQL',
+    'backgroundFetch',
+  ];
+  const excludeOrigins = getExtensionOrigins();
+  await session.clearData(
+    excludeOrigins.length > 0 ? {dataTypes, excludeOrigins} : {dataTypes},
+  );
+};
+
+const clearSiteSettings = async () => {
+  const storage = Application.instance.storage;
+  await storage.remove({scope: 'permissions', query: {}, multi: true});
+  Application.instance.sessions.clearDevicePermissions();
+};
+
+// 各项当前数据量(设置页勾选项下方的说明行)。单项读取失败返回 null,UI 只显示标题。
+export async function getClearItemStats() {
+  const storage = Application.instance.storage;
+  const sessions = Application.instance.sessions;
+  const safe = async <T>(fn: () => Promise<T> | T): Promise<T | null> => {
+    try {
+      return await fn();
+    } catch {
+      return null;
+    }
+  };
+  const hostOf = (url?: string) => {
+    try {
+      return new URL(url || '').hostname;
+    } catch {
+      return '';
+    }
+  };
+  const engines = Application.instance.settings.object.searchEngines || [];
+  const [formfill, profiles, permissions, cookies, cache] = await Promise.all([
+    safe(() =>
+      storage.find<{type?: string; url?: string}>({scope: 'formfill', query: {}}),
+    ),
+    safe(() =>
+      storage.find<{type?: string}>({
+        scope: 'autofillProfiles',
+        query: {type: {$in: ['address', 'card']}},
+      }),
+    ),
+    safe(() => storage.find<{url?: string}>({scope: 'permissions', query: {}})),
+    safe(() => sessions.view.cookies.get({})),
+    safe(() => sessions.view.getCacheSize()),
+  ]);
+  const passwords = formfill ? formfill.filter((x) => x.type === 'password') : null;
+  return {
+    history: storage.history.length,
+    searchHistory: storage.history.filter((x) =>
+      findSearchQuery(x.url || '', engines),
+    ).length,
+    downloads: await safe(() => sessions.countDownloadHistory()),
+    cookies: cookies
+      ? new Set(cookies.map((c) => (c.domain || '').replace(/^\./, ''))).size
+      : null,
+    cache,
+    passwords: passwords ? passwords.length : null,
+    passwordSites: passwords
+      ? [...new Set(passwords.map((x) => hostOf(x.url)).filter(Boolean))].slice(0, 2)
+      : [],
+    autofill:
+      formfill && passwords
+        ? formfill.length - passwords.length + (profiles ? profiles.length : 0)
+        : null,
+    siteSettings: permissions
+      ? new Set(permissions.map((x) => x.url).filter(Boolean)).size +
+        sessions.countDevicePermissions()
+      : null,
+  };
+}
 
 const getOrigin = (rawUrl: string): string | null => {
   try {
@@ -139,70 +233,53 @@ export async function performClearOnExit(
     error?: string,
   ) => onProgress?.({phase, percent, done: false, error});
 
+  const total = PHASES.reduce((sum, x) => sum + x.weight, 0);
+  const sessions = Application.instance.sessions;
+  const engines = Application.instance.settings.object.searchEngines || [];
+  const tasks: Record<keyof ClearItems, () => Promise<unknown>> = {
+    history: () => storage.clearAllHistory(),
+    // 若 history 已全清,搜索历史自然清空。
+    searchHistory: async () => {
+      if (items.history) return;
+      const toRemove = storage.history
+        .filter((x) => x._id && findSearchQuery(x.url || '', engines))
+        .map((x) => x._id as string);
+      if (toRemove.length > 0) await storage.removeHistoryByIds(toRemove);
+    },
+    downloads: () => sessions.clearDownloadHistory(),
+    passwords: () =>
+      storage.remove({scope: 'formfill', query: {type: 'password'}, multi: true}),
+    autofill: () =>
+      Promise.all([
+        storage.remove({
+          scope: 'formfill',
+          query: {type: {$ne: 'password'}},
+          multi: true,
+        }),
+        storage.remove({scope: 'autofillProfiles', query: {}, multi: true}),
+      ]),
+    siteSettings: () => clearSiteSettings(),
+    cache: () => sessions.view.clearCache(),
+    cookies: () => clearWebSiteData(sessions.view),
+  };
+
   const run = async () => {
-    // === 阶段 1:历史记录(全清) — 0~25 ===
-    if (items.history) {
-      try {
-        await storage.clearAllHistory();
-        report('history', 25);
-      } catch (e) {
-        report('history', 25, String(e));
+    let done = 0;
+    for (const {key, weight} of PHASES) {
+      done += weight;
+      const percent = Math.round((done / total) * 100);
+      if (!items[key]) {
+        report(key, percent);
+        continue;
       }
-    } else {
-      report('history', 25);
-    }
-
-    // === 阶段 2:搜索历史 — 25~40 ===
-    // 若 history 已全清,搜索历史自然清空,跳过。
-    if (items.searchHistory && !items.history) {
       try {
-        const engines =
-          Application.instance.settings.object.searchEngines || [];
-        const toRemove = storage.history
-          .filter((x) => x._id && findSearchQuery(x.url || '', engines))
-          .map((x) => x._id as string);
-        if (toRemove.length > 0) {
-          await storage.removeHistoryByIds(toRemove);
-        }
-        report('searchHistory', 40);
+        await tasks[key]();
+        report(key, percent);
       } catch (e) {
-        report('searchHistory', 40, String(e));
+        console.error(`[clear-on-exit] ${key} failed`, e);
+        report(key, percent, String(e));
       }
-    } else {
-      report('searchHistory', 40);
     }
-
-    // === 阶段 3 & 4:缓存 + Cookie 并行 — 40~100 ===
-    // 两者都作用在 sessions.view 上,Electron 的 clearCache/clearStorageData
-    // 异步且内部串行化,Promise.all 不会损坏数据,并行只为尽早返回。
-    const sessions = Application.instance.sessions;
-    const tasks: Promise<void>[] = [];
-    if (items.cache) {
-      tasks.push(
-        sessions.view
-          .clearCache()
-          .then(
-            () => report('cache', 75),
-            (e) => report('cache', 75, String(e)),
-          ),
-      );
-    } else {
-      report('cache', 75);
-    }
-    if (items.cookies) {
-      tasks.push(
-        sessions.view
-          .clearStorageData({storages: ['cookies']})
-          .then(
-            () => report('cookies', 100),
-            (e) => report('cookies', 100, String(e)),
-          ),
-      );
-    } else {
-      report('cookies', 100);
-    }
-    await Promise.all(tasks);
-
     report('finalize', 100);
   };
 
@@ -238,6 +315,15 @@ ipcMain.handle(
     }
   },
 );
+
+ipcMain.handle('clear-browsing-data-stats', async () => {
+  try {
+    return await getClearItemStats();
+  } catch (err) {
+    console.error('[clear-browsing-data-stats] failed', err);
+    return null;
+  }
+});
 
 ipcMain.handle(
   'clear-site-browsing-data',

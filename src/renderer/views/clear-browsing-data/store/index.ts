@@ -2,6 +2,8 @@ import { ipcRenderer } from 'electron';
 
 import { DialogStore } from '~/models/dialog-store';
 import { getWebUIURL } from '~/common/webui';
+import { DEFAULT_SETTINGS } from '~/constants/settings';
+import { CLEAR_ON_EXIT_KEYS, ClearOnExitItems } from '~/interfaces/settings';
 
 export interface ClearDialogData {
   url: string;
@@ -9,13 +11,6 @@ export interface ClearDialogData {
 }
 
 type OpenListener = (data: ClearDialogData) => void;
-
-const DEFAULT_ITEMS = {
-  cache: true,
-  cookies: false,
-  history: true,
-  searchHistory: false,
-};
 
 export class Store extends DialogStore {
   private data: ClearDialogData = { url: '', incognito: false };
@@ -44,15 +39,13 @@ export class Store extends DialogStore {
   }
 
   private get items() {
-    const items = this.settings.clearBrowsingData || DEFAULT_ITEMS;
+    const items =
+      this.settings.clearBrowsingData || DEFAULT_SETTINGS.clearBrowsingData;
     // MobX 会把 settings 深度转成 observable Proxy；Electron IPC 无法直接
     // structured-clone Proxy，必须转成普通对象再发送。
-    return {
-      cache: !!items.cache,
-      cookies: !!items.cookies,
-      history: !!items.history,
-      searchHistory: !!items.searchHistory,
-    };
+    const next = {} as ClearOnExitItems;
+    for (const key of CLEAR_ON_EXIT_KEYS) next[key] = !!items[key];
+    return next;
   }
 
   public clearCurrent(data: ClearDialogData) {

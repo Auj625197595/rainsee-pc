@@ -22,8 +22,12 @@ import {
 const PHASE_LABEL: Record<string, MessageKey> = {
   history: 'pvItemHistory',
   searchHistory: 'wbSearchHistory',
-  cache: 'pvItemCache',
-  cookies: 'wbCookie',
+  downloads: 'coeDownloads',
+  cache: 'coeCache',
+  cookies: 'coeCookies',
+  passwords: 'coePasswords',
+  autofill: 'coeAutofill',
+  siteSettings: 'coeSiteSettings',
   finalize: 'shellPhaseFinalize',
 };
 
