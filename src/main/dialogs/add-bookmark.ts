@@ -3,6 +3,7 @@ import {Application} from '../application';
 import {DIALOG_MARGIN_TOP, DIALOG_MARGIN} from '~/constants/design';
 import {PersistentDialog} from './dialog';
 import {IBookmark} from '~/interfaces';
+import {isSameBookmarkUrl} from '~/utils/url';
 
 const WIDTH = 436;
 const HEIGHT = 408;
@@ -67,7 +68,7 @@ export class AddBookmarkDialog extends PersistentDialog {
     if (!data.bookmark && data.url) {
       data.bookmark = Application.instance.storage.bookmarks.find(
         (x) =>
-          x.url === data.url &&
+          isSameBookmarkUrl(x.url, data.url) &&
           Application.instance.storage.isUnderMobileFolder(x),
       );
     }

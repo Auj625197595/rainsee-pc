@@ -132,6 +132,10 @@ export const BookmarkSection = styled.div<{
 export const BookmarkButton = styled(Button)`
   max-width: ${({ width }: { width: number }) => width}px;
   width: auto;
+  /* Keep the intrinsic bookmark width so flex-wrap can expose items that do
+   * not fit. Allowing the buttons to shrink makes long titles silently clip
+   * in the first row, leaving overflowItems empty and hiding the more arrow. */
+  flex: 0 0 auto;
   padding: 4px;
   margin: 0px 2px;
   font-size: 12px;
@@ -185,6 +189,7 @@ export const BookmarkButton = styled(Button)`
     css`
       /* 实体留在原槽位，独立虚影负责跟随指针。 */
       cursor: grabbing;
+      opacity: 0.35;
     `};
 `;
 

@@ -1,4 +1,4 @@
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, screen } from 'electron';
 import { PersistentDialog } from './dialog';
 import { IBookmark } from '~/interfaces';
 
@@ -21,6 +21,33 @@ interface ILayout {
 
 export interface BookmarkOverflowOpenOptions {
   align?: 'start' | 'end';
+  rootFolderId?: string;
+  barFolderAnchors?: BookmarkBarFolderAnchor[];
+  barDropAnchors?: BookmarkBarDropAnchor[];
+  barRect?: { left: number; right: number; top: number; bottom: number };
+  barFolderId?: string;
+  externalDragId?: string;
+  externalDragPoint?: { x: number; y: number };
+  // 根列表末尾追加的固定项(如「其他书签」「移动书签」静态文件夹),不参与排序/拖拽。
+  tailItems?: IBookmark[];
+  // 悬停唤起模式:指针离开该矩形(及其与面板之间的间隙)且不在面板内时自动关闭;
+  // 浮层盖住锚点按钮,点击锚点区域打开 anchorClickUrl。
+  hoverAnchor?: { left: number; right: number; top: number; bottom: number };
+  anchorClickUrl?: string;
+}
+
+export interface BookmarkBarFolderAnchor {
+  id: string;
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+export interface BookmarkBarDropAnchor extends BookmarkBarFolderAnchor {
+  index: number;
+  parentId: string;
+  isFolder?: boolean;
 }
 
 // 按「向左生长」算多列布局。
@@ -73,9 +100,13 @@ export class BookmarkOverflowDialog extends PersistentDialog {
   };
   private currentItems: IBookmark[] = [];
   private allItems: IBookmark[] = [];
+  private rootFolderId = '';
+  private barFolderAnchors: BookmarkBarFolderAnchor[] = [];
 
   public constructor() {
-    super({ name: 'bookmark-overflow' });
+    // hideTimeout:关闭时渲染页先清空内容,留几帧让空白帧合成后再摘 BrowserView;
+    // 否则重新挂载时 Chromium 会先显示摘除前的旧帧(上一次的书签列表)。
+    super({ name: 'bookmark-overflow', hideTimeout: 80 });
     // 全屏 Backdrop 必须透明,否则白屏盖住整个窗口
     this.browserView.setBackgroundColor('#00000000');
   }
@@ -84,7 +115,7 @@ export class BookmarkOverflowDialog extends PersistentDialog {
   protected relayout(items: IBookmark[], browserWindow: BrowserWindow) {
     const winBounds = browserWindow.getContentBounds();
     this.layout = computeLayout(
-      items.length,
+      items.length + (this.openOptions.tailItems?.length || 0),
       this.openOptions.align === 'start'
         ? winBounds.width - this.anchorX
         : this.anchorX,
@@ -113,7 +144,7 @@ export class BookmarkOverflowDialog extends PersistentDialog {
       this.openOptions.align === 'start'
         ? this.anchorX
         : this.anchorX - this.layout.totalW;
-    this.send('data', {
+    const payload = {
       items: this.currentItems,
       allItems: this.allItems,
       cols: this.layout.cols,
@@ -125,7 +156,41 @@ export class BookmarkOverflowDialog extends PersistentDialog {
       panelY: this.anchorTop,
       panelW: this.layout.totalW,
       panelH: this.layout.viewH,
+      rootFolderId: this.rootFolderId,
+      barFolderAnchors: this.barFolderAnchors,
+      barDropAnchors: this.openOptions.barDropAnchors || [],
+      barRect: this.openOptions.barRect,
+      barFolderId: this.openOptions.barFolderId || '',
+      externalDragId: this.openOptions.externalDragId || '',
+      externalDragPoint: this.openOptions.externalDragPoint,
+      tailItems: this.openOptions.tailItems || [],
+      hoverAnchor: this.openOptions.hoverAnchor,
+      anchorClickUrl: this.openOptions.anchorClickUrl || '',
+      // 悬停模式下冷创建可能耗时较久,渲染页据此判断指针是否早已离开锚点。
+      cursorPoint: this.openOptions.hoverAnchor
+        ? this.getCursorPoint()
+        : undefined,
+    };
+    console.log('[bookmark-drag-trace] popup sendData', {
+      rootFolderId: payload.rootFolderId,
+      externalDragId: payload.externalDragId,
+      externalDragPoint: payload.externalDragPoint,
+      hasBarRect: !!payload.barRect,
+      dropAnchorCount: payload.barDropAnchors.length,
+      panel: { x: payload.panelX, y: payload.panelY, w: payload.panelW, h: payload.panelH },
     });
+    this.send('data', payload);
+  }
+
+  private getCursorPoint() {
+    try {
+      if (!this.browserWindow || this.browserWindow.isDestroyed()) return undefined;
+      const bounds = this.browserWindow.getContentBounds();
+      const cursor = screen.getCursorScreenPoint();
+      return { x: cursor.x - bounds.x, y: cursor.y - bounds.y };
+    } catch {
+      return undefined;
+    }
   }
 
   private onBoundsUpdate = () => this.hide();
@@ -143,6 +208,8 @@ export class BookmarkOverflowDialog extends PersistentDialog {
     this.openOptions = options;
     this.currentItems = items;
     this.allItems = allItems;
+    this.rootFolderId = options.rootFolderId || '';
+    this.barFolderAnchors = options.barFolderAnchors || [];
 
     // focus=false:不抢焦点。鼠标交互不依赖 focus。
     if (!(await super.show(browserWindow, false))) return;

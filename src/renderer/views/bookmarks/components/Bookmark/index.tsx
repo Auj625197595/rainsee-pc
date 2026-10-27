@@ -9,6 +9,7 @@ import {
   Info,
   TitleAction,
   Site,
+  SiteLink,
   RowActions,
   IconButton,
   DeleteButton,
@@ -21,6 +22,7 @@ import { useI18n } from '~/renderer/components/I18n';
 import { getIconByUrlNet, parseBookmarklet } from '~/utils/url';
 import { setDraggedLinkData } from '~/renderer/views/app/utils/link-drop';
 import { ipcRenderer } from '~/common/renderer-ipc';
+import { snapshotBookmarkForIpc } from '~/renderer/utils/bookmark-ipc';
 import {getWebUIContext} from '~/common/webui-context';
 
 const webUIContext = getWebUIContext();
@@ -75,15 +77,6 @@ const openBookmark = (item: IBookmark) => {
   }
 };
 
-const selectItem = (item: IBookmark) => {
-  const index = store.selectedItems.indexOf(item._id);
-  if (index === -1) {
-    store.selectedItems.push(item._id);
-  } else {
-    store.selectedItems.splice(index, 1);
-  }
-};
-
 const openItem = (item: IBookmark) => {
   if (item.isFolder) {
     store.currentFolder = item._id;
@@ -93,18 +86,71 @@ const openItem = (item: IBookmark) => {
   openBookmark(item);
 };
 
-const onClick = (item: IBookmark, editing: boolean) => () => {
+// shift+点击(范围多选)/ ctrl+点击(逐个增减):自动进入编辑模式,不打开书签。
+const onSelectClick = (item: IBookmark, e: React.MouseEvent) => {
+  store.enterSelectionMode();
+  if (e.shiftKey) {
+    store.selectRangeTo(item._id);
+  } else {
+    store.toggleSelectItem(item._id);
+  }
+};
+
+const onClick = (item: IBookmark, editing: boolean) => (
+  e: React.MouseEvent<HTMLDivElement>,
+) => {
+  if (e.shiftKey || e.ctrlKey || e.metaKey) {
+    onSelectClick(item, e);
+    return;
+  }
   if (editing) {
-    selectItem(item);
+    store.toggleSelectItem(item._id);
   } else {
     openItem(item);
   }
 };
 
+// shift+按住点击会触发原生文本选择,在 mousedown 阶段拦掉。
+const onCardMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+  if (e.shiftKey) e.preventDefault();
+};
+
+// 标题是带 href 的 <a>:ctrl/cmd+点击(及中键)放行原生链接行为 → 主进程
+// setWindowOpenHandler 收到 background-tab,按浏览器的新标签设定打开,不触发多选。
+// 普通点击仍 preventDefault 走 openBookmark(尊重「在新页面打开」开关)。
+const canOpenNatively = (item: IBookmark) =>
+  !item.isFolder && !!item.url && parseBookmarklet(item.url) === null;
+
+const isNativeOpenClick = (item: IBookmark, e: React.MouseEvent) =>
+  (e.ctrlKey || e.metaKey) && !e.shiftKey && canOpenNatively(item);
+
+// 网址行 <a>:ctrl/cmd+点击放行原生新标签;其余点击阻止导航,冒泡给卡片 onClick
+// (选中/打开逻辑与点卡片空白处一致)。编辑模式下标题也走这里。
+const onLinkClick = (item: IBookmark) => (
+  e: React.MouseEvent<HTMLAnchorElement>,
+) => {
+  if (isNativeOpenClick(item, e)) {
+    e.stopPropagation();
+    return;
+  }
+  e.preventDefault();
+};
+
 const onTitleClick = (item: IBookmark) => (
-  e: React.MouseEvent<HTMLButtonElement>,
+  e: React.MouseEvent<HTMLAnchorElement>,
 ) => {
   e.stopPropagation();
+
+  if (isNativeOpenClick(item, e)) {
+    return;
+  }
+
+  e.preventDefault();
+
+  if (e.shiftKey || e.ctrlKey || e.metaKey) {
+    onSelectClick(item, e);
+    return;
+  }
 
   if (item.isFolder) {
     store.currentFolder = item._id;
@@ -116,7 +162,7 @@ const onTitleClick = (item: IBookmark) => (
 };
 
 const onTitleDragStart = (item: IBookmark) => (
-  e: React.DragEvent<HTMLButtonElement>,
+  e: React.DragEvent<HTMLAnchorElement>,
 ) => {
   if (item.isFolder || !item.url) {
     e.preventDefault();
@@ -131,7 +177,7 @@ const onTitleDragStart = (item: IBookmark) => (
 const onMoreClick = (data: IBookmark) => (e: any) => {
   e.stopPropagation();
 
-  if (store.isReadOnly(data)) return;
+  if (store.isReadOnly(data) || store.isProtectedRoot(data)) return;
 
   const { left, top } = e.currentTarget.getBoundingClientRect();
 
@@ -144,7 +190,7 @@ const onMoreClick = (data: IBookmark) => (e: any) => {
 const onEditClick = (data: IBookmark) => (e: any) => {
   e.stopPropagation();
 
-  if (store.isReadOnly(data)) return;
+  if (store.isReadOnly(data) || store.isProtectedRoot(data)) return;
 
   store.currentBookmark = data;
 
@@ -158,8 +204,11 @@ const onEditClick = (data: IBookmark) => (e: any) => {
 const onContextMenu = (data: IBookmark) => (e: any) => {
   e.preventDefault();
 
-  // 右键仅选中(不进入文件夹),再决定是否弹菜单
-  store.selectedItems = [data._id];
+  // 右键仅选中(不进入文件夹),再决定是否弹菜单。右键已选中的项时保留多选,
+  // 菜单里的剪切/复制/删除作用于全部选中项(与 Chrome 书签管理器一致)。
+  if (!store.selectedItems.includes(data._id)) {
+    store.selectedItems = [data._id];
+  }
 
   // 移动设备书签只读,不弹右键菜单(编辑/删除均不可用)
   if (store.isReadOnly(data)) return;
@@ -168,10 +217,14 @@ const onContextMenu = (data: IBookmark) => (e: any) => {
   // 操作在书签管理器中保持一致。更多按钮仍保留本页的紧凑菜单。
   const windowId = webUIContext.windowId;
   if (windowId != null) {
+    // data 是 MobX observable 项,浅拷贝后嵌套值(如 children)仍是 proxy,
+    // structured clone 过不了 IPC;与书签栏一致用纯字段快照。
     void ipcRenderer.invoke(
       `show-bookmarks-bar-context-menu-${windowId}`,
-      { ...data },
+      snapshotBookmarkForIpc(data),
       'manager',
+      undefined,
+      [...store.selectedItems],
     );
     return;
   }
@@ -203,7 +256,12 @@ const onHandleDragStart = (data: IBookmark) => (
 ) => {
   // 起拖门槛放宽到 canDragBookmarks:单文件/任意普通视图都可拖。
   // 拖到同文件夹内另一卡片=排序(落点逻辑各自再门控),拖到文件夹/面包屑=移动。
-  if (!store.canDragBookmarks || !data._id || store.isReadOnly(data)) {
+  if (
+    !store.canDragBookmarks ||
+    !data._id ||
+    store.isReadOnly(data) ||
+    store.isProtectedRoot(data)
+  ) {
     e.preventDefault();
     return;
   }
@@ -350,6 +408,7 @@ export const Bookmark = observer(
     return (
       <Card
       onContextMenu={onContextMenu(data)}
+      onMouseDown={onCardMouseDown}
       onClick={onClick(data, editing)}
       onDragOver={onCardDragOver(data)}
       onDrop={onCardDrop(data)}
@@ -399,7 +458,8 @@ export const Bookmark = observer(
       </IconBox>
       <Info>
         <TitleAction
-          onClick={editing ? undefined : onTitleClick(data)}
+          href={canOpenNatively(data) ? data.url : undefined}
+          onClick={editing ? onLinkClick(data) : onTitleClick(data)}
           onDragStart={editing ? undefined : onTitleDragStart(data)}
           draggable={!editing && !data.isFolder && !!data.url}
           editing={editing}
@@ -409,7 +469,13 @@ export const Bookmark = observer(
         {data.isFolder ? (
           <Site title={getBookmarkPath(data)}>{getBookmarkPath(data)}</Site>
         ) : (
-          <Site>{data.url}</Site>
+          <SiteLink
+            href={canOpenNatively(data) ? data.url : undefined}
+            onClick={onLinkClick(data)}
+            draggable={false}
+          >
+            {data.url}
+          </SiteLink>
         )}
       </Info>
       {editing && !data.static && !store.isReadOnly(data) && (

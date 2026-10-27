@@ -1,5 +1,6 @@
 import { ipcRenderer } from 'electron';
 import * as React from 'react';
+import { CaretRight } from '@phosphor-icons/react';
 import store from '../../store';
 import { getShellTranslator } from '../../utils/i18n';
 import { observer } from 'mobx-react-lite';
@@ -14,7 +15,7 @@ import {
   MobileBookmarkIcon,
 } from './style';
 import { ToolbarButton } from '../ToolbarButton';
-import { ICON_ARROW_RIGHT, ICON_ALL } from '~/renderer/constants/icons';
+import { ICON_ALL } from '~/renderer/constants/icons';
 import { getWebUIURL } from '~/common/webui';
 import { getIconByUrlNet } from '~/utils/url';
 import { IBookmark } from '~/interfaces';
@@ -24,6 +25,8 @@ import {
   normalizeBookmarkBarDisplay,
   shouldShowBookmarkBar,
 } from '~/common/bookmark-bar';
+import { logBookmarkHoverDebug } from '~/common/bookmark-hover-debug';
+import { isImmersiveHeaderWindow } from '../../utils/windows';
 
 // 按下后位移超过此距离(px)才进入拖拽——对齐标签栏 mousedown→move 阈值,
 // 消除原 350ms 长按死区(此前等待期内移动完全无响应)。纯点击(几乎不动)不触发拖拽,
@@ -31,6 +34,17 @@ import {
 const ARM_THRESHOLD = 4;
 // 文件夹悬停展开延迟。短暂停留不应打断长按拖拽,只有指针保持不动才展开。
 const FOLDER_HOVER_DELAY = 400;
+
+// Drop target objects contain a fresh indicator object on every hit-test.
+// Compare only the values that affect rendering so pointermove does not cause
+// a React update while the pointer remains in the same insertion slot.
+const getDropTargetKey = (target: BookmarkDropTarget | null) => {
+  if (!target) return 'none';
+  const indicator = target.indicator;
+  return `${target.parentId}:${target.insertIndex ?? 'folder'}:${
+    indicator?.left ?? ''
+  }:${indicator?.top ?? ''}:${indicator?.height ?? ''}`;
+};
 
 // 黄色文件夹图标
 const FolderIcon = () => (
@@ -59,6 +73,8 @@ type BookmarkProps = {
   id: string;
   dragging: boolean;
   dropActive: boolean;
+  // 书签栏整体处于拖拽排序中:此时悬停提示(title)需要隐藏,避免拖拽时弹出干扰气泡。
+  barDragging: boolean;
   // 拖拽发生过为 true,Bookmark 用它在 click 里抑制误开标签,读后复位。
   dragOccurredRef: React.MutableRefObject<boolean>;
   onPointerDown: (id: string, e: React.PointerEvent<HTMLDivElement>) => void;
@@ -73,6 +89,7 @@ const Bookmark = observer(
     id,
     dragging,
     dropActive,
+    barDragging,
     dragOccurredRef,
     onPointerDown,
   }: BookmarkProps) => {
@@ -102,6 +119,9 @@ const Bookmark = observer(
           if (!folderHoverPointRef.current) return;
           folderHoverTimerRef.current = null;
           folderHoverPointRef.current = null;
+          logBookmarkHoverDebug('bar delayed open fired', {
+            id,
+          });
           store.bookmarksBar.showFolderDropdown({ currentTarget: target }, id);
         }, FOLDER_HOVER_DELAY);
       },
@@ -150,13 +170,37 @@ const Bookmark = observer(
     }
 
     function handleMouseEnter(event: React.MouseEvent<HTMLDivElement>) {
+      if (isFolder) {
+        logBookmarkHoverDebug('bar enter', {
+          id,
+          title,
+          popupVisible:
+            !!store.dialogsVisibility['bookmark-overflow'] ||
+            store.bookmarksBar.folderPopupVisible,
+          point: { x: event.clientX, y: event.clientY },
+        });
+      }
       // 文件夹只有在悬停一段时间且指针保持不动时才展开,避免拦截长按拖拽。
       if (isFolder) {
-        scheduleFolderHoverExpand(
-          event.currentTarget,
-          event.clientX,
-          event.clientY,
-        );
+        // 弹窗已经打开时,从一个文件夹移到另一个文件夹属于明确的切换,
+        // 不再重复执行首次进入时的防误触延迟。
+        if (
+          store.dialogsVisibility['bookmark-overflow'] ||
+          store.bookmarksBar.folderPopupVisible
+        ) {
+          cancelFolderHoverExpand();
+          logBookmarkHoverDebug('bar switch immediate', { id });
+          store.bookmarksBar.showFolderDropdown(
+            { currentTarget: event.currentTarget },
+            id,
+          );
+        } else {
+          scheduleFolderHoverExpand(
+            event.currentTarget,
+            event.clientX,
+            event.clientY,
+          );
+        }
       }
 
       if (iconsOnly) {
@@ -192,6 +236,16 @@ const Bookmark = observer(
       }
     }
 
+    // 悬停提示(对齐 Chrome/Edge 书签栏):书签显示「标题 + 网址」两行原生 tooltip。
+    // 原生 tooltip 是系统的弹出层,能盖在下层网页 BrowserView 之上;而 DOM 浮层
+    // 会被页面视图遮挡。文件夹不显示——悬停展开的下拉菜单已承担说明职责,且
+    // 避免与下拉浮层同时出现。拖拽排序期间一律隐藏。
+    const hoverTitle = !isFolder && !barDragging && url
+      ? title && title !== url
+        ? `${title}\n${url}`
+        : url
+      : undefined;
+
     return (
       <BookmarkButton
         data-rainsee-part="bookmark-item"
@@ -200,6 +254,7 @@ const Bookmark = observer(
         data-expand-left={iconsOnly && expandLeft ? 'true' : undefined}
         data-drop-active={dropActive ? 'true' : undefined}
         aria-label={iconsOnly ? title : undefined}
+        title={hoverTitle}
         dense
         width={buttonWidth}
         dragging={dragging}
@@ -238,6 +293,10 @@ const Bookmark = observer(
 
 export const BookmarkBar = observer(() => {
   const { bookmarkBarItems: list, showOverflow } = store.bookmarksBar;
+  const overflowIconColor =
+    store.theme['bookmark.textColor'] ||
+    store.theme['addressbar.textColor'] ||
+    (store.theme['toolbar.lightForeground'] ? '#fff' : '#161b2d');
   const bookmarkBarDisplay = normalizeBookmarkBarDisplay(
     store.settings.object.bookmarksBarDisplay,
     store.settings.object.bookmarksBar,
@@ -247,10 +306,22 @@ export const BookmarkBar = observer(() => {
     [store.settings.object.newtab],
   );
   const selectedUrl = store.tabs.selectedTab?.url || '';
-  const bookmarkBarVisible = React.useMemo(
-    () => shouldShowBookmarkBar(bookmarkBarDisplay, selectedUrl, newTabUrl),
-    [bookmarkBarDisplay, selectedUrl, newTabUrl],
-  );
+  const bookmarkBarVisible = React.useMemo(() => {
+    const visible = shouldShowBookmarkBar(
+      bookmarkBarDisplay,
+      selectedUrl,
+      newTabUrl,
+    );
+    // The immersive mirror can render a frame before its first tab snapshot
+    // arrives. Keep the bar mounted during that short gap so its data load
+    // and height measurement are ready when the header opens.
+    return (
+      visible ||
+      (isImmersiveHeaderWindow() &&
+        !selectedUrl &&
+        bookmarkBarDisplay !== 'never')
+    );
+  }, [bookmarkBarDisplay, selectedUrl, newTabUrl]);
 
   // dragId / order 既有 state(驱动渲染)又有 ref(window 监听闭包内读取最新值,避免 stale)。
   const [dragId, setDragId] = React.useState<string | null>(null);
@@ -266,18 +337,160 @@ export const BookmarkBar = observer(() => {
   // 拖拽虚影独立挂到 body，书签栏中的原项始终留在原位置。
   const dragPreviewRef = React.useRef<HTMLElement | null>(null);
   const dragPreviewOffsetRef = React.useRef({ x: 0, y: 0 });
+  const externalPreviewVisibleRef = React.useRef(false);
+  const ignorePopupOverUntilRef = React.useRef(0);
   const [dropTarget, setDropTarget] = React.useState<BookmarkDropTarget | null>(
     null,
   );
+  const dropTargetKeyRef = React.useRef('none');
+  const dropTargetRafRef = React.useRef<number | null>(null);
+  const pendingDropPointRef = React.useRef<{ x: number; y: number } | null>(
+    null,
+  );
+  const lastDropLogRef = React.useRef('');
+
+  // The overflow menu lives in a separate BrowserView. During a drag it
+  // reports pointer coordinates back through the main process so this window
+  // can resolve the real bookmark-bar insertion slot.
+  React.useEffect(() => {
+    const overChannel = `bookmark-overflow-drag-over-${store.windowId}`;
+    const dropChannel = `bookmark-overflow-drag-drop-${store.windowId}`;
+    const cancelChannel = `bookmark-overflow-drag-cancel-${store.windowId}`;
+    const previewVisibilityChannel = 'bookmark-bar-preview-visibility';
+    const onOver = (_event: unknown, id: string, x: number, y: number) => {
+      if (!id) return;
+      if (Date.now() < ignorePopupOverUntilRef.current) return;
+      const target = store.bookmarksBar.getDropTargetAtPoint(x, y);
+      const key = `${id}:${target?.parentId || 'none'}:${
+        target?.insertIndex ?? 'folder'
+      }`;
+      if (lastDropLogRef.current !== key) {
+        lastDropLogRef.current = key;
+        const targetKey = getDropTargetKey(target);
+        if (dropTargetKeyRef.current !== targetKey) {
+          dropTargetKeyRef.current = targetKey;
+          setDropTarget(target);
+        }
+        logBookmarkHoverDebug('bar received popup drag-over', {
+          id,
+          point: { x, y },
+          target,
+        });
+      }
+    };
+    const onDrop = (_event: unknown, id: string, x: number, y: number) => {
+      if (!id) return;
+      const target = store.bookmarksBar.getDropTargetAtPoint(x, y);
+      logBookmarkHoverDebug('bar received popup drag-drop', {
+        id,
+        point: { x, y },
+        target,
+      });
+      dropTargetKeyRef.current = 'none';
+      setDropTarget(null);
+      lastDropLogRef.current = '';
+      ignorePopupOverUntilRef.current = Date.now() + 250;
+      if (!target) {
+        logBookmarkHoverDebug('bar drag-drop ignored', {
+          id,
+          reason: 'no-target',
+        });
+        return;
+      }
+      if (
+        target.insertIndex === undefined &&
+        store.bookmarksBar.moveItemToFolder(id, target.parentId)
+      ) {
+        ipcRenderer.send(
+          `bookmark-overflow-move-committed-${store.windowId}`,
+          id,
+          target.parentId,
+        );
+        logBookmarkHoverDebug('bar drag-drop committed', {
+          id,
+          mode: 'folder',
+          target,
+        });
+        return;
+      }
+      if (target.insertIndex != null) {
+        const committed = store.bookmarksBar.moveItemToDropTarget(id, target);
+        logBookmarkHoverDebug('bar drag-drop committed', {
+          id,
+          mode: 'insert',
+          target,
+          committed,
+        });
+      }
+    };
+    const onCancel = () => {
+      lastDropLogRef.current = '';
+      ignorePopupOverUntilRef.current = Date.now() + 250;
+      dropTargetKeyRef.current = 'none';
+      setDropTarget(null);
+    };
+    const onPreviewVisibility = (_event: unknown, visible: boolean) => {
+      externalPreviewVisibleRef.current = visible === true;
+      if (dragPreviewRef.current) {
+        dragPreviewRef.current.style.visibility = visible
+          ? 'hidden'
+          : 'visible';
+      }
+    };
+    ipcRenderer.on(overChannel, onOver);
+    ipcRenderer.on(dropChannel, onDrop);
+    ipcRenderer.on(cancelChannel, onCancel);
+    ipcRenderer.on(previewVisibilityChannel, onPreviewVisibility);
+    return () => {
+      ipcRenderer.removeListener(overChannel, onOver);
+      ipcRenderer.removeListener(dropChannel, onDrop);
+      ipcRenderer.removeListener(cancelChannel, onCancel);
+      ipcRenderer.removeListener(previewVisibilityChannel, onPreviewVisibility);
+    };
+  }, []);
 
   const updateDropTarget = React.useCallback(
     (clientX: number, clientY: number) => {
       const target = store.bookmarksBar.getDropTargetAtPoint(clientX, clientY);
-      setDropTarget(target);
+      const key = getDropTargetKey(target);
+      if (dropTargetKeyRef.current !== key) {
+        dropTargetKeyRef.current = key;
+        setDropTarget(target);
+      }
       return target;
     },
     [],
   );
+
+  // Hit-testing reads layout for every bookmark. Keep the drag preview
+  // pointer-driven, but coalesce expensive drop-target reads to one per
+  // animation frame.
+  const scheduleDropTargetUpdate = React.useCallback(
+    (
+      clientX: number,
+      clientY: number,
+      afterUpdate?: (target: BookmarkDropTarget | null) => void,
+    ) => {
+      pendingDropPointRef.current = { x: clientX, y: clientY };
+      if (dropTargetRafRef.current !== null) return;
+      dropTargetRafRef.current = requestAnimationFrame(() => {
+        dropTargetRafRef.current = null;
+        const point = pendingDropPointRef.current;
+        pendingDropPointRef.current = null;
+        const target = point ? updateDropTarget(point.x, point.y) : null;
+        afterUpdate?.(target);
+      });
+    },
+    [updateDropTarget],
+  );
+
+  const cancelDropTargetUpdate = React.useCallback(() => {
+    if (dropTargetRafRef.current !== null) {
+      cancelAnimationFrame(dropTargetRafRef.current);
+      dropTargetRafRef.current = null;
+    }
+    pendingDropPointRef.current = null;
+  }, []);
 
   const onExternalDragOver = React.useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
@@ -286,15 +499,16 @@ export const BookmarkBar = observer(() => {
       e.preventDefault();
       e.stopPropagation();
       e.dataTransfer.dropEffect = 'copy';
-      updateDropTarget(e.clientX, e.clientY);
+      scheduleDropTargetUpdate(e.clientX, e.clientY);
     },
-    [updateDropTarget],
+    [scheduleDropTargetUpdate],
   );
 
   const onExternalDragLeave = React.useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
       if (e.relatedTarget && e.currentTarget.contains(e.relatedTarget as Node))
         return;
+      dropTargetKeyRef.current = 'none';
       setDropTarget(null);
     },
     [],
@@ -312,14 +526,16 @@ export const BookmarkBar = observer(() => {
         : getDraggedLinkData(e.dataTransfer);
       e.preventDefault();
       e.stopPropagation();
+      cancelDropTargetUpdate();
       const target = updateDropTarget(e.clientX, e.clientY);
+      dropTargetKeyRef.current = 'none';
       setDropTarget(null);
       if (!link) return;
       store.tabs.clearSidebarDrag();
       if (!target) return;
       await store.bookmarksBar.addDroppedBookmark(link, target);
     },
-    [updateDropTarget],
+    [cancelDropTargetUpdate, updateDropTarget],
   );
 
   // 顶部标签页采用 mousemove 拖拽而非 HTML5 DragEvent，这里只负责同步投放高亮；
@@ -328,16 +544,19 @@ export const BookmarkBar = observer(() => {
     const onMouseMove = (e: MouseEvent) => {
       const tab = store.tabs.selectedTab;
       if (!store.tabs.isDragging || !tab?.isDragging) return;
-      updateDropTarget(e.clientX, e.clientY);
+      scheduleDropTargetUpdate(e.clientX, e.clientY);
     };
-    const clear = () => setDropTarget(null);
+    const clear = () => {
+      dropTargetKeyRef.current = 'none';
+      setDropTarget(null);
+    };
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', clear);
     return () => {
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', clear);
     };
-  }, [updateDropTarget]);
+  }, [scheduleDropTargetUpdate]);
 
   const setDragIdBoth = React.useCallback((v: string | null) => {
     dragIdRef.current = v;
@@ -362,6 +581,7 @@ export const BookmarkBar = observer(() => {
   const removeDragPreview = React.useCallback(() => {
     dragPreviewRef.current?.remove();
     dragPreviewRef.current = null;
+    externalPreviewVisibleRef.current = false;
   }, []);
 
   const createDragPreview = React.useCallback(
@@ -386,6 +606,9 @@ export const BookmarkBar = observer(() => {
       preview.style.margin = '0';
       preview.style.pointerEvents = 'none';
       preview.style.opacity = '0.82';
+      preview.style.visibility = externalPreviewVisibleRef.current
+        ? 'hidden'
+        : 'visible';
       preview.style.color = computed.color;
       preview.style.fontFamily = computed.fontFamily;
       preview.style.backgroundColor = 'transparent';
@@ -423,10 +646,20 @@ export const BookmarkBar = observer(() => {
         const dy = e.clientY - armed.y;
         if (dx * dx + dy * dy < ARM_THRESHOLD * ARM_THRESHOLD) return;
         dragOccurredRef.current = true;
+        logBookmarkHoverDebug('bar drag-start', {
+          id: armed.id,
+          point: { x: e.clientX, y: e.clientY },
+          popupVisible: store.bookmarksBar.folderPopupVisible,
+        });
         const ids = store.bookmarksBar.bookmarkBarItems.map((b) => b._id);
         setOrderBoth(ids);
         setDragIdBoth(armed.id);
         createDragPreview(armed.x, armed.y);
+        ipcRenderer.send(
+          `bookmark-overflow-drag-state-${store.windowId}`,
+          armed.id,
+          true,
+        );
       }
 
       const id = dragIdRef.current;
@@ -434,27 +667,29 @@ export const BookmarkBar = observer(() => {
       moveDragPreview(e.clientX, e.clientY);
 
       // 文件夹中心区域是“移入”落点；边缘区域仍按普通插入槽位参与排序。
-      const drop = updateDropTarget(e.clientX, e.clientY);
-      if (
-        drop &&
-        drop.insertIndex === undefined &&
-        store.bookmarksBar.canMoveItemToFolder(id, drop.parentId)
-      ) {
-        return;
-      }
-      if (drop && drop.insertIndex === undefined) setDropTarget(null);
+      scheduleDropTargetUpdate(e.clientX, e.clientY, (drop) => {
+        if (
+          drop &&
+          drop.insertIndex === undefined &&
+          !store.bookmarksBar.canMoveItemToFolder(id, drop.parentId)
+        ) {
+          dropTargetKeyRef.current = 'none';
+          setDropTarget(null);
+        }
+      });
     },
     [
       createDragPreview,
       moveDragPreview,
       setDragIdBoth,
       setOrderBoth,
-      updateDropTarget,
+      scheduleDropTargetUpdate,
     ],
   );
 
   const onWinPointerUp = React.useCallback(
     (e: PointerEvent) => {
+      cancelDropTargetUpdate();
       armedRef.current = null;
 
       window.removeEventListener('pointermove', onWinPointerMove);
@@ -463,11 +698,25 @@ export const BookmarkBar = observer(() => {
 
       const hadDrag = dragOccurredRef.current;
       const id = dragIdRef.current;
+      logBookmarkHoverDebug('bar drag-end', {
+        id,
+        type: e.type,
+        point: { x: e.clientX, y: e.clientY },
+        hadDrag,
+      });
       const finalTarget =
         e.type === 'pointerup' && id
           ? store.bookmarksBar.getDropTargetAtPoint(e.clientX, e.clientY)
           : null;
       removeDragPreview();
+      lastDropLogRef.current = '';
+      if (id) {
+        ipcRenderer.send(
+          `bookmark-overflow-drag-source-end-${store.windowId}`,
+          id,
+          false,
+        );
+      }
 
       // pointercancel 只收尾不提交；正常松手命中文件夹中心时优先执行“移入”，
       // 否则根据最终插入线一次性生成新顺序。
@@ -477,6 +726,7 @@ export const BookmarkBar = observer(() => {
         finalTarget.insertIndex === undefined &&
         store.bookmarksBar.moveItemToFolder(id, finalTarget.parentId)
       ) {
+        dropTargetKeyRef.current = 'none';
         setDropTarget(null);
         setDragIdBoth(null);
         setOrderBoth(null);
@@ -484,6 +734,7 @@ export const BookmarkBar = observer(() => {
       }
 
       setDragIdBoth(null);
+      dropTargetKeyRef.current = 'none';
       setDropTarget(null);
 
       const currentOrder = orderRef.current;
@@ -520,7 +771,13 @@ export const BookmarkBar = observer(() => {
       }
       setOrderBoth(null);
     },
-    [onWinPointerMove, removeDragPreview, setDragIdBoth, setOrderBoth],
+    [
+      cancelDropTargetUpdate,
+      onWinPointerMove,
+      removeDragPreview,
+      setDragIdBoth,
+      setOrderBoth,
+    ],
   );
 
   const onItemPointerDown = React.useCallback(
@@ -542,8 +799,14 @@ export const BookmarkBar = observer(() => {
       window.removeEventListener('pointermove', onWinPointerMove);
       window.removeEventListener('pointerup', onWinPointerUp);
       window.removeEventListener('pointercancel', onWinPointerUp);
+      cancelDropTargetUpdate();
     },
-    [onWinPointerMove, onWinPointerUp, removeDragPreview],
+    [
+      cancelDropTargetUpdate,
+      onWinPointerMove,
+      onWinPointerUp,
+      removeDragPreview,
+    ],
   );
 
   // 书签栏可见性、展示目录或行数变化时(含设置页跨窗口改行数触发的 update-settings 广播、
@@ -610,12 +873,20 @@ export const BookmarkBar = observer(() => {
     if (!section) return;
     // 与 BookmarkSection 的 CSS max-height 一致:行高 26px(dense) + 行间 gap 4px
     const maxH = measuredRows * 26 + (measuredRows - 1) * 4;
+    const sectionRect = section.getBoundingClientRect();
     const children = Array.from(section.children) as HTMLElement[];
     if (children.length === 0) return;
     // 第一个 offsetTop 越过可见区域的按钮 = 被裁切的开始;之前的都可见
     let visibleCount = children.length;
     for (let i = 0; i < children.length; i++) {
-      if (children[i].offsetTop >= maxH) {
+      const rect = children[i].getBoundingClientRect();
+      // offsetTop 覆盖换行/纵向裁切; right 越界覆盖某些内核在
+      // flex-wrap 计算延迟时仍停留在首行的情况,避免漏掉不可见书签。
+      if (
+        children[i].offsetTop >= maxH ||
+        rect.right > sectionRect.right + 1 ||
+        rect.left < sectionRect.left - 1
+      ) {
         visibleCount = i;
         break;
       }
@@ -701,6 +972,7 @@ export const BookmarkBar = observer(() => {
             isFolder={isFolder}
             dragging={dragId === _id}
             dropActive={isFolder && dropTarget?.parentId === _id}
+            barDragging={!!dragId}
             dragOccurredRef={dragOccurredRef}
             onPointerDown={onItemPointerDown}
           />
@@ -715,10 +987,14 @@ export const BookmarkBar = observer(() => {
           }}
         />
       )}
-      {store.bookmarksBar.overflowItems.length > 0 && (
+      {store.bookmarksBar.hasOverflow && (
         <ToolbarButton
           rainseeAction="bookmark-overflow"
-          icon={ICON_ARROW_RIGHT}
+          icon={CaretRight}
+          size={16}
+          iconColor={overflowIconColor}
+          iconWeight="bold"
+          autoInvert={false}
           onClick={showOverflow}
         />
       )}

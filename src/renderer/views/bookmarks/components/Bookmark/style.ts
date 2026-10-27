@@ -245,14 +245,16 @@ export const Title = styled.div`
 `;
 
 export const TitleAction = styled(Title).attrs({
-  as: 'button',
-  type: 'button',
+  as: 'a',
 })`
-  width: 100%;
+  display: block;
+  width: fit-content;
+  max-width: 100%;
   padding: 0;
   border: 0;
   background: transparent;
   text-align: left;
+  text-decoration: none;
   cursor: ${({ editing }: { editing?: boolean }) =>
     editing ? 'default' : 'pointer'};
 
@@ -271,6 +273,16 @@ export const Site = styled.div`
   ${({ theme }: { theme?: ITheme }) => css`
     color: ${getPalette(theme).textSub};
   `}
+`;
+
+export const SiteLink = styled(Site).attrs({
+  as: 'a',
+})`
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  text-decoration: none;
+  cursor: inherit;
 `;
 
 export const RowActions = styled.div`

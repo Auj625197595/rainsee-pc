@@ -1,11 +1,12 @@
 import { Menu, ipcRenderer } from 'electron';
-import { makeObservable, observable, toJS } from 'mobx';
+import { computed, makeObservable, observable, toJS } from 'mobx';
 import { IBookmark } from '~/interfaces';
 import { Store } from '../store';
 import {
   snapshotBookmarkForIpc,
   snapshotBookmarksForIpc,
 } from '~/renderer/utils/bookmark-ipc';
+import { logBookmarkHoverDebug } from '~/common/bookmark-hover-debug';
 
 export type BookmarkDropTarget = {
   parentId: string;
@@ -14,6 +15,9 @@ export type BookmarkDropTarget = {
 };
 
 export class BookmarkBarStore {
+  // ToolbarButton 的默认最小宽度为 36px,再加上左右各 1px margin。
+  // 书签栏从“无溢出”切换到“有溢出”时,更多按钮会占用这部分宽度。
+  private static readonly OVERFLOW_BUTTON_WIDTH = 38;
   public buttonWidth = 150;
   public overflowMenu: Menu;
   private staticMainID: string;
@@ -34,6 +38,8 @@ export class BookmarkBarStore {
       list: observable,
       bookmarkBarItems: observable,
       overflowItems: observable,
+      hasOverflow: computed,
+      folderPopupVisible: observable,
     });
 
     this.store = store;
@@ -43,7 +49,12 @@ export class BookmarkBarStore {
     ipcRenderer.on('reload-bookmarks', () => {
       this.load();
     });
+    ipcRenderer.on('bookmark-overflow-state', (_event, visible: boolean) => {
+      this.folderPopupVisible = !!visible;
+    });
   }
+
+  public folderPopupVisible = false;
 
   public async load() {
     const items: IBookmark[] = await ipcRenderer.invoke('bookmarks-get');
@@ -68,7 +79,20 @@ export class BookmarkBarStore {
   private getDisplayedItems(): IBookmark[] {
     const folderId = this.getDisplayFolderId();
     if (!folderId) return [];
-    return this.list.filter(({ parent }) => parent === folderId);
+    // 与书签管理页一致按 order 排序;不能依赖主进程数组顺序(新增是 push 到末尾,
+    // 重启后才按 order 重排,两边会不一致)。
+    return this.list
+      .filter(({ parent }) => parent === folderId)
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  }
+
+  public get hasOverflow(): boolean {
+    // resize 的中间状态里 overflowItems 可能已经清空，但 bookmarkBarItems 仍是
+    // 小窗时的可见子集。始终核对当前目录总数，避免更多按钮和未展示项一起消失。
+    return (
+      this.overflowItems.length > 0 ||
+      this.getDisplayedItems().length > this.bookmarkBarItems.length
+    );
   }
 
   private hasSameItems(a: IBookmark[], b: IBookmark[]) {
@@ -118,32 +142,54 @@ export class BookmarkBarStore {
     const measured = sectionEl?.getBoundingClientRect().width;
     const perRow =
       measured && measured > 0 ? measured : document.body.clientWidth - 65;
-    const barWidth = perRow * rows;
     const maxChars = 18;
     const iconsOnly = this.store.settings.object.bookmarksBarIconsOnly;
-    let currentWidth = 0;
     const potentialItems = this.getDisplayedItems();
-    potentialItems.forEach((el) => {
-      if (currentWidth >= barWidth) {
-        overflowItems.push(el);
-      } else {
-        if (iconsOnly) {
-          // 34px 按钮 + 左右各 2px margin，与 BookmarkButton 的实际占位一致。
-          currentWidth += 38;
-        } else if (el.title.length < maxChars) {
-          const realWidth =
-            ((this.buttonWidth - 36) / maxChars) * el.title.length;
-          currentWidth += realWidth + 36;
-        } else {
-          currentWidth += this.buttonWidth;
-        }
-        if (currentWidth < barWidth) {
-          barItems.push(el);
-        } else {
-          overflowItems.push(el);
-        }
+    const estimateWidth = (item: IBookmark) => {
+      if (iconsOnly) {
+        // 34px 按钮 + 左右各 2px margin,与 BookmarkButton 的实际占位一致。
+        return 38;
       }
-    });
+      if (item.title.length < maxChars) {
+        const textWidth =
+          ((this.buttonWidth - 36) / maxChars) * item.title.length;
+        return textWidth + 36;
+      }
+      return this.buttonWidth;
+    };
+    const fitCount = (availableWidth: number) => {
+      let currentWidth = 0;
+      let count = 0;
+      for (const item of potentialItems) {
+        const nextWidth = estimateWidth(item);
+        // 允许极小的浮点误差,恰好填满时仍视为可见。
+        if (currentWidth + nextWidth > availableWidth + 0.5) break;
+        currentWidth += nextWidth;
+        count += 1;
+      }
+      return count;
+    };
+
+    let visibleCount = fitCount(perRow * rows);
+    // section 的实测宽度取决于“更多”按钮是否已经渲染。按钮尚未渲染时,
+    // 先按无按钮宽度计算会出现临界错误:所有书签恰好塞下,但按钮一旦出现
+    // 又会挤掉最后一项,于是用户必须再添加一个书签才看到箭头。对无按钮状态
+    // 同时预演扣除按钮占位后的结果,只要确实有项目溢出就采用该拆分。
+    // overflowItems 是渲染状态的单一事实来源;避免读取尚未提交的旧 DOM,
+    // 否则增删书签时可能因旧箭头短暂存在而漏掉本次预演。
+    if (measured && measured > 0 && this.overflowItems.length === 0) {
+      const widthWithOverflowButton = Math.max(
+        0,
+        perRow - BookmarkBarStore.OVERFLOW_BUTTON_WIDTH,
+      );
+      const visibleWithOverflow = fitCount(widthWithOverflowButton * rows);
+      if (visibleWithOverflow < potentialItems.length) {
+        visibleCount = visibleWithOverflow;
+      }
+    }
+
+    barItems.push(...potentialItems.slice(0, visibleCount));
+    overflowItems.push(...potentialItems.slice(visibleCount));
     if (
       this.hasSameItems(this.bookmarkBarItems, barItems) &&
       this.hasSameItems(this.overflowItems, overflowItems)
@@ -204,6 +250,98 @@ export class BookmarkBarStore {
     this.applyMeasuredSplit(visibleCount);
   }
 
+  private getFolderAnchors() {
+    return Array.from(
+      document.querySelectorAll(
+        '[data-rainsee-part="bookmark-item"][data-rainsee-kind="folder"]',
+      ),
+    )
+      .map((element) => {
+        const rect = (element as HTMLElement).getBoundingClientRect();
+        const id = (element as HTMLElement).dataset.id || '';
+        return {
+          id,
+          left: rect.left,
+          right: rect.right,
+          top: rect.top,
+          bottom: rect.bottom,
+        };
+      })
+      .filter((anchor) => anchor.id && anchor.right > anchor.left);
+  }
+
+  /** Geometry shared with the overflow BrowserView for drag-to-bar drops. */
+  private getBarDropAnchors(): {
+    barRect?: { left: number; right: number; top: number; bottom: number };
+    items: Array<{
+      id: string;
+      left: number;
+      right: number;
+      top: number;
+      bottom: number;
+      index: number;
+      parentId: string;
+      isFolder: boolean;
+    }>;
+    parentId: string;
+  } {
+    const bar = document.querySelector(
+      '[data-rainsee-part="bookmark-bar"]',
+    ) as HTMLElement | null;
+    const section = document.querySelector(
+      '[data-bookmark-section]',
+    ) as HTMLElement | null;
+    if (!bar || !section) {
+      return { barRect: undefined, items: [], parentId: '' };
+    }
+    const displayed = this.getDisplayedItems();
+    const items = Array.from(
+      section.querySelectorAll('[data-rainsee-part="bookmark-item"]'),
+    )
+      .map((element) => {
+        const el = element as HTMLElement;
+        const id = el.dataset.id || '';
+        const item = displayed.find((bookmark) => bookmark._id === id);
+        if (!id || !item) return null;
+        const rect = el.getBoundingClientRect();
+        return {
+          id,
+          left: rect.left,
+          right: rect.right,
+          top: rect.top,
+          bottom: rect.bottom,
+          index: displayed.indexOf(item),
+          parentId: item.parent || '',
+          isFolder: !!item.isFolder,
+        };
+      })
+      .filter(
+        (
+          item,
+        ): item is {
+          id: string;
+          left: number;
+          right: number;
+          top: number;
+          bottom: number;
+          index: number;
+          parentId: string;
+          isFolder: boolean;
+        } => !!item,
+      );
+    const rect = bar.getBoundingClientRect();
+    return {
+      barRect: {
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        bottom: rect.bottom,
+      },
+      items,
+      parentId: this.getDisplayFolderId() || '',
+    };
+  }
+
   public removeItems(ids: string[]) {
     for (const id of ids) {
       const item = this.list.find((x) => x._id === id);
@@ -225,8 +363,56 @@ export class BookmarkBarStore {
     ipcRenderer.send('bookmarks-reorder', folderId, toJS(orderedIds));
   }
 
+  /**
+   * Commit a drop from the overflow BrowserView onto a bookmark-bar slot.
+   * The source may belong to another folder, so update its parent first and
+   * then persist the complete sibling order for the destination folder.
+   */
+  public moveItemToDropTarget(id: string, target: BookmarkDropTarget): boolean {
+    if (!id || target.insertIndex == null) return false;
+    const item = this.list.find((bookmark) => bookmark._id === id);
+    const parent = this.list.find(
+      (bookmark) => bookmark._id === target.parentId,
+    );
+    if (!item || !parent?.isFolder) return false;
+    if (item.isFolder && item.parent !== target.parentId) {
+      let current: IBookmark | undefined = parent;
+      const visited = new Set<string>();
+      while (current?._id && !visited.has(current._id)) {
+        if (current._id === id) return false;
+        visited.add(current._id);
+        current = current.parent
+          ? this.list.find((bookmark) => bookmark._id === current?.parent)
+          : undefined;
+      }
+    }
+
+    const siblings = this.list
+      .filter((bookmark) => bookmark.parent === target.parentId)
+      .slice()
+      .sort((a, b) => a.order - b.order);
+    const without = siblings.filter((bookmark) => bookmark._id !== id);
+    const index = Math.max(0, Math.min(target.insertIndex, without.length));
+    without.splice(index, 0, item);
+    const orderedIds = without.map((bookmark) => bookmark._id);
+
+    if (item.parent !== target.parentId) {
+      // Parent change and destination ordering must be committed atomically;
+      // two independent async IPC handlers can otherwise race.
+      ipcRenderer.send('bookmarks-move', id, target.parentId, toJS(orderedIds));
+    } else {
+      ipcRenderer.send('bookmarks-reorder', target.parentId, toJS(orderedIds));
+    }
+    return true;
+  }
+
   public canMoveItemToFolder(id: string, targetId: string): boolean {
-    if (!id || !targetId || targetId === this.getDisplayFolderId() || id === targetId)
+    if (
+      !id ||
+      !targetId ||
+      targetId === this.getDisplayFolderId() ||
+      id === targetId
+    )
       return false;
 
     const item = this.list.find((bookmark) => bookmark._id === id);
@@ -249,7 +435,14 @@ export class BookmarkBarStore {
 
   public moveItemToFolder(id: string, targetId: string): boolean {
     if (!this.canMoveItemToFolder(id, targetId)) return false;
-    ipcRenderer.send('bookmarks-update', id, { parent: targetId });
+    const nextOrder =
+      this.list
+        .filter((bookmark) => bookmark.parent === targetId)
+        .reduce((max, bookmark) => Math.max(max, bookmark.order ?? 0), -1) + 1;
+    ipcRenderer.send('bookmarks-update', id, {
+      parent: targetId,
+      order: nextOrder,
+    });
     return true;
   }
 
@@ -416,15 +609,77 @@ export class BookmarkBarStore {
 
     // 走独立 BrowserView 多列浮层(支持多列 + 滚动箭头 + 二级悬浮),
     // 不再走原生 Menu。allBookmarks 供二级/切换时按 folderId 查子项。
-    void ipcRenderer.invoke(
-      `show-bookmarks-bar-overflow-${this.store.windowId}`,
-      snapshotBookmarksForIpc(this.overflowItems),
-      snapshotBookmarksForIpc(this.list),
-      { x, y },
-    ).catch((error) => console.error('[bookmarks] open overflow failed', error));
+    const barDrop = this.getBarDropAnchors();
+    void ipcRenderer
+      .invoke(
+        `show-bookmarks-bar-overflow-${this.store.windowId}`,
+        snapshotBookmarksForIpc(this.overflowItems),
+        snapshotBookmarksForIpc(this.list),
+        {
+          x,
+          y,
+          barFolderAnchors: this.getFolderAnchors(),
+          barDropAnchors: barDrop.items,
+          barRect: barDrop.barRect,
+          barFolderId: barDrop.parentId,
+        },
+      )
+      .catch((error) =>
+        console.error('[bookmarks] open overflow failed', error),
+      );
   };
 
+  /**
+   * 地址栏书签按钮悬停:复用书签栏多列浮层,展示书签栏根目录(static main),
+   * 末尾追加非空的「其他书签」「移动书签」。浮层盖住按钮,按钮区的悬停保持/
+   * 离开关闭/点击打开书签管理由浮层根据 hoverAnchor 处理。
+   */
+  public showRootFolderPopup(
+    anchor: { left: number; right: number; top: number; bottom: number },
+    titles: { other: string; mobile: string },
+    anchorClickUrl: string,
+  ) {
+    const mainId = this.staticMainID;
+    if (!mainId) return;
+    const items = this.list.filter(
+      ({ static: staticName, parent }) => !staticName && parent === mainId,
+    );
+    const tailItems = (['other', 'mobile'] as const)
+      .map((name) => this.list.find((item) => item.static === name))
+      .filter(
+        (folder): folder is IBookmark =>
+          !!folder?._id &&
+          this.list.some((item) => item.parent === folder._id),
+      )
+      .map((folder) => ({
+        ...snapshotBookmarkForIpc(folder),
+        title: folder.static === 'other' ? titles.other : titles.mobile,
+      }));
+    const barDrop = this.getBarDropAnchors();
+    void ipcRenderer
+      .invoke(
+        `show-bookmarks-bar-overflow-${this.store.windowId}`,
+        snapshotBookmarksForIpc(items),
+        snapshotBookmarksForIpc(this.list),
+        {
+          x: Math.floor(anchor.right),
+          y: Math.floor(anchor.bottom) + 4,
+          rootFolderId: mainId,
+          tailItems,
+          hoverAnchor: anchor,
+          anchorClickUrl,
+          barDropAnchors: barDrop.items,
+          barRect: barDrop.barRect,
+          barFolderId: barDrop.parentId,
+        },
+      )
+      .catch((error) =>
+        console.error('[bookmarks] open root popup failed', error),
+      );
+  }
+
   public showFolderDropdown = (event: any, id: string) => {
+    this.folderPopupVisible = true;
     const target = event.currentTarget || event.target;
     const clientRect = target.getBoundingClientRect();
     const y = Math.floor(clientRect.bottom) + 4;
@@ -432,27 +687,50 @@ export class BookmarkBarStore {
     const items = this.list.filter(
       ({ static: staticName, parent }) => !staticName && parent === id,
     );
+    logBookmarkHoverDebug('request folder popup', {
+      id,
+      anchor: { x, y },
+      childCount: items.length,
+      folderAnchors: this.getFolderAnchors(),
+    });
 
     // 文件夹下拉复用「更多书签」的多列浮层，使列表项也能接收右键事件。
-    void ipcRenderer.invoke(
-      `show-bookmarks-bar-overflow-${this.store.windowId}`,
-      snapshotBookmarksForIpc(items),
-      snapshotBookmarksForIpc(this.list),
-      { x, y, align: 'start' },
-    ).catch((error) => console.error('[bookmarks] open folder failed', error));
+    const barDrop = this.getBarDropAnchors();
+    void ipcRenderer
+      .invoke(
+        `show-bookmarks-bar-overflow-${this.store.windowId}`,
+        snapshotBookmarksForIpc(items),
+        snapshotBookmarksForIpc(this.list),
+        {
+          x,
+          y,
+          align: 'start',
+          rootFolderId: id,
+          barFolderAnchors: this.getFolderAnchors(),
+          barDropAnchors: barDrop.items,
+          barRect: barDrop.barRect,
+          barFolderId: barDrop.parentId,
+        },
+      )
+      .catch((error) => {
+        this.folderPopupVisible = false;
+        console.error('[bookmarks] open folder failed', error);
+      });
   };
 
   public createContextMenu(event: unknown, id?: string) {
     const item = id ? this.list.find(({ _id }) => _id === id) : null;
     const folderId = item ? undefined : this.getDisplayFolderId();
-    void ipcRenderer.invoke(
-      `show-bookmarks-bar-context-menu-${this.store.windowId}`,
-      item ? snapshotBookmarkForIpc(item) : null,
-      'bar',
-      folderId,
-    ).catch((error) =>
-      console.error('[bookmarks] open context menu failed', error),
-    );
+    void ipcRenderer
+      .invoke(
+        `show-bookmarks-bar-context-menu-${this.store.windowId}`,
+        item ? snapshotBookmarkForIpc(item) : null,
+        'bar',
+        folderId,
+      )
+      .catch((error) =>
+        console.error('[bookmarks] open context menu failed', error),
+      );
   }
 
   private handleWindowResize() {

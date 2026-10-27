@@ -12,8 +12,12 @@ const fg = (theme?: ITheme) =>
   theme && theme['dialog.lightForeground'] ? '#fff' : '#161b2d';
 const hoverBg = (theme?: ITheme) =>
   theme && theme['dialog.lightForeground']
+    ? 'rgba(255,255,255,0.10)'
+    : 'rgba(52,82,255,0.08)';
+const activeBg = (theme?: ITheme) =>
+  theme && theme['dialog.lightForeground']
     ? 'rgba(255,255,255,0.16)'
-    : 'rgba(52,82,255,0.14)';
+    : 'rgba(52,82,255,0.13)';
 
 // UIStyle(default-styles)会给 body 设 pages.backgroundColor,全屏 BV 会白屏盖住窗口;
 // 此处覆盖为透明,让 Backdrop 真正透出底层窗口。createGlobalStyle 在 UIStyle 之后
@@ -41,13 +45,37 @@ export const Panel = styled.div`
   flex-direction: column;
   padding: ${PANEL_PADDING}px;
   box-sizing: border-box;
-  border-radius: 10px;
-  box-shadow: 0 12px 16px rgba(0, 0, 0, 0.12), 0 8px 10px rgba(0, 0, 0, 0.16);
+  border-radius: 12px;
+  border: 1px solid;
+  box-shadow: 0 16px 34px rgba(20, 32, 72, 0.16),
+    0 2px 8px rgba(20, 32, 72, 0.08);
+  animation: bookmark-menu-in 150ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: top right;
   overflow: hidden;
   ${({ theme }: { theme?: ITheme }) => css`
-    background-color: ${theme && theme['dialog.backgroundColor']};
+    background-color: ${theme && theme['dialog.lightForeground']
+      ? 'rgba(56, 56, 56, 0.97)'
+      : 'rgba(255, 255, 255, 0.94)'};
+    border-color: ${theme && theme['dialog.lightForeground']
+      ? 'rgba(255,255,255,0.10)'
+      : 'rgba(32, 45, 85, 0.10)'};
     color: ${fg(theme)};
   `}
+
+  @keyframes bookmark-menu-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px) scale(0.985);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
 `;
 
 export const SubPanel = styled(Panel)`
@@ -86,16 +114,19 @@ export const Row = styled.div`
   display: flex;
   align-items: center;
   height: ${ROW_HEIGHT}px;
-  padding: 0 10px;
-  border-radius: 8px;
+  padding: 0 9px;
+  border-radius: 7px;
   cursor: default;
   font-size: 13px;
   white-space: nowrap;
   flex-shrink: 0;
   user-select: none;
+  transition: background-color 100ms ease, color 100ms ease,
+    transform 100ms ease;
 
   &[data-drag-source='true'] {
     cursor: grabbing;
+    opacity: 0.35;
   }
 
   &[data-drop-position='before']::before,
@@ -122,6 +153,11 @@ export const Row = styled.div`
   ${({ theme }: { theme?: ITheme }) => css`
     &:hover {
       background-color: ${hoverBg(theme)};
+    }
+
+    &:active {
+      background-color: ${activeBg(theme)};
+      transform: scale(0.99);
     }
 
     &[data-drop-position='inside'] {
@@ -153,10 +189,14 @@ export const Title = styled.div`
 `;
 
 export const RowTail = styled.div`
-  margin-left: 8px;
+  width: 16px;
+  height: 16px;
+  margin-left: 6px;
   flex-shrink: 0;
   opacity: 0.55;
-  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 `;
 
 // 二级「返回」按钮(仅 role==='sub' && canBack 显示)
@@ -184,23 +224,44 @@ export const ScrollArrow = styled.div`
   bottom: 0;
   left: 0;
   right: 0;
-  height: 22px;
-  margin-top: -4px;
+  height: 24px;
+  margin-top: -5px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: 12px;
   cursor: default;
   pointer-events: auto;
   flex-shrink: 0;
   ${({ theme }: { theme?: ITheme }) => css`
     background: linear-gradient(
       to top,
-      ${theme && theme['dialog.lightForeground'] ? '#2a2d3a' : '#fff'} 55%,
+      ${theme && theme['dialog.lightForeground'] ? '#383838' : '#fff'} 55%,
       transparent
     );
     color: ${fg(theme)};
   `}
+`;
+
+// 书签栏被全屏透明 BrowserView 覆盖时，插入线也必须在本视图绘制。
+export const BarDropIndicator = styled.div`
+  position: fixed;
+  z-index: 10001;
+  width: 2px;
+  border-radius: 1px;
+  pointer-events: none;
+  background: #1a73e8;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.75);
+`;
+
+export const DropIndicator = styled.div`
+  position: fixed;
+  z-index: 10002;
+  height: 2px;
+  border-radius: 1px;
+  pointer-events: none;
+  background: #1a73e8;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.75);
 `;
 
 export const EmptyHint = styled.div`

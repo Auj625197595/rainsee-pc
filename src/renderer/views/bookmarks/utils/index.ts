@@ -6,15 +6,26 @@ import store from '../store';
 // 书签管理器语言偏好(store.settings 由 WebUI 注入并随 update-settings 刷新)。
 const t = () => createLocaleTranslator(store.settings.language);
 
-export type SortCriteria = 'title-asc' | 'title-desc' | 'url-asc' | 'url-desc';
+export type SortCriteria =
+  | 'title-asc'
+  | 'title-desc'
+  | 'url-asc'
+  | 'url-desc'
+  | 'folders-first';
 
-// 书签排序比较器。名称用 zh 区域 localeCompare(中文拼音友好);网址排序时文件夹无 url,
-// 退化为按名称比较,避免文件夹被随机挤到结果中间。主键相同时按名称二级稳定。
+// 书签排序比较器。与 Chrome/Edge/Firefox"按名称排序"一致:文件夹恒在前、网址在后,
+// 升降序只作用于组内,不会把文件夹翻到末尾。名称用 zh 区域 localeCompare(中文拼音友好);
+// 网址排序时文件夹无 url,退化为按名称比较。主键相同时按名称二级稳定。
+// 'folders-first' 只分组不重排:组内保持原有手动顺序(依赖 Array.sort 稳定性)。
 export const compareBookmark = (
   a: IBookmark,
   b: IBookmark,
   criteria: SortCriteria,
 ): number => {
+  const group = (b.isFolder ? 1 : 0) - (a.isFolder ? 1 : 0);
+  if (group !== 0) return group;
+  if (criteria === 'folders-first') return 0;
+
   const titleA = (a.title || '').trim();
   const titleB = (b.title || '').trim();
   const urlA = (a.url || '').trim();
