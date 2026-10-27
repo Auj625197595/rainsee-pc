@@ -11,24 +11,20 @@ import { BookmarkBar } from './BookmarkBar';
 import { HeaderWrapper } from './App/style';
 import { HeaderFileDropPanel } from './HeaderFileDropPanel';
 import {
-  DEFAULT_TITLEBAR_HEIGHT,
-  COMPACT_TITLEBAR_HEIGHT,
-  DEFAULT_TAB_MARGIN_TOP,
-  COMPACT_TAB_MARGIN_TOP,
   COMPACT_TAB_HEIGHT,
   DEFAULT_TAB_HEIGHT,
 } from '~/constants/design';
 
 const TRIGGER_HEIGHT = 3;
-const SHOW_DELAY_MS = 70;
+// The main-process cursor poll already debounces edge entry (~40ms). Keep
+// only a small renderer-side guard so tabs become visible without a second
+// perceptible pause after the hover signal arrives.
+const SHOW_DELAY_MS = 20;
 const HIDE_DELAY_MS = 280;
 const HEIGHT_STORAGE_KEY = 'rainsee-immersive-header-height';
 
 const logImmersiveOverlay = (...args: any[]) => {
-  if (
-    process.env.NODE_ENV === 'development' ||
-    process.env.DEBUG_IMMERSIVE_HEADER === '1'
-  ) {
+  if (process.env.DEBUG_IMMERSIVE_HEADER === '1') {
     console.log('[immersive-header-overlay]', ...args);
   }
 };
@@ -48,7 +44,7 @@ const OverlayStyle = createGlobalStyle`
   }
 `;
 
-const AnimatedHeader = styled.div`
+const AnimatedHeader = styled.div<{ $expanded: boolean }>`
   position: relative;
   box-sizing: border-box;
   width: 100vw;
@@ -56,6 +52,10 @@ const AnimatedHeader = styled.div`
   max-width: 100vw;
   flex-shrink: 0;
   overflow: hidden;
+  /* Keep the chrome mounted while collapsed. The BrowserView itself is only
+     three pixels tall in this state, so this prevents tab/bookmark remounts
+     and a second layout pass every time the pointer wakes the header. */
+  height: ${({ $expanded }) => ($expanded ? 'auto' : `${TRIGGER_HEIGHT}px`)};
 `;
 
 const Root = createGlobalStyle`
@@ -72,6 +72,7 @@ type OverlayPhase = 'collapsed' | 'expanded';
 
 const OverlayShell = observer(() => {
   const headerRef = React.useRef<HTMLDivElement>(null);
+  const renderCountRef = React.useRef(0);
   const [phase, setPhase] = React.useState<OverlayPhase>('collapsed');
   const hideTimerRef = React.useRef<number | null>(null);
   const showTimerRef = React.useRef<number | null>(null);
@@ -79,6 +80,13 @@ const OverlayShell = observer(() => {
   const hoveredRef = React.useRef(false);
 
   const expanded = phase === 'expanded';
+  renderCountRef.current += 1;
+  logImmersiveOverlay('render', {
+    count: renderCountRef.current,
+    phase,
+    tabs: store.tabs.list.map((tab) => tab.id),
+    selectedTabId: store.tabs.selectedTabId,
+  });
   const stateLogRef = React.useRef({ phase, expanded });
   stateLogRef.current = { phase, expanded };
 
@@ -222,6 +230,8 @@ const OverlayShell = observer(() => {
     store.settings.object.bookmarksBarDisplay,
     store.tabs.selectedTab?.url,
     store.settings.object.bookmarksBarRows,
+    store.settings.object.topTabRows,
+    store.tabs.topTabRowsUsed,
   ]);
 
   React.useEffect(() => {
@@ -290,25 +300,28 @@ const OverlayShell = observer(() => {
 
   return (
     <div style={{ width: '100%', height: '100%' }}>
-      {expanded ? (
-        <AnimatedHeader ref={headerRef}>
-          <HeaderWrapper>
-            <Titlebar />
-            {store.settings.object.topBarVariant === 'default' && <Toolbar />}
-          </HeaderWrapper>
-          <BookmarkBar />
-          <HeaderFileDropPanel
-            targetRef={headerRef}
-            windowId={store.windowId}
-          />
-        </AnimatedHeader>
-      ) : null}
+      <AnimatedHeader ref={headerRef} $expanded={expanded}>
+        <HeaderWrapper>
+          <Titlebar />
+          {store.settings.object.topBarVariant === 'default' && <Toolbar />}
+        </HeaderWrapper>
+        <BookmarkBar />
+        <HeaderFileDropPanel
+          targetRef={headerRef}
+          windowId={store.windowId}
+        />
+      </AnimatedHeader>
     </div>
   );
 });
 
 const ImmersiveHeaderOverlay = observer(() => {
   const backgroundColor = store.theme['titlebar.backgroundColor'] || '#ffffff';
+  const titlebarBaseHeight = store.titlebarBaseHeight;
+  const tabRowPitch = store.tabs.tabRowPitch;
+  const titlebarHeight =
+    titlebarBaseHeight + (store.tabs.topTabRowsUsed - 1) * tabRowPitch;
+  const tabSurfaceHeight = store.tabSurfaceHeight;
 
   React.useLayoutEffect(() => {
     document.documentElement.style.setProperty(
@@ -327,12 +340,12 @@ const ImmersiveHeaderOverlay = observer(() => {
         animations: store.settings.object.animations,
         isCompact: store.isCompact,
         sidebarWidth: store.settings.object.sidebarWidth || 240,
-        titlebarHeight: !store.isCompact
-          ? DEFAULT_TITLEBAR_HEIGHT
-          : COMPACT_TITLEBAR_HEIGHT,
-        tabMarginTop: !store.isCompact
-          ? DEFAULT_TAB_MARGIN_TOP
-          : COMPACT_TAB_MARGIN_TOP,
+        titlebarHeight,
+        titlebarBaseHeight,
+        tabRowPitch,
+        tabSlotHeight: titlebarBaseHeight,
+        tabSurfaceHeight,
+        tabHitExtendTop: store.isMaximized || store.isFullscreen,
         tabHeight: store.isCompact ? COMPACT_TAB_HEIGHT : DEFAULT_TAB_HEIGHT,
       }}
     >

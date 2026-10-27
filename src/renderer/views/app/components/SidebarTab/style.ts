@@ -26,14 +26,14 @@ export const StyledSidebarTab = styled.div`
   position: relative;
   display: flex;
   align-items: center;
-  height: 38px;
-  margin: 2px 6px;
-  padding: 0 8px;
-  border-radius: 7px;
+  height: 36px;
+  margin: 1px 8px;
+  padding: 0 6px 0 10px;
+  border-radius: 8px;
   cursor: default;
   overflow: hidden;
   -webkit-app-region: no-drag;
-  transition: background-color 0.15s ease;
+  transition: background-color 0.12s ease, box-shadow 0.12s ease;
 
   ${({
     selected,
@@ -41,47 +41,50 @@ export const StyledSidebarTab = styled.div`
     dragging,
     collapsed,
     theme,
-  }: SidebarTabProps) => css`
-    // 分组容器已经表达归属，成员行只保留轻微缩进与交互态颜色。
-    margin-left: ${collapsed ? '6px' : groupColor ? '9px' : '6px'};
-    margin-right: ${groupColor && !collapsed ? '3px' : '6px'};
-    padding: ${collapsed ? '0' : '0 8px'};
-    justify-content: ${collapsed ? 'center' : 'flex-start'};
-    opacity: ${dragging ? 0.4 : 1};
-    background-color: ${selected
-      ? theme['sidebar.tab.selectedBackgroundColor'] ||
-        (theme['toolbar.lightForeground']
-          ? 'rgba(255, 255, 255, 0.14)'
-          : '#ffffff')
-      : groupColor
-      ? tint(groupColor, 0.025)
-      : theme['sidebar.tab.inactiveBackgroundColor'] ||
-        theme['sidebar.tab.backgroundColor'] ||
-        'transparent'};
-    box-shadow: ${selected
-      ? theme['toolbar.lightForeground']
-        ? '0 4px 12px rgba(26, 115, 232, 0.38), 0 1px 3px rgba(0, 0, 0, 0.26)'
-        : '0 4px 12px rgba(26, 115, 232, 0.28), 0 1px 3px rgba(26, 115, 232, 0.2)'
-      : 'none'};
-    border: ${selected
-      ? theme['toolbar.lightForeground']
-        ? '1px solid rgba(102, 161, 255, 0.92)'
-        : '1px solid rgba(26, 115, 232, 0.92)'
-      : '1px solid transparent'};
-
-    &:hover {
+  }: SidebarTabProps) => {
+    const light = theme['toolbar.lightForeground'];
+    const selectedBg =
+      theme['sidebar.tab.selectedBackgroundColor'] ||
+      (light ? 'rgba(255, 255, 255, 0.12)' : '#ffffff');
+    const hoverBg = groupColor
+      ? tint(groupColor, 0.12)
+      : light
+      ? 'rgba(255, 255, 255, 0.07)'
+      : 'rgba(20, 30, 60, 0.055)';
+    return css`
+      // 分组容器已经表达归属，成员行只保留轻微缩进与交互态颜色;
+      // 选中态用实底+细阴影,不再使用高饱和描边/外发光。
+      margin-left: ${collapsed ? '8px' : groupColor ? '9px' : '8px'};
+      margin-right: ${groupColor && !collapsed ? '3px' : '8px'};
+      padding: ${collapsed ? '0' : '0 6px 0 10px'};
+      justify-content: ${collapsed ? 'center' : 'flex-start'};
+      opacity: ${dragging ? 0.4 : 1};
       background-color: ${selected
-        ? theme['sidebar.tab.selectedBackgroundColor'] ||
-          (theme['toolbar.lightForeground']
-            ? 'rgba(255, 255, 255, 0.16)'
-            : '#ffffff')
+        ? selectedBg
         : groupColor
-        ? tint(groupColor, 0.12)
-        : theme['toolbar.lightForeground']
-        ? 'rgba(255, 255, 255, 0.07)'
-        : 'rgba(0, 0, 0, 0.05)'};
-    }
-  `};
+        ? tint(groupColor, 0.025)
+        : theme['sidebar.tab.inactiveBackgroundColor'] ||
+          theme['sidebar.tab.backgroundColor'] ||
+          'transparent'};
+      box-shadow: ${selected
+        ? light
+          ? 'inset 0 0 0 1px rgba(255, 255, 255, 0.06)'
+          : '0 1px 2px rgba(20, 30, 60, 0.08), 0 0 0 1px rgba(20, 30, 60, 0.05)'
+        : 'none'};
+
+      &:hover {
+        background-color: ${selected ? selectedBg : hoverBg};
+      }
+
+      ${collapsed &&
+      css`
+        width: 40px;
+        height: 40px;
+        margin: 2px auto;
+        border-radius: 10px;
+      `}
+    `;
+  }};
 `;
 
 export const SidebarTabIcon = styled.div`
@@ -119,12 +122,13 @@ export const SidebarTabTitle = styled.div`
   min-width: 0;
   margin-left: 10px;
   font-size: 12.5px;
-  font-weight: 600;
+  line-height: 1.3;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 
   ${({ selected, theme }: SidebarTitleProps) => css`
+    font-weight: ${selected ? 600 : 500};
     color: ${selected
       ? theme['sidebar.tab.selectedTextColor'] ||
         theme['tab.selected.textColor']
@@ -139,16 +143,17 @@ interface CloseProps {
 }
 
 export const SidebarTabClose = styled.div`
-  height: 20px;
+  height: 22px;
   min-width: 0;
-  border-radius: 99999px;
+  flex-shrink: 0;
+  border-radius: 6px;
   background-image: url('${ICON_CLOSE}');
   overflow: hidden;
   transition: 0.1s background-color, 0.1s opacity, 0.1s width, 0.1s margin;
   ${centerIcon(14)};
 
   ${({ visible, hoverOnly, theme }: CloseProps) => css`
-    width: ${visible && hoverOnly ? 0 : 20}px;
+    width: ${visible && hoverOnly ? 0 : 22}px;
     margin-left: ${visible && hoverOnly ? 0 : 4}px;
     display: ${visible ? 'block' : 'none'};
     opacity: ${visible && !hoverOnly ? 0.7 : 0};
@@ -158,7 +163,7 @@ export const SidebarTabClose = styled.div`
     ${hoverOnly &&
     css`
       div[data-rainsee-part='sidebar-tab']:hover & {
-        width: 20px;
+        width: 22px;
         margin-left: 4px;
         opacity: 0.7;
         pointer-events: auto;
@@ -167,7 +172,8 @@ export const SidebarTabClose = styled.div`
   `};
 
   &:hover {
-    background-color: rgba(0, 0, 0, 0.1);
+    opacity: 1;
+    background-color: rgba(0, 0, 0, 0.08);
   }
 `;
 

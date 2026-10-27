@@ -13,6 +13,13 @@ import {
   SidebarWorkspaceDot,
   SidebarHoverArea,
   SidebarTabList,
+  SidebarTabScroll,
+  SidebarPinnedSection,
+  SidebarRegularSection,
+  SidebarPinnedHeader,
+  SidebarPinnedHeaderIcon,
+  SidebarPinnedCount,
+  SidebarSectionDivider,
   SidebarNewTab,
   SidebarNewTabLabel,
   SidebarGroupSection,
@@ -24,7 +31,6 @@ import { SidebarGroupHeaderRow } from './SidebarGroupHeaderRow';
 import { LayoutSwitcher } from '../LayoutSwitcher';
 import { getDraggedLinkURL, isLinkDragEvent } from '../../utils/link-drop';
 import { buildGroupSlots } from '../../utils/group-slots';
-// 开源版：互联状态模块已移除。
 import { useWindowDragMove } from '../../utils/window-drag';
 import { ProfileBrandLogo, useProfileBrand } from '../ProfileBrandLogo';
 import { isURL, realurl } from '~/utils';
@@ -37,26 +43,32 @@ import {
 
 const sidebarListRef = React.createRef<HTMLDivElement>();
 
-const sidebarWheelHandler = createTabWheelHandler({
-  axis: 'vertical',
-  getBehavior: () => store.settings.object.tabWheelBehavior || 'auto',
-  getContainer: () => sidebarListRef.current,
-  onSwitch: (direction) => store.tabs.switchAdjacentTab(direction),
-  onSwitched: (direction, behavior) => {
-    window.requestAnimationFrame(() => {
-      const container = sidebarListRef.current;
-      const selected = container?.querySelector<HTMLElement>(
-        '[data-rainsee-selected="true"]',
-      );
-      if (!container) return;
-      if (behavior === 'always-switch') {
-        container.scrollTop +=
-          direction * getTabScrollStep(selected, 'vertical', 42);
-      }
-      selected?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    });
-  },
-});
+const createSidebarWheelHandler = (getContainer: () => HTMLElement | null) =>
+  createTabWheelHandler({
+    axis: 'vertical',
+    getBehavior: () => store.settings.object.tabWheelBehavior || 'auto',
+    getContainer,
+    onSwitch: (direction) => store.tabs.switchAdjacentTab(direction),
+    onSwitched: (direction, behavior) => {
+      window.requestAnimationFrame(() => {
+        const container = getContainer();
+        const selected = container?.querySelector<HTMLElement>(
+          '[data-rainsee-selected="true"]',
+        );
+        if (!container) return;
+        if (behavior === 'always-switch') {
+          container.scrollTop +=
+            direction * getTabScrollStep(selected, 'vertical', 42);
+        }
+        selected?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      });
+    },
+  });
+
+const pinnedScrollRef = React.createRef<HTMLDivElement>();
+const regularScrollRef = React.createRef<HTMLDivElement>();
+const pinnedWheelHandler = createSidebarWheelHandler(() => pinnedScrollRef.current);
+const regularWheelHandler = createSidebarWheelHandler(() => regularScrollRef.current);
 
 const onNewTab = (e: React.MouseEvent<HTMLDivElement>) => {
   if (e.button !== 0) return;
@@ -64,7 +76,14 @@ const onNewTab = (e: React.MouseEvent<HTMLDivElement>) => {
 };
 
 const onListDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+  const zone =
+    e.target instanceof Element
+      ? e.target.closest<HTMLElement>('[data-sidebar-zone]')?.dataset.sidebarZone
+      : undefined;
+
   if (store.tabs.sidebarDragGroupId !== -1) {
+    const group = store.tabGroups.getGroupById(store.tabs.sidebarDragGroupId);
+    if (group && zone && (zone === 'pinned') !== group.isPinned) return;
     const dropOwner =
       e.target instanceof Element &&
       e.target.closest('[data-sidebar-drop-owner="true"]');
@@ -77,6 +96,9 @@ const onListDragOver = (e: React.DragEvent<HTMLDivElement>) => {
 
   if (store.tabs.sidebarDragId !== -1) {
     const dragTab = store.tabs.getTabById(store.tabs.sidebarDragId);
+    if (dragTab && zone && (zone === 'pinned') !== store.tabs.isTabInPinnedZone(dragTab)) {
+      return;
+    }
     const dropOwner =
       e.target instanceof Element &&
       e.target.closest('[data-sidebar-drop-owner="true"]');
@@ -103,7 +125,14 @@ const onListDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
 };
 
 const onListDrop = (e: React.DragEvent<HTMLDivElement>) => {
+  const zone =
+    e.target instanceof Element
+      ? e.target.closest<HTMLElement>('[data-sidebar-zone]')?.dataset.sidebarZone
+      : undefined;
+
   if (store.tabs.sidebarDragGroupId !== -1) {
+    const group = store.tabGroups.getGroupById(store.tabs.sidebarDragGroupId);
+    if (group && zone && (zone === 'pinned') !== group.isPinned) return;
     const dropOwner =
       e.target instanceof Element &&
       e.target.closest('[data-sidebar-drop-owner="true"]');
@@ -111,13 +140,16 @@ const onListDrop = (e: React.DragEvent<HTMLDivElement>) => {
 
     e.preventDefault();
     e.stopPropagation();
-    const group = store.tabGroups.getGroupById(store.tabs.sidebarDragGroupId);
     store.tabs.clearSidebarGroupDrag();
     if (group) store.tabs.moveGroupToSidebarEnd(group);
     return;
   }
 
   if (store.tabs.sidebarDragId !== -1) {
+    const dragTab = store.tabs.getTabById(store.tabs.sidebarDragId);
+    if (dragTab && zone && (zone === 'pinned') !== store.tabs.isTabInPinnedZone(dragTab)) {
+      return;
+    }
     const dropOwner =
       e.target instanceof Element &&
       e.target.closest('[data-sidebar-drop-owner="true"]');
@@ -125,7 +157,6 @@ const onListDrop = (e: React.DragEvent<HTMLDivElement>) => {
 
     e.preventDefault();
     e.stopPropagation();
-    const dragTab = store.tabs.getTabById(store.tabs.sidebarDragId);
     store.tabs.clearSidebarDrag();
     if (dragTab && dragTab.tabGroupId !== -1) {
       store.tabs.moveTabOutOfGroupInSidebar(dragTab);
@@ -180,25 +211,31 @@ const PinIcon = (filled: boolean) =>
   );
 
 const SidebarBrandMark = observer(({ collapsed }: { collapsed: boolean }) => {
+  const brandRef = React.useRef<HTMLDivElement>(null);
   const profileBrand = useProfileBrand();
   const workspace = store.workspaceContext;
-
-  // 品牌区同时是窗口拖拽热区
   const { onMouseDown: onDragMouseDown, onClick: onDragClick } =
-    useWindowDragMove(() => {});
+    useWindowDragMove();
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    onDragMouseDown(e);
+  };
 
   return (
     <SidebarBrand
       data-rainsee-part="sidebar-brand"
       collapsed={collapsed}
       $macLeft={platform() === 'darwin' && store.tabsLayout === 'left'}
-      onMouseDown={onDragMouseDown}
+      ref={brandRef}
+      onMouseLeave={clearOpenTimer}
+      onMouseDown={onMouseDown}
       onClick={onDragClick}
     >
       <ProfileBrandLogo
         profileName={profileBrand.profileName}
         logoDataUrl={profileBrand.logoDataUrl}
         appIcon={APP_ICON}
+        onInteractStart={clearOpenTimer}
         onSelect={profileBrand.selectLogo}
       />
       <SidebarBrandText
@@ -226,7 +263,13 @@ export const Sidebar = observer(() => {
     const container = sidebarListRef.current;
     if (!container) return undefined;
     const onWheel = (event: WheelEvent) => {
-      const result = sidebarWheelHandler(event);
+      const target = event.target instanceof Element
+        ? event.target.closest<HTMLElement>('[data-sidebar-scroll]')
+        : null;
+      const handler = target?.dataset.sidebarPinned === 'true'
+        ? pinnedWheelHandler
+        : regularWheelHandler;
+      const result = handler(event);
       if (result.handled) event.preventDefault();
     };
     container.addEventListener('wheel', onWheel, { passive: false });
@@ -251,10 +294,50 @@ export const Sidebar = observer(() => {
 
   // 缩放模式:只有 Logo 下方区域会弹出完整侧栏;Logo 自身仍只负责互联面板。
   // 移出下方区域后计划收起,浮层自身的 enter/leave 会协同取消或恢复计时。
-  const onRailEnter = () => {
-    if (railCollapsed) store.tabs.openSidebarPanel();
+  // 右侧窄轨紧贴网页竖向滚动条:滚轮/拖滚动条时指针稍微越界就会误弹。右侧改为
+  // 「停留意图」触发:静止停留 RIGHT_RAIL_DWELL_MS 才弹出;按住按键(拖滚动条越界)
+  // 不计时,窄轨内滚轮重新计时。左侧保持即时弹出。
+  const RIGHT_RAIL_DWELL_MS = 320;
+  const railOpenTimer = React.useRef<number | null>(null);
+  const clearRailOpenTimer = () => {
+    if (railOpenTimer.current != null) {
+      window.clearTimeout(railOpenTimer.current);
+      railOpenTimer.current = null;
+    }
+  };
+  React.useEffect(() => clearRailOpenTimer, []);
+
+  const startRailOpenTimer = () => {
+    clearRailOpenTimer();
+    railOpenTimer.current = window.setTimeout(() => {
+      railOpenTimer.current = null;
+      store.tabs.openSidebarPanel();
+    }, RIGHT_RAIL_DWELL_MS);
+  };
+
+  const onRailEnter = (e: React.MouseEvent) => {
+    if (!railCollapsed) return;
+    if (side === 'left' || store.tabs.panelVisible) {
+      store.tabs.openSidebarPanel();
+      return;
+    }
+    store.tabs.cancelSidebarPanelHide();
+    if (e.buttons === 0) startRailOpenTimer();
+  };
+  const onRailMove = (e: React.MouseEvent) => {
+    if (!railCollapsed || side !== 'right' || store.tabs.panelVisible) return;
+    if (e.buttons !== 0) {
+      clearRailOpenTimer();
+    } else if (railOpenTimer.current == null) {
+      startRailOpenTimer();
+    }
+  };
+  const onRailWheel = () => {
+    if (!railCollapsed || side !== 'right' || store.tabs.panelVisible) return;
+    if (railOpenTimer.current != null) startRailOpenTimer();
   };
   const onRailLeave = () => {
+    clearRailOpenTimer();
     if (railCollapsed) store.tabs.scheduleSidebarPanelHide();
   };
 
@@ -289,19 +372,25 @@ export const Sidebar = observer(() => {
   const toggle = (gid: number) =>
     setCollapsed((s) => ({ ...s, [gid]: !s[gid] }));
 
-  // 侧栏是完整列表:散落/固定标签原样渲染;每个分组渲染一个可折叠头 + 缩进的
-  // 组色 tint 成员行。分组按 buildGroupSlots 聚拢成连续块——不依赖「组成员在 list
-  // 中连续」这一非硬不变量(拖拽/关闭/会话恢复/水合竞争都可能把同组成员拆散),
-  // 否则同组被拆成几段就会发几个组头并因相同 React key 互相覆盖,表现为「展开/收起
-  // 复制出几个分组」。固定与否仅由 favicon 角标的钉子区分,行体与普通标签完全一致,
-  // 故不再在固定区与普通区之间画分隔线。
-  const items: React.ReactNode[] = [];
+  // 侧栏分组按 buildGroupSlots 聚拢成连续块,再按固定区/普通区分流渲染。
   const slots = buildGroupSlots(
     store.tabs.list.filter((t) => !t.isClosing),
     (t) => (t.isPinned ? -1 : t.tabGroupId),
   );
 
-  for (const slot of slots) {
+  const isPinnedSlot = (slot: (typeof slots)[number]) =>
+    slot.kind === 'tab'
+      ? slot.item.isPinned
+      : slot.items.some((tab) => store.tabs.isTabInPinnedZone(tab));
+  const pinnedSlots = slots.filter(isPinnedSlot);
+  const regularSlots = slots.filter((slot) => !isPinnedSlot(slot));
+  const pinnedCount = store.tabs.list.filter(
+    (tab) => !tab.isClosing && store.tabs.isTabInPinnedZone(tab),
+  ).length;
+
+  const renderSlots = (slotList: typeof slots) => {
+    const items: React.ReactNode[] = [];
+    for (const slot of slotList) {
     if (slot.kind === 'tab') {
       const tab = slot.item;
       items.push(
@@ -354,9 +443,135 @@ export const Sidebar = observer(() => {
               collapsed={railCollapsed}
             />
           ))}
-      </SidebarGroupSection>,
+        </SidebarGroupSection>,
+      );
+    }
+    return items;
+  };
+
+  const hasPinned = pinnedSlots.length > 0;
+  const [listHeight, setListHeight] = React.useState(0);
+  const [resizing, setResizing] = React.useState(false);
+  const [pinnedCollapsed, setPinnedCollapsed] = React.useState(false);
+  const ratioSetting = store.settings.object.sidebarPinnedSectionRatio;
+  const savedRatio =
+    side === 'right' ? ratioSetting?.right : ratioSetting?.left;
+  const [pinnedRatio, setPinnedRatio] = React.useState(savedRatio || 0.32);
+  const pinnedRatioRef = React.useRef(pinnedRatio);
+
+  React.useEffect(() => {
+    const next = savedRatio || 0.32;
+    pinnedRatioRef.current = next;
+    setPinnedRatio(next);
+  }, [side, savedRatio]);
+
+  React.useLayoutEffect(() => {
+    const element = sidebarListRef.current;
+    if (!element) return undefined;
+    const update = () => setListHeight(element.clientHeight);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  const dividerHeight = 7;
+  const minRegularHeight = 168;
+  const usableHeight = Math.max(0, listHeight - dividerHeight);
+  const maxPinnedHeight = Math.max(
+    64,
+    Math.min(280, usableHeight - minRegularHeight),
+  );
+  const minPinnedHeight = Math.min(90, maxPinnedHeight);
+  const contentHeight = 30 + pinnedCount * 42 + 8;
+  const desiredPinnedHeight = pinnedCount <= 2
+    ? contentHeight
+    : usableHeight * Math.max(0.12, Math.min(0.72, pinnedRatio));
+  const pinnedHeight = Math.max(
+    minPinnedHeight,
+    Math.min(maxPinnedHeight, desiredPinnedHeight || minPinnedHeight),
+  );
+
+  const visiblePinnedHeight = pinnedCollapsed ? 30 : pinnedHeight;
+
+  const setPinnedHeight = (height: number, persist: boolean) => {
+    if (usableHeight <= 0) return;
+    const nextHeight = Math.max(
+      minPinnedHeight,
+      Math.min(maxPinnedHeight, height),
     );
-  }
+    const nextRatio = nextHeight / usableHeight;
+    pinnedRatioRef.current = nextRatio;
+    setPinnedRatio(nextRatio);
+    if (persist) store.settings.setSidebarPinnedSectionRatio(side, nextRatio);
+  };
+
+  const resizeStart = React.useRef({ y: 0, height: 0 });
+  const onDividerMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || !hasPinned) return;
+    event.preventDefault();
+    resizeStart.current = { y: event.clientY, height: pinnedHeight };
+    setResizing(true);
+  };
+
+  const onDividerPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === 'mouse') {
+      onDividerMouseDown(event as unknown as React.MouseEvent<HTMLDivElement>);
+    }
+  };
+
+  React.useEffect(() => {
+    if (!resizing) return undefined;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    const onMove = (event: MouseEvent | PointerEvent) => {
+      setPinnedHeight(
+        resizeStart.current.height + event.clientY - resizeStart.current.y,
+        false,
+      );
+    };
+    const onUp = () => {
+      setResizing(false);
+      if (usableHeight > 0) {
+        store.settings.setSidebarPinnedSectionRatio(
+          side,
+          pinnedRatioRef.current,
+        );
+      }
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('mouseup', onUp, { once: true });
+    window.addEventListener('pointerup', onUp, { once: true });
+    return () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('pointerup', onUp);
+    };
+  }, [resizing, side, usableHeight]);
+
+  const onDividerKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!hasPinned) return;
+    const row = 42;
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setPinnedHeight(pinnedHeight + row, true);
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setPinnedHeight(pinnedHeight - row, true);
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      setPinnedHeight(minPinnedHeight, true);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      setPinnedHeight(maxPinnedHeight, true);
+    }
+  };
 
   return (
     <StyledSidebar
@@ -387,7 +602,12 @@ export const Sidebar = observer(() => {
         </SidebarHeaderActions>
       </SidebarHeader>
 
-      <SidebarHoverArea onMouseEnter={onRailEnter} onMouseLeave={onRailLeave}>
+      <SidebarHoverArea
+        onMouseEnter={onRailEnter}
+        onMouseMove={onRailMove}
+        onWheel={onRailWheel}
+        onMouseLeave={onRailLeave}
+      >
         <SidebarNewTab
           data-rainsee-part="sidebar-new-tab"
           data-rainsee-action="new-tab"
@@ -396,7 +616,7 @@ export const Sidebar = observer(() => {
           onContextMenu={onNewTabContextMenu}
           title={t('shellNewTab')}
         >
-          {railCollapsed && ICON_PLUS}
+          {ICON_PLUS}
           <SidebarNewTabLabel collapsed={railCollapsed}>
             {t('shellNewTab')}
           </SidebarNewTabLabel>
@@ -410,7 +630,68 @@ export const Sidebar = observer(() => {
           onDragLeave={onListDragLeave}
           onDrop={onListDrop}
         >
-          {items}
+          {hasPinned && (
+            <SidebarPinnedSection
+              $height={visiblePinnedHeight}
+              $collapsed={railCollapsed}
+              $resizing={resizing}
+            >
+              <SidebarPinnedHeader
+                $collapsed={railCollapsed}
+                role="button"
+                tabIndex={0}
+                aria-expanded={!pinnedCollapsed}
+                aria-label={t('shellPinnedTabs')}
+                onClick={() => setPinnedCollapsed((value) => !value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    setPinnedCollapsed((value) => !value);
+                  }
+                }}
+              >
+                <SidebarPinnedHeaderIcon aria-hidden="true">
+                  {PinIcon(true)}
+                </SidebarPinnedHeaderIcon>
+                {!railCollapsed && <span>{t('shellPinnedTabs')}</span>}
+                {!railCollapsed && <SidebarPinnedCount>{pinnedCount}</SidebarPinnedCount>}
+              </SidebarPinnedHeader>
+              {!pinnedCollapsed && (
+                <SidebarTabScroll
+                  ref={pinnedScrollRef}
+                  data-sidebar-scroll="true"
+                  data-sidebar-pinned="true"
+                  data-sidebar-zone="pinned"
+                >
+                  {renderSlots(pinnedSlots)}
+                </SidebarTabScroll>
+              )}
+            </SidebarPinnedSection>
+          )}
+          {hasPinned && (
+            <SidebarSectionDivider
+              role="separator"
+              tabIndex={0}
+              aria-orientation="horizontal"
+              aria-valuemin={12}
+              aria-valuemax={72}
+              aria-valuenow={Math.round((pinnedHeight / Math.max(1, usableHeight)) * 100)}
+              $dragging={resizing}
+              onMouseDown={onDividerMouseDown}
+              onPointerDown={onDividerPointerDown}
+              onKeyDown={onDividerKeyDown}
+            />
+          )}
+          <SidebarRegularSection>
+            <SidebarTabScroll
+              ref={regularScrollRef}
+              data-sidebar-scroll="true"
+              data-sidebar-pinned="false"
+              data-sidebar-zone="regular"
+            >
+              {renderSlots(regularSlots)}
+            </SidebarTabScroll>
+          </SidebarRegularSection>
         </SidebarTabList>
       </SidebarHoverArea>
       {bubblePortal}

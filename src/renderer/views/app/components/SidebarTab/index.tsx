@@ -232,7 +232,7 @@ export const SidebarTab = observer(
         collapsed={collapsed}
         dragging={isDragging}
         draggable
-        title={collapsed ? tab.title : undefined}
+        title={collapsed ? tab.displayTitle : undefined}
         onDragStart={(e: React.DragEvent<HTMLDivElement>) => {
           hoverActivation.cancel();
           onDragStart(tab)(e);
@@ -295,7 +295,7 @@ export const SidebarTab = observer(
               data-rainsee-part="sidebar-tab-title"
               selected={tab.isSelected}
             >
-              {tab.title}
+              {tab.displayTitle}
             </SidebarTabTitle>
             <SidebarTabClose
               data-rainsee-action="close-tab"

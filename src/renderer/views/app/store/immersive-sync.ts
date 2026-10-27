@@ -3,6 +3,22 @@ import { ipcRenderer } from 'electron';
 
 import { Store } from '.';
 import { ITab } from '../models';
+import { isImmersiveHeaderWindow } from '../utils/windows';
+
+const logImmersiveSync = (...args: any[]) => {
+  if (process.env.DEBUG_IMMERSIVE_HEADER === '1') {
+    console.log('[immersive-sync]', ...args);
+  }
+};
+
+const traceImmersiveTab = (store: Store, phase: string, details: any) => {
+  if (process.env.DEBUG_IMMERSIVE_HEADER !== '1') return;
+  ipcRenderer.send(`immersive-tab-trace-${store.windowId}`, {
+    role: isImmersiveHeaderWindow() ? 'mirror' : 'source',
+    phase,
+    ...details,
+  });
+};
 
 // 沉浸悬浮头部是一个独立渲染进程(app.html?immersiveHeader=1),它复用整份 app
 // store 代码,却与主窗口渲染进程共用同一个 windowId。若各自从磁盘 startupTabs 建
@@ -27,6 +43,8 @@ export interface ImmersiveTabSnapshot {
   tabGroupId: number;
   incognito: boolean;
   discarded: boolean;
+  isClosing: boolean;
+  thumbKey: string;
 }
 
 export interface ImmersiveGroupSnapshot {
@@ -57,6 +75,8 @@ function buildSnapshot(store: Store): ImmersiveSnapshot {
       tabGroupId: t.tabGroupId,
       incognito: t.incognito,
       discarded: t.discarded,
+      isClosing: t.isClosing,
+      thumbKey: t.thumbKey,
     })),
     selectedTabId: store.tabs.selectedTabId,
     groups: store.tabGroups.list.map((g) => ({
@@ -74,6 +94,19 @@ const isImmersiveEnabled = (store: Store) =>
 // ===== 主渲染进程侧:推快照 + 执行遥控指令 =====
 export function initImmersiveSyncSource(store: Store) {
   let last = '';
+  let sendSeq = 0;
+  // 休眠标签恢复时 id 会从负数占位值变成真实 webContents id。overlay 收到
+  // 新快照前仍可能发来旧 id（例如悬停恢复刚完成时紧接着点击），保留对象别名
+  // 让这类迟到指令仍作用于原位置的同一标签。
+  const tabAliases = new Map<number, ITab>();
+  const resolveCommandTab = (id: number) => {
+    const direct = store.tabs.getTabById(id);
+    if (direct) return direct;
+    const alias = tabAliases.get(id);
+    if (alias && store.tabs.list.includes(alias)) return alias;
+    tabAliases.delete(id);
+    return undefined;
+  };
 
   // Store 在开发热更新时可能重建；这些通道只由沉浸同步模块消费，注册前清掉
   // 旧实例的监听，避免一次点击被多个遗留 handler 重复执行。
@@ -82,6 +115,14 @@ export function initImmersiveSyncSource(store: Store) {
 
   const send = (snap: ImmersiveSnapshot) => {
     last = JSON.stringify(snap);
+    sendSeq += 1;
+    logImmersiveSync('source snapshot', {
+      seq: sendSeq,
+      tabs: snap.tabs.length,
+      tabIds: snap.tabs.map((tab) => tab.id),
+      selectedTabId: snap.selectedTabId,
+      groups: snap.groups.length,
+    });
     ipcRenderer.send(`immersive-header-sync-${store.windowId}`, snap);
   };
 
@@ -102,8 +143,38 @@ export function initImmersiveSyncSource(store: Store) {
   // overlay 的标签操作回传:在真实 store 上执行(建/毁 view、写 DB 都在这条路径)。
   ipcRenderer.on('immersive-header-cmd', async (_e, cmd: any) => {
     if (!cmd) return;
-    if (cmd.type === 'select') store.tabs.getTabById(cmd.id)?.select();
-    else if (cmd.type === 'close') store.tabs.getTabById(cmd.id)?.close();
+    logImmersiveSync('source command', cmd);
+    const beforeTab = resolveCommandTab(cmd.id);
+    traceImmersiveTab(store, 'source-command-before', {
+      command: cmd,
+      resolvedId: beforeTab?.id,
+      resolvedIndex: beforeTab ? store.tabs.list.indexOf(beforeTab) : -1,
+      resolvedDiscarded: beforeTab?.discarded,
+      selectedTabId: store.tabs.selectedTabId,
+      tabIds: store.tabs.list.map((tab) => tab.id),
+    });
+    if (cmd.type === 'select') {
+      const tab = beforeTab;
+      if (tab) {
+        if (tab.discarded) tabAliases.set(cmd.id, tab);
+        await tab.select();
+      }
+    } else if (cmd.type === 'activate') {
+      const tab = beforeTab;
+      if (tab) {
+        if (tab.discarded) tabAliases.set(cmd.id, tab);
+        await tab.activateOnHover(cmd.switchToTab === true);
+      }
+    } else if (cmd.type === 'close') {
+      store.tabs.getTabById(cmd.id)?.close();
+    } else if (cmd.type === 'pin') {
+      const tab = store.tabs.getTabById(cmd.id);
+      if (tab) cmd.pinned ? store.tabs.pinTab(tab) : store.tabs.unpinTab(tab);
+    }
+    else if (cmd.type === 'group-pin') {
+      const group = store.tabGroups.getGroupById(cmd.groupId);
+      if (group) store.tabs.setGroupPinned(group, cmd.pinned === true);
+    }
     else if (cmd.type === 'new') {
       const tab = await store.tabs.addTab(cmd.options, cmd.tabGroupId);
       if (cmd.options?.active !== false) await tab?.select();
@@ -126,23 +197,66 @@ export function initImmersiveSyncSource(store: Store) {
         next.forEach((tab) => tab.updateData());
       }
     }
+    traceImmersiveTab(store, 'source-command-after', {
+      command: cmd,
+      resolvedId: beforeTab?.id,
+      resolvedIndex: beforeTab ? store.tabs.list.indexOf(beforeTab) : -1,
+      selectedTabId: store.tabs.selectedTabId,
+      tabIds: store.tabs.list.map((tab) => tab.id),
+    });
   });
 
   // overlay 挂载握手:立即重发一帧(绕过去重),保证首屏标签即时呈现。
   ipcRenderer.on('immersive-header-request-sync', () => {
     if (!isImmersiveEnabled(store)) return;
+    logImmersiveSync('source sync requested');
     send(buildSnapshot(store));
   });
 }
 
 // ===== overlay 侧:按快照重建本地标签/分组 =====
 function reconcile(store: Store, snap: ImmersiveSnapshot) {
+  const previousTabs = [...store.tabs.list];
+  const previousTabIds = previousTabs.map((tab) => tab.id);
+  const snapshotIds = new Set(snap.tabs.map((tab) => tab.id));
+  const duplicateIds = snap.tabs
+    .map((tab) => tab.id)
+    .filter((id, index, ids) => ids.indexOf(id) !== index);
+  logImmersiveSync('mirror reconcile', {
+    tabs: snap.tabs.length,
+    tabIds: snap.tabs.map((tab) => tab.id),
+    selectedTabId: snap.selectedTabId,
+    groups: snap.groups.length,
+    duplicateIds: [...new Set(duplicateIds)],
+    previousTabIds: store.tabs.list.map((tab) => tab.id),
+  });
   runInAction(() => {
     const byId = new Map(store.tabs.list.map((t) => [t.id, t] as const));
     const nextTabs: ITab[] = [];
 
-    for (const s of snap.tabs) {
+    for (let index = 0; index < snap.tabs.length; index += 1) {
+      const s = snap.tabs[index];
       let tab = byId.get(s.id);
+      if (!tab) {
+        const previousAtIndex = previousTabs[index];
+        const isMaterializedReplacement =
+          previousAtIndex &&
+          previousAtIndex.id < -1 &&
+          s.id > 0 &&
+          previousAtIndex.url === s.url &&
+          !snapshotIds.has(previousAtIndex.id);
+        if (isMaterializedReplacement) {
+          traceImmersiveTab(store, 'mirror-id-replaced', {
+            oldId: previousAtIndex.id,
+            newId: s.id,
+            index,
+            isDragging: store.tabs.isDragging,
+            tabIsDragging: previousAtIndex.isDragging,
+          });
+          previousAtIndex.id = s.id;
+          tab = previousAtIndex;
+        }
+      }
       if (!tab) {
         // 直接构造 ITab 并复用——不走 createTab(那会写 startupTabs DB);active:false
         // 不触发 select()。构造后按快照覆盖 loading 等(ctor 的 loading=!discarded 不准)。
@@ -168,10 +282,15 @@ function reconcile(store: Store, snap: ImmersiveSnapshot) {
       tab.isPlaying = s.isPlaying;
       tab.tabGroupId = s.tabGroupId;
       tab.discarded = s.discarded;
+      tab.isClosing = s.isClosing;
+      // 镜像侧打开标签组总览时按它读磁盘预览图,须与主渲染进程一致。
+      if (s.thumbKey) tab.thumbKey = s.thumbKey;
       nextTabs.push(tab);
     }
 
-    if (store.tabs.isDragging) {
+    const activelyDragging =
+      store.tabs.isDragging && previousTabs.some((tab) => tab.isDragging);
+    if (activelyDragging) {
       const dragOrder = new Map(
         store.tabs.list.map((tab, index) => [tab.id, index] as const),
       );
@@ -183,6 +302,15 @@ function reconcile(store: Store, snap: ImmersiveSnapshot) {
     }
     store.tabs.list = nextTabs;
     store.tabs.selectedTabId = snap.selectedTabId;
+
+    traceImmersiveTab(store, 'mirror-reconciled', {
+      snapshotTabIds: snap.tabs.map((tab) => tab.id),
+      previousTabIds,
+      nextTabIds: nextTabs.map((tab) => tab.id),
+      selectedTabId: snap.selectedTabId,
+      isDragging: store.tabs.isDragging,
+      activelyDragging,
+    });
 
     // 分组:成员由 tab.tabGroupId 派生,这里只对齐组记录(名/色/钉)。
     const gById = new Map(store.tabGroups.list.map((g) => [g.id, g] as const));
@@ -200,15 +328,30 @@ function reconcile(store: Store, snap: ImmersiveSnapshot) {
   });
 
   // 列表变更后重算标签宽度/位置(ref 此时已挂载)。
-  requestAnimationFrame(() => {
+  if (immersiveLayoutFrame !== null) {
+    cancelAnimationFrame(immersiveLayoutFrame);
+  }
+  immersiveLayoutFrame = requestAnimationFrame(() => {
+    immersiveLayoutFrame = null;
+    logImmersiveSync('mirror layout frame', {
+      tabs: store.tabs.list.map((tab) => tab.id),
+      selectedTabId: store.tabs.selectedTabId,
+    });
     store.tabs.updateTabsBounds(false);
   });
 }
 
+let immersiveLayoutFrame: number | null = null;
+
 export function initImmersiveMirror(store: Store) {
+  let lastSnapshotJson = '';
   ipcRenderer.removeAllListeners('immersive-header-sync');
   ipcRenderer.on('immersive-header-sync', (_e, snap: ImmersiveSnapshot) => {
-    if (snap) reconcile(store, snap);
+    if (!snap) return;
+    const snapshotJson = JSON.stringify(snap);
+    if (snapshotJson === lastSnapshotJson) return;
+    lastSnapshotJson = snapshotJson;
+    reconcile(store, snap);
   });
   // 拉取首帧(主渲染进程可能已渲染完标签,单靠 autorun 变化不会补发)。
   ipcRenderer.send(`immersive-header-request-sync-${store.windowId}`);

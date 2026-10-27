@@ -14,6 +14,13 @@ import {
   SidebarBrand,
   SidebarBrandText,
   SidebarTabList,
+  SidebarTabScroll,
+  SidebarPinnedSection,
+  SidebarRegularSection,
+  SidebarPinnedHeader,
+  SidebarPinnedHeaderIcon,
+  SidebarPinnedCount,
+  SidebarSectionDivider,
   SidebarNewTab,
   SidebarNewTabLabel,
   SidebarGroupHeader,
@@ -52,28 +59,38 @@ import {
 import { useI18n } from '~/renderer/components/I18n';
 
 const panelListRef = React.createRef<HTMLDivElement>();
+const panelPinnedScrollRef = React.createRef<HTMLDivElement>();
+const panelRegularScrollRef = React.createRef<HTMLDivElement>();
 
-const panelWheelHandler = createTabWheelHandler({
-  axis: 'vertical',
-  getBehavior: () => store.tabWheelBehavior,
-  getContainer: () => panelListRef.current,
-  onSwitch: (direction) => {
-    store.action({ type: 'wheelSwitch', direction });
-    return true;
-  },
-  onSwitched: (direction, behavior) => {
-    if (behavior !== 'always-switch') return;
-    window.requestAnimationFrame(() => {
-      const container = panelListRef.current;
-      const selected = container?.querySelector<HTMLElement>(
-        '[data-sidebar-panel-tab-id][data-rainsee-selected="true"]',
-      );
-      if (!container) return;
-      container.scrollTop +=
-        direction * getTabScrollStep(selected, 'vertical', 42);
-    });
-  },
-});
+const createPanelWheelHandler = (getContainer: () => HTMLElement | null) =>
+  createTabWheelHandler({
+    axis: 'vertical',
+    getBehavior: () => store.tabWheelBehavior,
+    getContainer,
+    onSwitch: (direction) => {
+      store.action({ type: 'wheelSwitch', direction });
+      return true;
+    },
+    onSwitched: (direction, behavior) => {
+      if (behavior !== 'always-switch') return;
+      window.requestAnimationFrame(() => {
+        const container = getContainer();
+        const selected = container?.querySelector<HTMLElement>(
+          '[data-sidebar-panel-tab-id][data-rainsee-selected="true"]',
+        );
+        if (!container) return;
+        container.scrollTop +=
+          direction * getTabScrollStep(selected, 'vertical', 42);
+      });
+    },
+  });
+
+const panelPinnedWheelHandler = createPanelWheelHandler(
+  () => panelPinnedScrollRef.current,
+);
+const panelRegularWheelHandler = createPanelWheelHandler(
+  () => panelRegularScrollRef.current,
+);
 
 const APP_ICON = require('!!file-loader?esModule=false&outputPath=res!../../../../../../static/icons/icon2.png');
 
@@ -249,6 +266,9 @@ const onPanelMouseLeave = (e: React.MouseEvent<HTMLDivElement>) => {
 const getDraggedPanelTab = () =>
   store.tabs.find((tab) => tab.id === store.tabDragId);
 
+const isPanelTabPinned = (tab: IPanelTab) =>
+  !!tab.pinned || !!tab.groupPinned;
+
 const updateTabDropTarget = (dragged: IPanelTab, x: number, y: number) => {
   const target = document
     .elementFromPoint(x, y)
@@ -263,7 +283,11 @@ const updateTabDropTarget = (dragged: IPanelTab, x: number, y: number) => {
   const tabId = Number(target.dataset.sidebarPanelTabId);
   if (Number.isFinite(tabId)) {
     const tab = store.tabs.find((item) => item.id === tabId);
-    if (!tab || tab.id === dragged.id || !!tab.pinned !== !!dragged.pinned) {
+    if (
+      !tab ||
+      tab.id === dragged.id ||
+      isPanelTabPinned(tab) !== isPanelTabPinned(dragged)
+    ) {
       store.clearTabDrop();
       return;
     }
@@ -725,7 +749,15 @@ export const App = observer(() => {
     const container = panelListRef.current;
     if (!container) return undefined;
     const onWheel = (event: WheelEvent) => {
-      const result = panelWheelHandler(event);
+      const target =
+        event.target instanceof Element
+          ? event.target.closest<HTMLElement>('[data-sidebar-scroll]')
+          : null;
+      const handler =
+        target?.dataset.sidebarPinned === 'true'
+          ? panelPinnedWheelHandler
+          : panelRegularWheelHandler;
+      const result = handler(event);
       if (result.handled) event.preventDefault();
     };
     container.addEventListener('wheel', onWheel, { passive: false });
@@ -741,46 +773,61 @@ export const App = observer(() => {
       ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, [selectedTabId]);
 
-  // 与固定模式一致地把标签铺开:分组聚拢成连续块(头 + 缩进成员行),散落/固定
-  // 标签原位。用 buildGroupSlots 而非 lastGroupId 游标,避免同组成员在列表中
-  // 被拆散时复制出多个组头(见 group-slots.ts 顶部说明)。
-  const items: React.ReactNode[] = [];
+  // 与固定模式一致地按固定区/普通区分流。固定分组的成员虽然自身 pinned=false,
+  // 但 groupPinned=true,必须跟随固定分组进入固定区。
   const slots = buildGroupSlots(store.tabs, (t) => (t.pinned ? -1 : t.groupId));
+  const isPinnedSlot = (slot: (typeof slots)[number]) =>
+    slot.kind === 'tab'
+      ? isPanelTabPinned(slot.item)
+      : slot.items.some(isPanelTabPinned);
+  const pinnedSlots = slots.filter(isPinnedSlot);
+  const regularSlots = slots.filter((slot) => !isPinnedSlot(slot));
+  const pinnedCount = store.tabs.filter(isPanelTabPinned).length;
+  const [pinnedCollapsed, setPinnedCollapsed] = React.useState(false);
 
-  for (const slot of slots) {
-    if (slot.kind === 'tab') {
-      items.push(<PanelTabRow key={slot.item.id} tab={slot.item} />);
-      continue;
+  const renderSlots = (slotList: typeof slots) => {
+    const items: React.ReactNode[] = [];
+    for (const slot of slotList) {
+      if (slot.kind === 'tab') {
+        items.push(<PanelTabRow key={slot.item.id} tab={slot.item} />);
+        continue;
+      }
+
+      const gid = slot.groupId;
+      const head = slot.items[0];
+      const isCollapsed = !!store.groupsCollapsed[gid];
+
+      items.push(
+        <SidebarGroupSection
+          key={`g${gid}`}
+          $groupColor={head?.groupColor}
+          $groupCollapsed={isCollapsed}
+          $groupPinned={!!head?.groupPinned}
+        >
+          <PanelGroupHeader
+            gid={gid}
+            color={head?.groupColor}
+            nameRaw={head?.groupNameRaw}
+            nameShown={head?.groupName || t('spGroupNameFallback')}
+            count={slot.items.length}
+            collapsed={isCollapsed}
+            pinned={!!head?.groupPinned}
+          />
+          {!isCollapsed &&
+            slot.items.map((tab) => <PanelTabRow key={tab.id} tab={tab} />)}
+        </SidebarGroupSection>,
+      );
     }
+    return items;
+  };
 
-    const gid = slot.groupId;
-    const head = slot.items[0];
-    const isCollapsed = !!store.groupsCollapsed[gid];
-
-    items.push(
-      <SidebarGroupSection
-        key={`g${gid}`}
-        $groupColor={head?.groupColor}
-        $groupCollapsed={isCollapsed}
-      >
-        <PanelGroupHeader
-          gid={gid}
-          color={head?.groupColor}
-          nameRaw={head?.groupNameRaw}
-          nameShown={head?.groupName || t('spGroupNameFallback')}
-          count={slot.items.length}
-          collapsed={isCollapsed}
-          pinned={!!head?.groupPinned}
-        />
-        {!isCollapsed &&
-          slot.items.map((tab) => <PanelTabRow key={tab.id} tab={tab} />)}
-      </SidebarGroupSection>,
-    );
-  }
+  const hasPinned = pinnedSlots.length > 0;
+  const pinnedHeight = Math.min(280, Math.max(90, 30 + pinnedCount * 42 + 8));
 
   return (
     <ThemeProvider theme={{ ...store.theme }}>
       <StyledApp
+        $phoneTabsOpen={store.phoneTabsOpen}
         onMouseEnter={() => store.notifyEnter()}
         onMouseLeave={onPanelMouseLeave}
       >
@@ -817,7 +864,54 @@ export const App = observer(() => {
             onDragLeave={onListDragLeave}
             onDrop={onListDrop}
           >
-            {items}
+            {hasPinned && (
+              <SidebarPinnedSection
+                $height={pinnedCollapsed ? 30 : pinnedHeight}
+              >
+                <SidebarPinnedHeader
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={!pinnedCollapsed}
+                  aria-label={t('shellPinnedTabs')}
+                  onClick={() => setPinnedCollapsed((value) => !value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      setPinnedCollapsed((value) => !value);
+                    }
+                  }}
+                >
+                  <SidebarPinnedHeaderIcon aria-hidden="true">
+                    {PinIcon}
+                  </SidebarPinnedHeaderIcon>
+                  <span>{t('shellPinnedTabs')}</span>
+                  <SidebarPinnedCount>{pinnedCount}</SidebarPinnedCount>
+                </SidebarPinnedHeader>
+                {!pinnedCollapsed && (
+                  <SidebarTabScroll
+                    ref={panelPinnedScrollRef}
+                    data-sidebar-scroll="true"
+                    data-sidebar-pinned="true"
+                    data-sidebar-zone="pinned"
+                  >
+                    {renderSlots(pinnedSlots)}
+                  </SidebarTabScroll>
+                )}
+              </SidebarPinnedSection>
+            )}
+            {hasPinned && (
+              <SidebarSectionDivider $interactive={false} aria-hidden="true" />
+            )}
+            <SidebarRegularSection>
+              <SidebarTabScroll
+                ref={panelRegularScrollRef}
+                data-sidebar-scroll="true"
+                data-sidebar-pinned="false"
+                data-sidebar-zone="regular"
+              >
+                {renderSlots(regularSlots)}
+              </SidebarTabScroll>
+            </SidebarRegularSection>
           </SidebarTabList>
         </SidebarPanelContent>
       </StyledApp>

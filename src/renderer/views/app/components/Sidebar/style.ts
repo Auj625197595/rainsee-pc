@@ -8,6 +8,7 @@ export { SIDEBAR_RAIL_WIDTH };
 interface SidebarProps {
   side: 'left' | 'right';
   collapsed?: boolean;
+  $phoneTabsOpen?: boolean;
   theme?: ITheme;
 }
 
@@ -18,12 +19,22 @@ export const StyledSidebar = styled.div`
   flex-flow: column;
   height: 100%;
   flex-shrink: 0;
-  -webkit-app-region: drag;
+  -webkit-app-region: ${({ $phoneTabsOpen }: SidebarProps) =>
+    $phoneTabsOpen ? 'no-drag' : 'drag'};
   transition: width 0.16s ease;
 
   html.sidebar-resizing & {
     transition: none;
   }
+
+  ${({ $phoneTabsOpen }: SidebarProps) =>
+    $phoneTabsOpen &&
+    css`
+      &,
+      & * {
+        -webkit-app-region: no-drag !important;
+      }
+    `}
 
   ${({ side, collapsed, theme }: SidebarProps) => css`
     width: ${
@@ -173,11 +184,12 @@ export const SidebarNav = styled.div`
 export const SidebarTabList = styled.div<{ $dropOutside?: boolean }>`
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  display: flex;
+  flex-flow: column;
   overflow-x: hidden;
   -webkit-app-region: no-drag;
   user-select: none;
-  padding: 4px 0;
+  padding: 0;
   transition: box-shadow 0.1s ease;
   box-shadow: ${({ $dropOutside, theme }) =>
     $dropOutside
@@ -195,6 +207,152 @@ export const SidebarTabList = styled.div<{ $dropOutside?: boolean }>`
         ? 'rgba(255, 255, 255, 0.18)'
         : 'rgba(0, 0, 0, 0.16)'};
     `};
+  }
+`;
+
+export const SidebarTabScroll = styled.div<{ $pinned?: boolean }>`
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-app-region: no-drag;
+  padding: 4px 0;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 0.15s ease;
+
+  &:hover,
+  &:focus-within {
+    scrollbar-color: rgba(90, 105, 150, 0.35) transparent;
+  }
+
+  &::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    border-radius: 99px;
+    background-color: transparent;
+  }
+
+  &:hover::-webkit-scrollbar-thumb,
+  &:focus-within::-webkit-scrollbar-thumb {
+    background-color: rgba(90, 105, 150, 0.35);
+  }
+`;
+
+export const SidebarPinnedSection = styled.section<{
+  $height: number;
+  $collapsed?: boolean;
+  $resizing?: boolean;
+}>`
+  display: flex;
+  flex-flow: column;
+  flex: 0 0 ${({ $height }) => `${$height}px`};
+  min-height: 0;
+  overflow: hidden;
+  transition: ${({ $resizing }) =>
+    $resizing ? 'none' : 'flex-basis 0.18s ease'};
+  will-change: flex-basis;
+`;
+
+export const SidebarRegularSection = styled.section`
+  display: flex;
+  flex: 1 1 auto;
+  flex-flow: column;
+  min-height: 0;
+`;
+
+export const SidebarPinnedHeader = styled.div<{ $collapsed?: boolean }>`
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  flex: 0 0 30px;
+  margin: 0 8px;
+  padding: 0 10px;
+  color: ${({ theme }) => theme['tab.textColor']};
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  opacity: 0.72;
+  user-select: none;
+  -webkit-app-region: no-drag;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: background-color 0.12s ease, opacity 0.12s ease;
+
+  &:hover {
+    background: ${({ theme }) =>
+      theme['toolbar.lightForeground']
+        ? 'rgba(255, 255, 255, 0.07)'
+        : 'rgba(52, 82, 255, 0.07)'};
+    opacity: 0.95;
+  }
+
+  ${({ $collapsed }) =>
+    $collapsed &&
+    css`
+      justify-content: center;
+      padding: 0;
+      gap: 0;
+    `}
+`;
+
+export const SidebarPinnedHeaderIcon = styled.span`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: ${({ theme }) => theme.accentColor || '#3452ff'};
+`;
+
+export const SidebarPinnedCount = styled.span`
+  margin-left: auto;
+  min-width: 18px;
+  padding: 2px 5px;
+  border-radius: 6px;
+  text-align: center;
+  font-size: 10px;
+  line-height: 1;
+  background: ${({ theme }) =>
+    theme['toolbar.lightForeground']
+      ? 'rgba(255, 255, 255, 0.09)'
+      : 'rgba(52, 82, 255, 0.08)'};
+`;
+
+export const SidebarSectionDivider = styled.div<{
+  $dragging?: boolean;
+  $interactive?: boolean;
+}>`
+  position: relative;
+  flex: 0 0 7px;
+  height: 7px;
+  cursor: ${({ $interactive }) => ($interactive === false ? 'default' : 'row-resize')};
+  -webkit-app-region: no-drag;
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: 3px;
+    left: 10px;
+    right: 10px;
+    height: 1px;
+    background: ${({ theme }) => theme['toolbar.bottomLine.backgroundColor']};
+    opacity: ${({ $dragging }) => ($dragging ? 1 : 0.85)};
+    transition: background-color 0.15s ease, opacity 0.15s ease;
+  }
+
+  &:hover::before,
+  &:focus-visible::before {
+    height: 2px;
+    top: 2px;
+    background: ${({ theme }) => theme.accentColor || '#3452ff'};
+    opacity: 0.9;
+  }
+
+  &:focus-visible {
+    outline: none;
   }
 `;
 
@@ -298,61 +456,67 @@ interface NewTabButtonProps {
   collapsed?: boolean;
 }
 
+// 新建标签页:与标签行同尺寸/同对齐的轻量行(图标列与 favicon 对齐),
+// 强调色只用于图标与文字,避免大面积渐变色块压过标签列表。
 export const SidebarNewTab = styled.div`
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 44px;
-  margin: 6px 12px 8px;
-  border-radius: 18px;
+  gap: 10px;
+  height: 36px;
+  margin: 2px 8px 6px;
+  padding: 0 10px;
+  border-radius: 8px;
   cursor: default;
   font-size: 12.5px;
-  font-weight: 700;
+  font-weight: 600;
   flex-shrink: 0;
   -webkit-app-region: no-drag;
-  transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
+  transition: background-color 0.12s ease, transform 0.12s ease;
 
-  ${({ collapsed }: NewTabButtonProps) => css`
-    color: #ffffff;
-    padding: ${collapsed ? '0' : '0 18px'};
-    justify-content: center;
-    background: linear-gradient(135deg, #4a63ff 0%, #2f49e8 100%);
-    box-shadow: 0 10px 22px rgba(47, 73, 232, 0.22),
-      inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  svg {
+    flex-shrink: 0;
+  }
 
-    &:hover {
-      filter: brightness(1.04);
-      box-shadow: 0 12px 24px rgba(47, 73, 232, 0.26),
-        inset 0 1px 0 rgba(255, 255, 255, 0.2);
-    }
+  &:active {
+    transform: scale(0.985);
+  }
 
-    &:active {
-      transform: scale(0.985);
-      box-shadow: 0 8px 18px rgba(47, 73, 232, 0.2),
-        inset 0 1px 0 rgba(255, 255, 255, 0.12);
-    }
+  ${({ collapsed, theme }: NewTabButtonProps & { theme?: ITheme }) => {
+    const light = theme['toolbar.lightForeground'];
+    const accent = theme.accentColor || '#3452ff';
+    return css`
+      color: ${light ? 'rgba(255, 255, 255, 0.92)' : accent};
+      justify-content: ${collapsed ? 'center' : 'flex-start'};
+      background-color: ${light
+        ? 'rgba(255, 255, 255, 0.06)'
+        : 'rgba(52, 82, 255, 0.07)'};
 
-    ${collapsed &&
-    css`
-      width: 38px;
-      height: 38px;
-      margin: 6px auto 8px;
-      padding: 0;
-      border-radius: 12px;
-      box-shadow: 0 8px 18px rgba(47, 73, 232, 0.2),
-        inset 0 1px 0 rgba(255, 255, 255, 0.16);
-    `}
-  `};
+      &:hover {
+        background-color: ${light
+          ? 'rgba(255, 255, 255, 0.11)'
+          : 'rgba(52, 82, 255, 0.12)'};
+      }
+
+      ${collapsed &&
+      css`
+        width: 40px;
+        height: 40px;
+        margin: 2px auto 6px;
+        padding: 0;
+        border-radius: 10px;
+      `}
+    `;
+  }};
 `;
 
 // 窄轨态下隐藏的文字标签(如「新建标签页」)。
 export const SidebarNewTabLabel = styled.span`
-  letter-spacing: 0.4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 
   ${({ collapsed }: { collapsed?: boolean }) => css`
     display: ${collapsed ? 'none' : 'inline'};
-    font-size: 14px;
-    font-weight: 800;
   `};
 `;
 
