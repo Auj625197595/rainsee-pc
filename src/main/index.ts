@@ -53,6 +53,7 @@ import { Application } from './application';
 import { getWebUIURL } from '~/common/webui-main';
 import { startupMark, tlog } from './timing';
 import { setupSearchAnnotatorIpc } from './services/search-annotator';
+import { setupImageUploadIpc } from './services/image-upload';
 import { buildKoodoReaderUrl, filePathFromFileUrl } from '~/constants/files';
 import { getExternalProtocol } from '~/utils/url';
 import { applyPersistedFlagsBeforeReady, setupFlagsIpc } from './flags-service';
@@ -67,6 +68,8 @@ import { setupProfileNetworkIpc } from './profile-network';
 import { normalizeAppLanguage, resolveAppLanguage } from '~/common/i18n';
 import { getMainTranslator } from './i18n';
 import { getNavigationContext } from './utils/navigation-context';
+import { showPagePrompt } from './services/page-prompt';
+import { isDarkThemeActive } from './utils/theme';
 
 // 兼容旧的 `import { isNightly } from '..'`(src/main/windows/app.ts)。
 export { isNightly };
@@ -119,6 +122,21 @@ app.commandLine.appendSwitch('--enable-transparent-visuals');
 app.commandLine.appendSwitch(
   'enable-features',
   'CSSColorSchemeUARendering, ImpulseScrollAnimations, ParallelDownloading',
+);
+
+// Proxy sessions must not leak destination DNS through Chromium's speculative
+// resolver or QUIC/UDP path. PAC scripts also avoid dnsResolve/dnsResolveEx;
+// these startup switches cover requests made outside the normal page loader.
+app.commandLine.appendSwitch('dns-prefetch-disable');
+app.commandLine.appendSwitch('disable-quic');
+
+// Electron 只在 Blink 侧暴露了 window.documentPictureInPicture,浏览器侧没有
+// 文档画中画窗口实现:requestWindow() 照常 resolve 一个 about:blank Window,
+// 但永远不会出现系统窗口。B 站新版播放器(new_pip 实验)检测到该 API 就优先走
+// 「富画中画」,点画中画按钮表现为无效。关掉该特性让站点回落到 video 原生画中画。
+app.commandLine.appendSwitch(
+  'disable-blink-features',
+  'DocumentPictureInPictureAPI',
 );
 
 // 禁用 Chromium 的"备用渲染进程"预热(SpareRendererForSitePerProcess)。
@@ -203,6 +221,7 @@ const application = Application.instance;
 startupMark('main.application.instance_ready');
 startupMark('main.ipc_registration.begin');
 setupSearchAnnotatorIpc();
+setupImageUploadIpc();
 setupFlagsIpc();
 setupProfilesIpc();
 setupProfileNetworkIpc();
@@ -317,6 +336,105 @@ app.on('before-quit', (event) => {
 
 ipcMain.on('get-webcontents-id', (e) => {
   e.returnValue = e.sender.id;
+});
+
+const findPageDialogParent = (sender: Electron.WebContents) => {
+  const appWindow = application.windows?.findByBrowserView(sender.id);
+  const directWindow = BrowserWindow.fromWebContents(sender);
+  const browserViewOwner = BrowserWindow.getAllWindows().find((win) => {
+    try {
+      return win
+        .getBrowserViews()
+        .some((view) => view.webContents.id === sender.id);
+    } catch {
+      return false;
+    }
+  });
+  const parent = appWindow?.win || directWindow || browserViewOwner;
+  return parent && !parent.isDestroyed() ? parent : null;
+};
+
+const getPageDialogSite = (sender: Electron.WebContents) => {
+  let site = sender.getTitle().trim();
+  try {
+    const pageUrl = new URL(sender.getURL());
+    site = pageUrl.hostname || pageUrl.origin || site;
+  } catch {
+    // Keep the document title for non-standard page URLs.
+  }
+  return site || app.getName();
+};
+
+// 页面第二个及以后的 alert/confirm(见 view-preload):带"禁止再显示"勾选框，防止
+// 页面循环弹窗卡死窗口。同步 IPC 的 returnValue 可在异步弹框结束后再赋值。
+ipcMain.on('page-dialog', (event, kind: unknown, message: unknown) => {
+  const reply = (value: {ok: boolean; suppress: boolean}) => {
+    try {
+      if (!event.sender.isDestroyed()) event.returnValue = value;
+    } catch {
+      // The tab may have been closed while its modal dialog was visible.
+    }
+  };
+
+  const parent = findPageDialogParent(event.sender);
+  if (!parent) {
+    reply({ok: false, suppress: false});
+    return;
+  }
+
+  const t = getMainTranslator(application.settings?.object?.language);
+  const isConfirm = kind === 'confirm';
+  void dialog
+    .showMessageBox(parent, {
+      type: 'none',
+      title: t('pagePromptTitle', {site: getPageDialogSite(event.sender)}),
+      message: typeof message === 'string' ? message : String(message ?? ''),
+      buttons: isConfirm
+        ? [t('pagePromptConfirm'), t('cancel')]
+        : [t('pagePromptConfirm')],
+      defaultId: 0,
+      cancelId: isConfirm ? 1 : 0,
+      checkboxLabel: t('pageDialogSuppress'),
+      checkboxChecked: false,
+      noLink: true,
+    })
+    .then(
+      ({response, checkboxChecked}) =>
+        reply({ok: response === 0, suppress: checkboxChecked}),
+      () => reply({ok: false, suppress: false}),
+    );
+});
+
+ipcMain.on('page-prompt', (event, message: unknown, defaultValue: unknown) => {
+  const reply = (value: string | null) => {
+    try {
+      if (!event.sender.isDestroyed()) event.returnValue = value;
+    } catch {
+      // The tab may have been closed while its modal prompt was visible.
+    }
+  };
+
+  const parent = findPageDialogParent(event.sender);
+  if (!parent) {
+    reply(null);
+    return;
+  }
+  const site = getPageDialogSite(event.sender);
+
+  const t = getMainTranslator(application.settings?.object?.language);
+  void showPagePrompt({
+    parent,
+    owner: event.sender,
+    title: t('pagePromptTitle', {site}),
+    message: typeof message === 'string' ? message : String(message || ''),
+    defaultValue:
+      typeof defaultValue === 'string'
+        ? defaultValue
+        : String(defaultValue || ''),
+    confirmLabel: t('pagePromptConfirm'),
+    cancelLabel: t('cancel'),
+    dark: isDarkThemeActive(),
+  }).then(reply, () => reply(null));
 });
 ipcMain.on('get-extensions', (e) => {
   e.returnValue = application.sessions.extensions;

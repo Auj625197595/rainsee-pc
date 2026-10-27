@@ -122,7 +122,7 @@ document.addEventListener(
 // 必须在页面 HTML 解析前同步取得设置并放入深色首帧防闪层。仅等主进程 dom-ready
 // 再注入 Dark Reader 会让 Chromium 先绘制网页默认白色画布,形成明显 FOUC。
 // 该 CSS 只覆盖根画布;主进程确认 Dark Reader 就绪或页面本身已是暗色后会通知移除。
-const settings = ipcRenderer.sendSync('get-settings-sync');
+const settings = ipcRenderer.sendSync('get-settings-sync') ?? {};
 let earlyWebDarkCssKey = '';
 let earlyWebDarkReady = false;
 
@@ -1227,7 +1227,7 @@ ipcRenderer.on('crx-subframe-dispatch', (_e, path: unknown, channel: string, arg
   const target = crxWindowForFramePath(path);
   if (!target || !Array.isArray(args)) return;
   let payload: any = null;
-  if (channel === 'crx-cs-message') {
+  if (channel === 'crx-cs-message' || channel === 'crx-dynamic-cs-message') {
     const [messageId, message, sender] = args;
     payload = {
       __crxCsFwd: true,
@@ -1274,7 +1274,7 @@ ipcRenderer.on('crx-subframe-dispatch', (_e, path: unknown, channel: string, arg
   }
 });
 
-ipcRenderer.on('crx-cs-message', (_e, messageId, message, sender) => {
+const crxForwardContentScriptMessage = (_e: unknown, messageId: string, message: any, sender: any) => {
   if (crxVerbose) {
     try {
       // eslint-disable-next-line no-console
@@ -1318,7 +1318,9 @@ ipcRenderer.on('crx-cs-message', (_e, messageId, message, sender) => {
       __crxViewQ.push(viewMsg);
     }
   }
-});
+};
+ipcRenderer.on('crx-cs-message', crxForwardContentScriptMessage);
+ipcRenderer.on('crx-dynamic-cs-message', crxForwardContentScriptMessage);
 
 // SW->content Port bridge for DECLARATIVE content scripts (dessant engine in
 // the isolated world). dessant's image storageRequest uses transferResponse:
