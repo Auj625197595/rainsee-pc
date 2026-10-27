@@ -5,13 +5,17 @@ import {
   clipboard,
   ipcMain,
   Menu,
+  nativeTheme,
   nativeImage,
   shell,
 } from 'electron';
+import {existsSync, readFileSync, writeFileSync} from 'fs';
+import {join} from 'path';
 import {WEBUI_BASE_URL, WEBUI_URL_SUFFIX} from '~/constants/files';
 import {PopupView} from '~/main/dialogs/popup';
 import {Application} from '../application';
 import {getMainTranslator} from '../i18n';
+import {disableDarkReader, injectDarkReader} from '../utils/web-dark-mode-inject';
 
 // PWA「安装」后运行的独立应用窗口,以及从快捷方式 / --app 命令行冷启动的入口。
 // Electron 主窗口只承载应用头部，网站运行在下方独立 BrowserView 中。
@@ -22,6 +26,7 @@ const APP_HEADER_HEIGHT = 36;
 const WINDOW_CONTROLS_WIDTH = 138;
 const APP_MENU_WIDTH = 280;
 const appModeWebContents = new WeakSet<Electron.WebContents>();
+type AppThemeMode = 'auto' | 'light' | 'dark';
 interface AppModeShellContext {
   win: BrowserWindow;
   page: Electron.WebContents;
@@ -29,6 +34,9 @@ interface AppModeShellContext {
   themeColor: string;
   foregroundColor: string;
   iconDataUrl: string;
+  themeKey: string;
+  themeMode: AppThemeMode;
+  themeApplyChain: Promise<void>;
   extensionTabRegistered?: boolean;
   extensionPopup?: PopupView;
   popupWorkerRelease?: () => void;
@@ -38,6 +46,156 @@ const appModeShells = new WeakMap<
   Electron.WebContents,
   AppModeShellContext
 >();
+// 存活的应用窗口,供设置页「打开」聚焦已开窗口。
+const liveAppModeShells = new Set<AppModeShellContext>();
+
+const APP_THEME_MODES_FILE = 'pwa-theme-modes.json';
+let savedAppThemeModes: Record<string, AppThemeMode> | null = null;
+
+const appThemeModesPath = () => join(app.getPath('userData'), APP_THEME_MODES_FILE);
+
+const appThemeKey = (url: string): string => {
+  try {
+    return new URL(url).origin.toLowerCase();
+  } catch {
+    return String(url || '').trim();
+  }
+};
+
+const readSavedAppThemeModes = (): Record<string, AppThemeMode> => {
+  if (savedAppThemeModes) return savedAppThemeModes;
+  savedAppThemeModes = {};
+  try {
+    if (!existsSync(appThemeModesPath())) return savedAppThemeModes;
+    const parsed = JSON.parse(readFileSync(appThemeModesPath(), 'utf8'));
+    if (!parsed || typeof parsed !== 'object') return savedAppThemeModes;
+    for (const [key, value] of Object.entries(parsed)) {
+      if (value === 'auto' || value === 'light' || value === 'dark') {
+        savedAppThemeModes[key] = value;
+      }
+    }
+  } catch {
+    // A malformed preference file should never prevent a PWA from opening.
+  }
+  return savedAppThemeModes;
+};
+
+const getSavedAppThemeMode = (url: string): AppThemeMode =>
+  readSavedAppThemeModes()[appThemeKey(url)] || 'auto';
+
+const saveAppThemeMode = (key: string, mode: AppThemeMode) => {
+  const modes = readSavedAppThemeModes();
+  modes[key] = mode;
+  try {
+    const path = appThemeModesPath();
+    // Rename is intentionally avoided here: on Windows an existing target
+    // can be locked by backup/indexing software. The preference is tiny and a
+    // direct write still keeps the operation durable for the next launch.
+    writeFileSync(path, JSON.stringify(modes, null, 2), 'utf8');
+  } catch {
+    // Theme switching remains functional even if the profile is read-only.
+  }
+};
+
+const isDarkForContext = (context: AppModeShellContext): boolean =>
+  context.themeMode === 'dark' ||
+  (context.themeMode === 'auto' && nativeTheme.shouldUseDarkColors);
+
+const sendThemeState = (context: AppModeShellContext) => {
+  if (context.win.isDestroyed() || context.win.webContents.isDestroyed()) return;
+  context.win.webContents.send('pwa-app-theme-state', {
+    mode: context.themeMode,
+    dark: isDarkForContext(context),
+  });
+};
+
+const applyThemeToPage = (context: AppModeShellContext): Promise<void> => {
+  const apply = async () => {
+    const page = context.page;
+    if (context.win.isDestroyed() || page.isDestroyed()) return;
+    const url = page.getURL();
+    if (!/^(https?|file):/i.test(url)) return;
+    if (isDarkForContext(context)) await injectDarkReader(page);
+    else await disableDarkReader(page);
+  };
+  // A Dark Reader injection is asynchronous. Serialize changes so a quick
+  // dark→light click cannot let an older injection win after cleanup.
+  context.themeApplyChain = context.themeApplyChain.then(apply, apply).catch(() => undefined);
+  return context.themeApplyChain;
+};
+
+const updateAutoThemeWindows = () => {
+  for (const context of liveAppModeShells) {
+    if (context.themeMode !== 'auto') continue;
+    sendThemeState(context);
+    void applyThemeToPage(context);
+  }
+};
+
+nativeTheme.on('updated', updateAutoThemeWindows);
+
+const setAppThemeMode = async (
+  context: AppModeShellContext,
+  mode: AppThemeMode,
+) => {
+  context.themeMode = mode;
+  saveAppThemeMode(context.themeKey, mode);
+  sendThemeState(context);
+  await applyThemeToPage(context);
+};
+
+const showAppThemeMenu = (context: AppModeShellContext) => {
+  if (context.win.isDestroyed() || context.page.isDestroyed()) return;
+  const t = getMainTranslator(Application.instance.settings?.object?.language);
+  const menu = Menu.buildFromTemplate([
+    {
+      label: t('pwaThemeDay'),
+      type: 'radio',
+      checked: context.themeMode === 'light',
+      click: () => void setAppThemeMode(context, 'light'),
+    },
+    {
+      label: t('pwaThemeNight'),
+      type: 'radio',
+      checked: context.themeMode === 'dark',
+      click: () => void setAppThemeMode(context, 'dark'),
+    },
+    {
+      label: t('pwaThemeAuto'),
+      type: 'radio',
+      checked: context.themeMode === 'auto',
+      click: () => void setAppThemeMode(context, 'auto'),
+    },
+  ]);
+  const [contentWidth] = context.win.getContentSize();
+  menu.popup({
+    window: context.win,
+    x: Math.max(0, contentWidth - WINDOW_CONTROLS_WIDTH - 38),
+    y: APP_HEADER_HEIGHT,
+  });
+};
+
+export const findAppModeWindows = (
+  matches: (pageUrl: string) => boolean,
+): {win: BrowserWindow; page: Electron.WebContents}[] => {
+  const result: {win: BrowserWindow; page: Electron.WebContents}[] = [];
+  for (const context of liveAppModeShells) {
+    if (context.win.isDestroyed() || context.page.isDestroyed()) continue;
+    if (matches(context.page.getURL())) {
+      result.push({win: context.win, page: context.page});
+    }
+  }
+  return result;
+};
+
+// 「在浏览器中打开」直接进本浏览器标签。走 shell.openExternal 时若本浏览器是
+// 默认浏览器且该应用开启了「打开支持的链接」,URL 会经二次启动被重新捕获回应用窗口。
+const openInMainBrowser = (url: string) => {
+  const windows = Application.instance.windows;
+  const opened = windows.openOrFocusMainWindow();
+  const target = windows.list.find((window) => window.id === opened.windowId);
+  if (target) target.viewManager.create({url, active: true});
+};
 
 const normalizeThemeColor = (value?: string): string => {
   const color = (value || '').trim();
@@ -322,7 +480,10 @@ const showAppMenu = (
     {type: 'separator'},
     {label: t('amPinTaskbar'), enabled: false},
     {label: t('amPinStartMenu'), enabled: false},
-    {label: t('amAppSettings'), enabled: false},
+    {
+      label: t('amAppSettings'),
+      click: () => openInMainBrowser(`${WEBUI_BASE_URL}settings${WEBUI_URL_SUFFIX}#apps`),
+    },
     {type: 'separator'},
     {
       label: t('amZoom'),
@@ -344,8 +505,7 @@ const showAppMenu = (
           label: t('amOpenInBrowser'),
           click: () => {
             const url = page.getURL();
-            if (/^https?:/i.test(url))
-              shell.openExternal(url).catch(() => undefined);
+            if (/^https?:/i.test(url)) openInMainBrowser(url);
           },
         },
         {label: t('amReloadApp'), click: () => page.reload()},
@@ -377,7 +537,28 @@ ipcMain.handle('pwa-app-shell-info', (event) => {
     themeColor: context.themeColor,
     foregroundColor: context.foregroundColor,
     iconDataUrl: context.iconDataUrl,
+    themeMode: context.themeMode,
+    dark: isDarkForContext(context),
   };
+});
+
+ipcMain.handle(
+  'pwa-app-theme-set',
+  async (event, rawMode: unknown): Promise<boolean> => {
+    const context = appModeShells.get(event.sender);
+    if (!context) return false;
+    const mode: AppThemeMode =
+      rawMode === 'dark' || rawMode === 'light' ? rawMode : 'auto';
+    await setAppThemeMode(context, mode);
+    return true;
+  },
+);
+
+ipcMain.handle('pwa-app-theme-menu-open', (event): boolean => {
+  const context = appModeShells.get(event.sender);
+  if (!context) return false;
+  showAppThemeMenu(context);
+  return true;
 });
 
 // persist:view 的权限处理器同时服务普通标签和独立 PWA。显式登记 PWA
@@ -471,10 +652,14 @@ export const openAppModeWindow = (opts: AppModeOptions): BrowserWindow => {
     themeColor,
     foregroundColor,
     iconDataUrl: iconDataUrl(opts.icon),
+    themeKey: appThemeKey(opts.url),
+    themeMode: getSavedAppThemeMode(opts.url),
+    themeApplyChain: Promise.resolve(),
     popupLaunchToken: 0,
   };
   appModeWebContents.add(page);
   appModeShells.set(win.webContents, context);
+  liveAppModeShells.add(context);
   win.setBrowserView(pageView);
 
   const updatePageBounds = () => {
@@ -509,7 +694,9 @@ export const openAppModeWindow = (opts: AppModeOptions): BrowserWindow => {
 
   page.setWindowOpenHandler(({url: u}) => {
     if (u && /^https?:/i.test(u)) {
-      shell.openExternal(u).catch(() => undefined);
+      // 直接进本浏览器标签,不经系统默认浏览器绕一圈(避免被「打开支持的链接」
+      // 重新捕获回应用窗口)。
+      queueMicrotask(() => openInMainBrowser(u));
     }
     return {action: 'deny'};
   });
@@ -521,8 +708,16 @@ export const openAppModeWindow = (opts: AppModeOptions): BrowserWindow => {
     win.setTitle(nextTitle);
     win.webContents.send('pwa-app-title', nextTitle);
   });
+  page.on('dom-ready', () => {
+    sendThemeState(context);
+    void applyThemeToPage(context);
+  });
+  page.on('did-finish-load', () => {
+    void applyThemeToPage(context);
+  });
 
   win.on('closed', () => {
+    liveAppModeShells.delete(context);
     context.extensionPopup?.destroy();
     context.extensionPopup = undefined;
     releasePopupWorker(context);

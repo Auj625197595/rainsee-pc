@@ -40,9 +40,10 @@ export interface PwaManifest {
   themeColor: string;
   backgroundColor: string;
   icon: PwaIcon | null;
+  description?: string;
 }
 
-interface InstalledPwa {
+export interface InstalledPwa {
   id: string;
   name: string;
   startUrl: string;
@@ -50,6 +51,9 @@ interface InstalledPwa {
   scope: string;
   iconPath?: string;
   themeColor?: string;
+  description?: string;
+  // 「允许此应用程序打开支持的链接」。缺省 false:老记录升级后不改变既有浏览行为。
+  handleLinks?: boolean;
   installedAt: number;
 }
 
@@ -105,6 +109,7 @@ const DETECT_CODE = `(function(){
         display: displayUsed,
         themeColor: manifest.theme_color || '',
         backgroundColor: manifest.background_color || '',
+        description: typeof manifest.description === 'string' ? manifest.description : '',
         icon: pickIcon(manifest),
         hasIcons: !!(manifest.icons && manifest.icons.length),
         iconCount: (manifest.icons || []).length,
@@ -153,7 +158,9 @@ export const COLLECT_PAGE_INFO_CODE = `(function(){
   var ml=document.querySelector('link[rel="manifest" i]');
   var tc='';
   var tm=document.querySelector('meta[name="theme-color" i]'); if(tm) tc=tm.getAttribute('content')||'';
+  var dm=document.querySelector('meta[name="description" i]');
   return JSON.stringify({
+    description:dm?(dm.getAttribute('content')||'').trim().slice(0,500):'',
     title:(document.title||'').trim(),
     host:(location.hostname||'').replace(/^www\\./,''),
     origin:location.origin,
@@ -171,6 +178,7 @@ export interface CollectedPageInfo {
   pageUrl: string;
   themeColor: string;
   manifestHref: string;
+  description?: string;
   favicons: { href: string; type: string; size: number; prio: number }[];
 }
 
@@ -258,6 +266,8 @@ const manifestFromWeb = async (
       display: disp,
       themeColor: m.theme_color || '',
       backgroundColor: m.background_color || '',
+      description:
+        typeof m.description === 'string' ? m.description : info.description || '',
       icon,
     };
   } catch (e) {
@@ -280,6 +290,7 @@ const synthesizeManifest = (
     display: 'standalone',
     themeColor: info.themeColor || '#3b6fe8',
     backgroundColor: '#ffffff',
+    description: info.description || '',
     icon: pickFaviconFromInfo(info),
   };
 };
@@ -399,7 +410,7 @@ const safeId = (origin: string): string => {
 
 let installedCache: InstalledPwa[] | null = null;
 
-const loadInstalled = (): InstalledPwa[] => {
+export const loadInstalled = (): InstalledPwa[] => {
   if (installedCache) return installedCache;
   try {
     const f = installedFile();
@@ -415,7 +426,7 @@ const loadInstalled = (): InstalledPwa[] => {
   return installedCache!;
 };
 
-const saveInstalled = (list: InstalledPwa[]) => {
+export const saveInstalled = (list: InstalledPwa[]) => {
   const target = installedFile();
   const temp = `${target}.${process.pid}.${Date.now()}.tmp`;
   try {
@@ -554,14 +565,31 @@ export interface InstallOptions {
   fallbackIconUrl?: string;
 }
 
-const sanitizeFileName = (name: string): string => {
+export const sanitizeFileName = (name: string): string => {
   return (name || appFallbackName())
     .replace(/[\\/:*?"<>|]/g, '_')
     .slice(0, 80) || appFallbackName();
 };
 
+export const startMenuProgramsDir = () =>
+  join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+
+export const getPwaShortcutPaths = (name: string) => {
+  const safeName = sanitizeFileName(name);
+  return {
+    desktop: join(app.getPath('desktop'), `${safeName}.lnk`),
+    startMenu: join(startMenuProgramsDir(), `${safeName}.lnk`),
+  };
+};
+
+// 与安装时一致的 .lnk 启动参数(开发版需把项目入口作为首个位置参数)。
+export const getPwaLaunchArgs = (startUrl: string) => [
+  ...(app.isPackaged ? [] : [app.getAppPath()]),
+  `--app=${startUrl}`,
+];
+
 // Windows 快捷方式(.lnk)。shell.writeShortcutLink 仅 Windows 可用,其它平台跳过。
-const createShortcuts = (
+export const createShortcuts = (
   name: string,
   startUrl: string,
   args: string[],
@@ -713,7 +741,8 @@ export const performInstall = async (
     opts,
   );
 
-  // 2) 持久化已安装清单(origin 键去重)
+  // 2) 持久化已安装清单(origin 键去重)。重装保留用户在管理页设置的链接接管开关。
+  const previous = loadInstalled().find((p) => p.origin === origin);
   const list = loadInstalled().filter((p) => p.origin !== origin);
   list.push({
     id: safeId(origin),
@@ -723,6 +752,8 @@ export const performInstall = async (
     scope: manifest.scope || '',
     iconPath,
     themeColor: manifest.themeColor || '',
+    description: (manifest.description || '').slice(0, 500),
+    handleLinks: previous?.handleLinks ?? false,
     installedAt: Date.now(),
   });
   try {

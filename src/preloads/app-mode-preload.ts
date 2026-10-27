@@ -1,16 +1,26 @@
 import { ipcRenderer } from 'electron';
+import * as React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { Monitor } from '@phosphor-icons/react/dist/csr/Monitor';
+import { Moon } from '@phosphor-icons/react/dist/csr/Moon';
+import { Sun } from '@phosphor-icons/react/dist/csr/Sun';
 import { createLocaleTranslator } from '~/common/i18n';
 
 // 独立 PWA 的 Electron 壳层 preload。这里只渲染窗口头部，网页本身运行在
 // 下方单独的 BrowserView 中，因此第三方站点不会覆盖或影响这些控件。
 const HEADER_HEIGHT = 36;
 const WINDOW_CONTROLS_WIDTH = 138;
+const THEME_CONTROLS_WIDTH = 38;
+
+type AppThemeMode = 'auto' | 'light' | 'dark';
 
 interface AppShellInfo {
   title: string;
   themeColor: string;
   foregroundColor: string;
   iconDataUrl: string;
+  themeMode: AppThemeMode;
+  dark: boolean;
 }
 
 const install = () => {
@@ -32,7 +42,7 @@ const install = () => {
     }
     #rainsee-pwa-title {
       height: ${HEADER_HEIGHT}px;
-      padding: 0 ${WINDOW_CONTROLS_WIDTH + 46}px 0 12px;
+      padding: 0 ${WINDOW_CONTROLS_WIDTH + 38 + THEME_CONTROLS_WIDTH + 8}px 0 12px;
       overflow: hidden;
       color: #e8eaed;
       font-size: 13px;
@@ -52,6 +62,31 @@ const install = () => {
       pointer-events: none;
     }
     #rainsee-pwa-header.has-icon #rainsee-pwa-icon { display: block; }
+    #rainsee-pwa-theme-controls {
+      position: absolute;
+      top: 0;
+      right: ${WINDOW_CONTROLS_WIDTH + 38}px;
+      width: ${THEME_CONTROLS_WIDTH}px;
+      height: ${HEADER_HEIGHT}px;
+      -webkit-app-region: no-drag;
+    }
+    #rainsee-pwa-theme-button {
+      display: grid;
+      width: ${THEME_CONTROLS_WIDTH}px;
+      height: ${HEADER_HEIGHT}px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      place-items: center;
+      appearance: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #rainsee-pwa-theme-button:hover,
+    #rainsee-pwa-theme-button:focus-visible { background: var(--pwa-control-hover, rgba(255,255,255,.12)); }
+    #rainsee-pwa-theme-button:active { background: var(--pwa-control-active, rgba(255,255,255,.18)); }
+    #rainsee-pwa-theme-button:focus-visible { outline: 2px solid #8ab4f8; outline-offset: -2px; }
     #rainsee-pwa-more {
       position: absolute;
       top: 0;
@@ -91,6 +126,35 @@ const install = () => {
   title.id = 'rainsee-pwa-title';
   title.textContent = document.title || t('iaAppFallback');
 
+  const themeControls = document.createElement('div');
+  themeControls.id = 'rainsee-pwa-theme-controls';
+  const themeButton = document.createElement('button');
+  themeButton.id = 'rainsee-pwa-theme-button';
+  themeButton.type = 'button';
+  themeButton.setAttribute('aria-haspopup', 'menu');
+  const themeLabels: Array<[AppThemeMode, string]> = [
+    ['light', t('pwaThemeDay')],
+    ['dark', t('pwaThemeNight')],
+    ['auto', t('pwaThemeAuto')],
+  ];
+  const themeIcons = { light: Sun, dark: Moon, auto: Monitor } as const;
+  let browserIsDark = false;
+  const updateThemeButtons = (mode: AppThemeMode, dark = browserIsDark) => {
+    // Automatic mode reflects the effective browser theme: sun in light mode,
+    // moon in dark mode. Explicit modes always keep their matching icon.
+    const Icon = mode === 'auto' ? (dark ? Moon : Sun) : themeIcons[mode];
+    themeButton.innerHTML = renderToStaticMarkup(
+      React.createElement(Icon, { size: 18, weight: 'regular', 'aria-hidden': true }),
+    );
+    themeButton.title = themeLabels.find(([key]) => key === mode)?.[1] || '';
+    themeButton.setAttribute('aria-label', themeButton.title);
+  };
+  themeButton.addEventListener('click', () => {
+    void ipcRenderer.invoke('pwa-app-theme-menu-open').catch(() => false);
+  });
+  themeControls.appendChild(themeButton);
+  updateThemeButtons('auto');
+
   const more = document.createElement('button');
   more.id = 'rainsee-pwa-more';
   more.type = 'button';
@@ -106,14 +170,26 @@ const install = () => {
     if (typeof value === 'string' && value.trim()) title.textContent = value;
   });
 
-  header.append(icon, title, more);
+  header.append(icon, title, themeControls, more);
   document.body.appendChild(header);
+
+  const applyThemeState = (raw: unknown) => {
+    const state = raw as {mode?: unknown; dark?: unknown} | null;
+    if (state?.mode === 'dark' || state?.mode === 'light' || state?.mode === 'auto') {
+      browserIsDark = state.dark === true;
+      updateThemeButtons(state.mode, browserIsDark);
+    }
+  };
+  ipcRenderer.on('pwa-app-theme-state', (_event, state: unknown) => {
+    applyThemeState(state);
+  });
 
   void ipcRenderer
     .invoke('pwa-app-shell-info')
     .then((raw: unknown) => {
       const info = raw as AppShellInfo | null;
       if (!info) return;
+      applyThemeState(info);
       if (info.title) title.textContent = info.title;
       if (info.themeColor) {
         document.body.style.backgroundColor = info.themeColor;
@@ -123,6 +199,7 @@ const install = () => {
         header.style.color = info.foregroundColor;
         title.style.color = info.foregroundColor;
         more.style.color = info.foregroundColor;
+        themeButton.style.color = info.foregroundColor;
         const lightControls = info.foregroundColor.toLowerCase() !== '#202124';
         header.style.setProperty(
           '--pwa-control-hover',
