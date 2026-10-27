@@ -732,10 +732,15 @@ export const MouseGestures = observer(() => {
   }, [modal]);
 
   const overrides = store.settings.mouseGestures || {};
-  const effective = (id: string): string | null =>
-    Object.prototype.hasOwnProperty.call(overrides, id)
-      ? overrides[id] ?? null
-      : defaults[id] ?? null;
+  const effective = (id: string): string | null => {
+    if (Object.prototype.hasOwnProperty.call(overrides, id)) {
+      return overrides[id] ?? null;
+    }
+    const defaultShape = defaults[id] ?? null;
+    return defaultShape && actions.some(
+      (action) => action.id !== id && overrides[action.id] === defaultShape,
+    ) ? null : defaultShape;
+  };
   const usedByOther = (id: string, shape: string | null) =>
     !!shape &&
     actions.some(

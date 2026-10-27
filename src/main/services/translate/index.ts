@@ -5,6 +5,7 @@ import {join} from 'path';
 import {executeInTopPage, execInPagePreferMainFrame} from '../../utils/execute-in-top-page';
 import {TranslateEngine, chunkTexts} from './engine';
 import {getActiveEngine} from './registry';
+import {revertGoogleElementTranslate} from './google-element';
 
 // 翻译引擎调度层(引擎无关)。
 //  - runTranslate:整页翻译。注入引导 static/scripts/ms-translate.js → collect 取
@@ -489,6 +490,8 @@ export const revertTranslate = async (wc: Electron.WebContents): Promise<void> =
   } catch (e) {
     console.log('[translate] revert failed', e);
   }
+  // 谷歌组件模式的还原(无注入标记时空操作),切引擎时两种模式都能复原。
+  await revertGoogleElementTranslate(wc);
 };
 
 // 取语言主语种子,如 'zh-CN' → 'zh','en-US' → 'en'。

@@ -50,7 +50,9 @@ export const App = observer(() => {
             }
           >
             <option value="microsoft">{t('tvEngineMicrosoft')}</option>
+            <option value="rainsee-llm">{t('tvEngineRainsee')}</option>
             <option value="custom-llm">{t('tvEngineCustom')}</option>
+            <option value="google-element">{t('tvEngineGoogle')}</option>
           </EngineSelect>
         </EngineSection>
         <List>

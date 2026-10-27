@@ -28,7 +28,8 @@ import {
   saveWebBrowsingSettings,
   getSettingsTranslator,
 } from '../../utils';
-import type { Translator } from '~/common/i18n';
+import type { MessageKey, Translator } from '~/common/i18n';
+import { CLEAR_ON_EXIT_KEYS, ClearOnExitItems } from '~/interfaces/settings';
 import { Switch } from '~/renderer/components/Switch';
 import { NormalButton } from '~/renderer/views/settings/components/App';
 import { ITheme } from '~/interfaces';
@@ -47,21 +48,25 @@ const onClearOnExit = () => {
 };
 
 // 「退出时自动清理」勾选项摘要:展示当前会清理哪些项(无勾选时显示「已关闭」)。
+const COE_SUMMARY_LABELS: Record<keyof ClearOnExitItems, MessageKey> = {
+  history: 'wbHistoryLabel',
+  searchHistory: 'wbSearchHistory',
+  downloads: 'coeDownloads',
+  cookies: 'wbCookie',
+  cache: 'wbCache',
+  passwords: 'coePasswords',
+  autofill: 'coeAutofill',
+  siteSettings: 'coeSiteSettings',
+};
+
 const clearOnExitSummary = (
-  coe: {
-    cache: boolean;
-    cookies: boolean;
-    history: boolean;
-    searchHistory: boolean;
-  } | undefined,
+  coe: Partial<ClearOnExitItems> | undefined,
   t: Translator,
 ) => {
   if (!coe) return t('wbClearOnExitOff');
-  const labels: string[] = [];
-  if (coe.cache) labels.push(t('wbCache'));
-  if (coe.cookies) labels.push('Cookie');
-  if (coe.history) labels.push(t('wbHistoryLabel'));
-  if (coe.searchHistory) labels.push(t('wbSearchHistory'));
+  const labels = CLEAR_ON_EXIT_KEYS.filter((key) => coe[key]).map((key) =>
+    t(COE_SUMMARY_LABELS[key]),
+  );
   return labels.length === 0
     ? t('wbClearOnExitOff')
     : t('wbClearSummary', { labels: labels.join(t('wbListSep')) });

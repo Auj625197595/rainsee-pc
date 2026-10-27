@@ -1,8 +1,30 @@
 import { extname } from 'path';
 import { dialog, clipboard } from 'electron';
+import { pathToFileURL } from 'url';
 import { Application } from '../application';
 import { getMainTranslator } from '../i18n';
 import { showPrintPreview } from '../print-preview';
+
+// 通过浏览器内的文件选择器打开存档,不要求安装器声明系统文件关联。
+export const openLocalWebArchive = async () => {
+  const window = Application.instance.windows.current;
+  if (!window) return;
+
+  const { canceled, filePaths } = await dialog.showOpenDialog(window.win, {
+    properties: ['openFile', 'multiSelections'],
+    filters: [
+      { name: '网页文件', extensions: ['mhtml', 'mht', 'html', 'htm'] },
+    ],
+  });
+  if (canceled || !filePaths.length) return;
+
+  filePaths.forEach((filePath, index) => {
+    window.viewManager.create({
+      url: pathToFileURL(filePath).href,
+      active: index === filePaths.length - 1,
+    });
+  });
+};
 
 export const saveAs = async () => {
   const {
@@ -15,30 +37,452 @@ export const saveAs = async () => {
     filters: [
       { name: 'Webpage, Complete', extensions: ['html', 'htm'] },
       { name: 'Webpage, HTML Only', extensions: ['htm', 'html'] },
+      { name: 'Webpage, Single File (MHTML)', extensions: ['mhtml', 'mht'] },
     ],
   });
 
   if (canceled) return;
 
-  const ext = extname(filePath);
+  const ext = extname(filePath).toLowerCase();
 
-  webContents.savePage(filePath, ext === '.htm' ? 'HTMLOnly' : 'HTMLComplete');
+  const saveType =
+    ext === '.mhtml' || ext === '.mht'
+      ? 'MHTML'
+      : ext === '.htm'
+        ? 'HTMLOnly'
+        : 'HTMLComplete';
+  webContents.savePage(filePath, saveType);
 };
 
-// 复制网页为 Markdown:在页面上下文中把选区(若无选区则整页正文)转换为
-// Markdown 文本,再写入系统剪贴板。转换器为自包含实现,无第三方依赖,运行在
-// 渲染后的 DOM 上,因此能拿到动态内容。
-export const copyPageAsMarkdown = async () => {
-  const { viewManager } = Application.instance.windows.current;
-  const view = viewManager.selected;
-  if (!view) return;
-  const { webContents } = view;
-  const t = getMainTranslator(
-    Application.instance.settings?.object?.language,
-  );
+// 飞书 docx/wiki 为虚拟滚动渲染,DOM 中仅保留可视区域附近的块,
+// 一次性提取拿不到完整正文;注入后在页面内从头到尾滚动,按块收集并转为 Markdown。
+// 该函数被序列化后注入页面执行,内部不能引用外部作用域变量。
+const feishuDocCollector = async function (
+  allowSelection: boolean,
+): Promise<string | null> {
+  try {
+    const host = location.hostname.toLowerCase();
+    if (
+      !/(^|\.)feishu\.cn$/.test(host) &&
+      !/(^|\.)larksuite\.com$/.test(host) &&
+      !/(^|\.)larkoffice\.com$/.test(host)
+    ) {
+      return null;
+    }
+    // 有选区时交给通用选区转换逻辑
+    const sel = allowSelection ? window.getSelection() : null;
+    if (sel && sel.rangeCount && !sel.isCollapsed) return null;
 
+    const wrapper = document.querySelector(
+      '.render-unit-wrapper',
+    ) as HTMLElement | null;
+    if (!wrapper || !wrapper.querySelector('.block[data-block-id]')) {
+      return null;
+    }
+
+    const ZW = /[\u200b-\u200d\u2060\ufeff]/g;
+    const clean = (t: string): string =>
+      (t || '').replace(ZW, '').replace(/[ \t]+/g, ' ');
+    const sleep = (ms: number): Promise<void> =>
+      new Promise((r) => setTimeout(r, ms));
+
+    // 文档标题:优先取正文内的 h1,否则用页面标题去掉后缀
+    const cleanTitle = (t: string): string =>
+      clean(t).replace(/\s+/g, ' ').trim();
+    const h1 = document.querySelector('.page-block-header h1');
+    let title = cleanTitle((h1 && h1.textContent) || '');
+    if (!title) {
+      title = cleanTitle(document.title || '').replace(
+        /\s*[-\u2013\u2014]\s*(飞书云文档|飞书|Lark Docs|Lark|Feishu)\s*$/i,
+        '',
+      );
+    }
+
+    // 块直属的文本行(排除嵌套在子块内的行,以及标题自动编号)
+    const ownLines = (el: Element): Element[] =>
+      Array.from(el.querySelectorAll('.ace-line')).filter((l) => {
+        const owner = l.parentElement
+          ? (l.parentElement.closest('.block[data-block-id]') as Element | null)
+          : null;
+        return !owner || owner === el;
+      });
+
+    const inline = (node: Node): string => {
+      if (node.nodeType === Node.TEXT_NODE) return clean(node.textContent || '');
+      if (node.nodeType !== Node.ELEMENT_NODE) return '';
+      const el = node as HTMLElement;
+      const tag = el.tagName;
+      if (
+        tag === 'SCRIPT' ||
+        tag === 'STYLE' ||
+        tag === 'SVG' ||
+        tag === 'BUTTON' ||
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA'
+      ) {
+        return '';
+      }
+      if (tag === 'BR') return '\n';
+      if (tag === 'IMG') {
+        const src =
+          el.getAttribute('src') || el.getAttribute('data-src') || '';
+        if (!src || !/^(https?:|data:image)/i.test(src)) return '';
+        const alt = clean(el.getAttribute('alt') || '')
+          .replace(/[\[\]]/g, '')
+          .trim();
+        return '![' + (alt || 'image') + '](' + src + ')';
+      }
+      if (tag === 'A') {
+        const href = el.getAttribute('href') || '';
+        const t = clean(el.textContent || '').trim();
+        if (href && !href.startsWith('#') && !href.startsWith('javascript:')) {
+          try {
+            return '[' + t + '](' + new URL(href, location.href).href + ')';
+          } catch {
+            return '[' + t + '](' + href + ')';
+          }
+        }
+        return t;
+      }
+      return Array.from(el.childNodes).map(inline).join('');
+    };
+
+    const lineText = (el: Element): string =>
+      ownLines(el)
+        .map((l) => inline(l).replace(/\s+$/g, ''))
+        .filter((t) => t.trim())
+        .join('\n');
+
+    const indentOf = (el: Element): number => {
+      const cls = typeof el.className === 'string' ? el.className : '';
+      const m = cls.match(/indent-level-(\d+)/);
+      if (m) return Math.max(0, Number(m[1]) - 1);
+      const p = el.closest('[class*="indent-level-"]');
+      const pm = p
+        ? ((p.className || '') as string).match(/indent-level-(\d+)/)
+        : null;
+      return pm ? Math.max(0, Number(pm[1]) - 1) : 0;
+    };
+
+    const listBody = (el: Element): string => {
+      const content = el.querySelector('.list-content') || el;
+      const lines = Array.from(content.querySelectorAll('.ace-line'))
+        .map((l) => inline(l).replace(/\s+$/g, ''))
+        .filter((t) => t.trim());
+      if (lines.length) return lines.join('\n').replace(/\n/g, ' ');
+      return clean((el as HTMLElement).innerText || '')
+        .replace(/^[\u2022\u00b7]\s*/gm, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    };
+
+    // 有序块序号(跨块按层级累加,遇普通块重置)
+    const orderCounters: number[] = [];
+    const resetOrder = (): void => {
+      orderCounters.length = 0;
+    };
+
+    const convertBlock = (el: Element): string => {
+      const type = (el.getAttribute('data-block-type') || '').toLowerCase();
+      const cls = typeof el.className === 'string' ? el.className : '';
+
+      // 容器块:内容由子块单独输出
+      if (
+        type === 'page' ||
+        type === 'view' ||
+        type === 'grid' ||
+        type === 'grid_column' ||
+        cls.includes('docx-page-block')
+      ) {
+        return '';
+      }
+
+      const heading =
+        type.match(/^heading([1-9])/) || cls.match(/docx-heading([1-9])-block/);
+      if (heading) {
+        resetOrder();
+        const t = lineText(el).replace(/\s+/g, ' ').trim();
+        return t ? '#'.repeat(Number(heading[1])) + ' ' + t : '';
+      }
+
+      if (type === 'code' || cls.includes('docx-code-block')) {
+        resetOrder();
+        const zone =
+          el.querySelector('.code-block-zone-container') ||
+          el.querySelector('[data-slate-editor="true"]') ||
+          el;
+        const lines = Array.from(zone.querySelectorAll('.ace-line'))
+          .filter((l) => !l.closest('.code-block-header'))
+          .map((l) => (l.textContent || '').replace(ZW, '').replace(/\s+$/, ''));
+        while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+        const code = lines.join('\n');
+        const fence = code.indexOf('```') >= 0 ? '````' : '```';
+        return fence + '\n' + code + '\n' + fence;
+      }
+
+      if (type === 'image' || cls.includes('docx-image-block')) {
+        resetOrder();
+        const img = el.querySelector('img');
+        const src = img
+          ? img.getAttribute('src') || img.getAttribute('data-src') || ''
+          : '';
+        if (!src || !/^(https?:|data:image)/i.test(src)) return '';
+        const alt =
+          clean((img as HTMLElement).getAttribute('alt') || '')
+            .replace(/[\[\]]/g, '')
+            .trim() || 'image';
+        return '![' + alt + '](' + src + ')';
+      }
+
+      if (type === 'bullet' || cls.includes('bullet-list')) {
+        resetOrder();
+        const body = listBody(el);
+        return body ? '  '.repeat(indentOf(el)) + '- ' + body : '';
+      }
+
+      if (/^order/.test(type) || cls.includes('order-list')) {
+        const level = indentOf(el);
+        orderCounters.length = level + 1;
+        orderCounters[level] = (orderCounters[level] || 0) + 1;
+        const body = listBody(el);
+        return body
+          ? '  '.repeat(level) + orderCounters[level] + '. ' + body
+          : '';
+      }
+
+      if (/^(task|todo)/.test(type) || cls.includes('docx-todo-block')) {
+        resetOrder();
+        const cb = el.querySelector('input[type="checkbox"]');
+        const done = cb ? (cb as HTMLInputElement).checked : false;
+        const body = lineText(el).replace(/\n/g, ' ').trim();
+        return body
+          ? '  '.repeat(indentOf(el)) + (done ? '- [x] ' : '- [ ] ') + body
+          : '';
+      }
+
+      if (
+        type === 'divider' ||
+        type === 'hr' ||
+        cls.includes('docx-divider-block')
+      ) {
+        resetOrder();
+        return '---';
+      }
+
+      // 高亮块/引用块:整体作为引用输出,其子块由跳过规则去重
+      if (
+        type === 'callout' ||
+        cls.includes('docx-callout-block') ||
+        type === 'quote' ||
+        type === 'quote_container' ||
+        cls.includes('docx-quote-block')
+      ) {
+        resetOrder();
+        const t = clean((el as HTMLElement).innerText || '').trim();
+        return t
+          ? t
+              .split('\n')
+              .map((l) => '> ' + l.trim())
+              .join('\n')
+          : '';
+      }
+
+      if (type === 'table' || cls.includes('docx-table-block')) {
+        resetOrder();
+        const table = el.querySelector('table');
+        if (!table) {
+          const t = clean((el as HTMLElement).innerText || '').trim();
+          return t || '[表格]';
+        }
+        const rows = Array.from(table.querySelectorAll('tr'));
+        if (!rows.length) return '[表格]';
+        const grid = rows.map((tr) =>
+          Array.from(tr.querySelectorAll('th,td')).map((cell) =>
+            clean((cell as HTMLElement).innerText || '')
+              .replace(/\|/g, '\\|')
+              .replace(/\n/g, ' ')
+              .trim(),
+          ),
+        );
+        const cols = Math.max.apply(
+          null,
+          grid.map((r) => r.length),
+        );
+        const pad = (r: string[]): string => {
+          const c = r.slice();
+          while (c.length < cols) c.push('');
+          return '| ' + c.join(' | ') + ' |';
+        };
+        const lines = [
+          pad(grid[0]),
+          '|' + Array(cols).fill(' --- ').join('|') + '|',
+        ];
+        for (let i = 1; i < grid.length; i++) lines.push(pad(grid[i]));
+        return lines.join('\n');
+      }
+
+      if (
+        /^(sheet|bitable|board|file|iframe|add_ons|jira|okr|wiki_catalog|mindnote|isv)/.test(
+          type,
+        )
+      ) {
+        resetOrder();
+        return '[嵌入内容: ' + type + ']';
+      }
+
+      // 文本块及未知类型
+      resetOrder();
+      return lineText(el).trim();
+    };
+
+    // id -> 已收集的 markdown;同一块多次收集时保留更完整的内容
+    // (虚拟滚动下代码行等可能延后挂载,首遍可能采到空/残缺内容)
+    const seen: Record<string, string> = {};
+    const orderedIds: string[] = [];
+    const collect = (): void => {
+      Array.from(wrapper.querySelectorAll('.block[data-block-id]')).forEach(
+        (b) => {
+          // data-block-id 为文档顺序的连续数字,优先用它作为 key,便于末尾排序
+          const id =
+            b.getAttribute('data-block-id') ||
+            b.getAttribute('data-record-id') ||
+            '';
+          if (!id) return;
+          // 预渲染副本先不收,等真实位置出现时再收
+          if (b.closest('.bear-virtual-pre-renderer')) return;
+          // 嵌套在引用/高亮/表格内的子块已由父块整体输出
+          const owner = b.parentElement
+            ? (b.parentElement.closest(
+                '.block[data-block-id]',
+              ) as Element | null)
+            : null;
+          if (owner) {
+            const oType = (
+              owner.getAttribute('data-block-type') || ''
+            ).toLowerCase();
+            const oCls =
+              typeof owner.className === 'string' ? owner.className : '';
+            if (
+              oType === 'callout' ||
+              oCls.includes('docx-callout-block') ||
+              oType === 'quote' ||
+              oType === 'quote_container' ||
+              oCls.includes('docx-quote-block') ||
+              oType === 'table' ||
+              oCls.includes('docx-table-block')
+            ) {
+              return;
+            }
+          }
+          const md = convertBlock(b);
+          if (!md) return;
+          if (!(id in seen)) {
+            seen[id] = md;
+            orderedIds.push(id);
+          } else if (md.length > seen[id].length) {
+            seen[id] = md;
+          }
+        },
+      );
+    };
+
+    // 找文档滚动容器
+    const cands: Element[] = [];
+    const direct = document.querySelector('.bear-web-x-container');
+    if (direct) cands.push(direct);
+    let cur = wrapper.parentElement;
+    while (cur && cur !== document.documentElement) {
+      cands.push(cur);
+      cur = cur.parentElement;
+    }
+    let scroller: HTMLElement | null = null;
+    for (const el of cands) {
+      const cs = window.getComputedStyle(el as HTMLElement);
+      if (
+        /(auto|scroll)/.test(cs.overflowY) &&
+        el.scrollHeight > el.clientHeight + 50
+      ) {
+        scroller = el as HTMLElement;
+        break;
+      }
+    }
+    if (!scroller) {
+      scroller = document.scrollingElement as HTMLElement | null;
+    }
+    if (!scroller) return null;
+
+    const savedTop = scroller.scrollTop;
+    const step = Math.max(300, Math.floor(scroller.clientHeight * 0.7));
+    const deadline = Date.now() + 45000;
+
+    // 从头到尾扫一遍;虚拟滚动挂载有延迟,必要时第二遍补齐
+    const onePass = async (): Promise<void> => {
+      scroller.scrollTop = 0;
+      await sleep(320);
+      collect();
+      let lastTop = -1;
+      let stableCount = 0;
+      for (let i = 0; i < 240; i++) {
+        scroller.scrollTop += step;
+        await sleep(300);
+        collect();
+        if (scroller.scrollTop === lastTop) {
+          stableCount += 1;
+          if (stableCount >= 4) break;
+        } else {
+          stableCount = 0;
+          lastTop = scroller.scrollTop;
+        }
+        if (Date.now() > deadline) break;
+      }
+    };
+    await onePass();
+    if (Date.now() < deadline) {
+      await onePass();
+    }
+
+    // 回到原位再补一次,防止顶部块未被渲染
+    scroller.scrollTop = savedTop;
+    await sleep(300);
+    collect();
+
+    // data-block-id 为文档顺序的连续数字;全部为数字时按其排序纠正跨遍乱序
+    const allNumeric =
+      orderedIds.length > 0 &&
+      orderedIds.every((id) => /^\d+$/.test(id));
+    const ids = allNumeric
+      ? orderedIds.slice().sort((a, b) => Number(a) - Number(b))
+      : orderedIds;
+    const body = ids
+      .map((id) => seen[id])
+      .join('\n\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    if (!body || body.length < 20) return null;
+    return title ? '# ' + title + '\n\n' + body : body;
+  } catch {
+    return null;
+  }
+};
+
+// 在渲染后的 DOM 中提取 Markdown。供复制和知识库笔记共用。
+export const getPageMarkdown = async (
+  webContents: Electron.WebContents,
+  includeSelection = true,
+): Promise<string> => {
+  if (!webContents || webContents.isDestroyed()) return '';
+  // 飞书 docx/wiki 等虚拟滚动页面:先注入滚动收集器,无结果时回退通用转换。
+  try {
+    const feishuMd: unknown = await webContents.executeJavaScript(
+      `(${feishuDocCollector.toString()})(${JSON.stringify(includeSelection)})`,
+      true,
+    );
+    if (typeof feishuMd === 'string' && feishuMd.trim()) return feishuMd;
+  } catch (e) {
+    console.warn('[getPageMarkdown] feishu collector failed:', e);
+  }
   // 该函数被序列化后注入页面执行,内部不能引用外部作用域变量。
-  const converter = function () {
+  const converter = function (allowSelection: boolean) {
     const baseURI = document.baseURI;
 
     const absUrl = (href: string): string => {
@@ -81,7 +525,10 @@ export const copyPageAsMarkdown = async () => {
     const escapeText = (text: string): string =>
       text.replace(/([\\`*_{}\[\]()#+\-.!>])/g, '\\$1');
 
-    const collapse = (text: string): string => text.replace(/\s+/g, ' ');
+    const collapse = (text: string): string =>
+      text
+        .replace(/[\u200b-\u200d\u2060\ufeff]/g, '')
+        .replace(/\s+/g, ' ');
 
     // 行内节点 -> Markdown 字符串
     const inline = (node: Node): string => {
@@ -351,6 +798,10 @@ export const copyPageAsMarkdown = async () => {
         'global_dialog',
         'qr_code',
         'reward',
+        'catalogue',
+        'catalog__',
+        'outline',
+        'toc-',
       ]);
     };
 
@@ -542,7 +993,7 @@ export const copyPageAsMarkdown = async () => {
     };
 
     // 优先使用选区,否则整页正文
-    const selection = window.getSelection();
+    const selection = allowSelection ? window.getSelection() : null;
     let root: Element | null = null;
     if (selection && selection.rangeCount && !selection.isCollapsed) {
       const range = selection.getRangeAt(0);
@@ -578,9 +1029,27 @@ export const copyPageAsMarkdown = async () => {
 
   try {
     const markdown: string = await webContents.executeJavaScript(
-      `(${converter.toString()})()`,
+      `(${converter.toString()})(${JSON.stringify(includeSelection)})`,
       true,
     );
+    return typeof markdown === 'string' ? markdown : '';
+  } catch (e) {
+    console.error('[getPageMarkdown] failed:', e);
+    return '';
+  }
+};
+
+// 复制网页为 Markdown:优先复制选区,没有选区时复制整页正文。
+export const copyPageAsMarkdown = async () => {
+  const view = Application.instance.windows.current.viewManager.selected;
+  if (!view) return;
+  const { webContents } = view;
+  const t = getMainTranslator(
+    Application.instance.settings?.object?.language,
+  );
+
+  try {
+    const markdown = await getPageMarkdown(webContents);
     if (markdown && markdown.trim()) {
       clipboard.writeText(markdown);
       showPageToast(webContents, t('ctxCopiedAsMarkdown'));

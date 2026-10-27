@@ -3,7 +3,7 @@ import {makeObservable, observable, runInAction} from 'mobx';
 import {DialogStore} from '~/models/dialog-store';
 import {LANGUAGES} from '../languages';
 
-export type TranslateEngine = 'microsoft' | 'custom-llm';
+export type TranslateEngine = 'microsoft' | 'rainsee-llm' | 'custom-llm' | 'google-element';
 
 // 透传,保持 `import {LANGUAGES} from 'translate/store'` 仍可用。
 export {LANGUAGES};

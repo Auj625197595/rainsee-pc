@@ -265,8 +265,17 @@ export const buildGestureCode = (config: GestureConfig): string => {
 
     const updateLeftPanelHit = (x, y) => {
       if (!leftPanelRect) return;
+      const wasReached = leftPanelReached;
       leftPanelReached = x >= leftPanelRect.left && x <= leftPanelRect.right &&
         y >= leftPanelRect.top && y <= leftPanelRect.bottom;
+      if (wasReached && !leftPanelReached) {
+        // 进入过按钮区域后又移出:本次左键手势作废,移回来也不再触发。
+        // 保留 leftTracking/suppressClick,松手时不会误点开链接。
+        leftArmed = false;
+        leftActionId = null;
+        hideLeftHint();
+        return;
+      }
       if (leftHint) {
         leftHint.style.background = leftPanelReached
           ? (config.color || '#3b82f6')
@@ -307,13 +316,33 @@ export const buildGestureCode = (config: GestureConfig): string => {
       leftLastPoint = null;
       suppressClick = false;
     };
+    const onResize = () => {
+      if (stale()) return;
+      resetState();
+      sizeCanvas();
+    };
 
     const getLeftTarget = (node) => {
       if (!node || !node.closest) return null;
+      if (node.closest('input,textarea,select,button,[contenteditable="true"]')) return null;
+      // 先选中文字再按住拖拽时,文字优先于其所在的链接。
+      let selectedText = '';
+      let selectionIncludesNode = false;
+      try {
+        const selection = window.getSelection && window.getSelection();
+        selectedText = String(selection && selection.toString() || '').trim();
+        selectionIncludesNode = !!(
+          selectedText && selection && selection.rangeCount &&
+          typeof selection.containsNode === 'function' &&
+          selection.containsNode(node, true)
+        );
+      } catch (_) {}
+      if (selectionIncludesNode) {
+        return { url: '', imageUrl: '', isImage: false, text: selectedText, isText: true };
+      }
       const image = node.closest('img');
       const anchor = node.closest('a[href]');
       if (!image && !anchor) return null;
-      if (node.closest('input,textarea,select,button,[contenteditable="true"]')) return null;
       let imageUrl = '';
       if (image) imageUrl = image.currentSrc || image.src || image.getAttribute('src') || '';
       let linkUrl = '';
@@ -322,6 +351,8 @@ export const buildGestureCode = (config: GestureConfig): string => {
         url: linkUrl || imageUrl,
         imageUrl,
         isImage: !!image,
+        text: '',
+        isText: false,
       };
     };
 
@@ -343,7 +374,7 @@ export const buildGestureCode = (config: GestureConfig): string => {
     const onLeftDown = (e) => {
       if (stale() || !config.leftEnabled || !config.leftMap || e.button !== 0) return;
       const target = getLeftTarget(e.target);
-      if (!target || !target.url) {
+      if (!target || (!target.url && !target.text)) {
         resetLeft();
         return;
       }
@@ -407,7 +438,6 @@ export const buildGestureCode = (config: GestureConfig): string => {
     const finishLeft = (e) => {
       if (leftTimer != null) window.clearTimeout(leftTimer);
       const triggered = leftTriggered;
-      const wasNativeDrag = leftNativeDrag;
       const actionId = leftActionId;
       const target = leftTarget;
       const localPoint = leftLastPoint || {x: e.clientX || 0, y: e.clientY || 0};
@@ -428,21 +458,23 @@ export const buildGestureCode = (config: GestureConfig): string => {
         } catch (_) {}
         fireLeft({
           actionId,
-          url: target.url,
+          url: target.url || '',
           imageUrl: target.imageUrl || '',
           isImage: !!target.isImage,
+          text: target.text || '',
+          isText: !!target.isText,
           x: pointX,
           y: pointY,
         });
       }
       resetLeft();
-      if (triggered && !wasNativeDrag) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
+      // Do not consume mouseup here. Pages commonly use it to finish image
+      // panning/scrolling, and this listener runs during the capture phase.
+      // The click handler below still suppresses the link activation after a
+      // gesture, so allowing mouseup to propagate does not re-open the link.
     };
     const onLeftUp = (e) => {
-      if (e.button !== 0 || leftNativeDrag) return;
+      if (e.button !== 0) return;
       finishLeft(e);
     };
 
@@ -462,10 +494,11 @@ export const buildGestureCode = (config: GestureConfig): string => {
         leftNativeDrag = true;
         try {
           const url = leftTarget && leftTarget.url;
-          if (url && e.dataTransfer) {
+          const text = leftTarget && leftTarget.text;
+          if ((url || text) && e.dataTransfer) {
             e.dataTransfer.effectAllowed = 'copy';
-            e.dataTransfer.setData('text/uri-list', url);
-            e.dataTransfer.setData('text/plain', url);
+            if (url) e.dataTransfer.setData('text/uri-list', url);
+            e.dataTransfer.setData('text/plain', text || url);
             e.dataTransfer.setData('application/x-rainsee-left-gesture', '1');
           }
         } catch (_) {}

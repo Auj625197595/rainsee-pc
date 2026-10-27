@@ -65,12 +65,15 @@ export const GESTURE_ACTIONS: GestureAction[] = [
   // —— 标签页 ——
   { id: 'new-tab', labelKey: 'mgActNewTab', category: 'tabs' },
   { id: 'close-tab', labelKey: 'mgActCloseCurrentTab', category: 'tabs' },
+  { id: 'close-all-tabs', labelKey: 'mgActCloseAllTabs', category: 'tabs' },
   { id: 'reopen-closed-tab', labelKey: 'mgActRestoreClosedTab', category: 'tabs' },
   { id: 'next-tab', labelKey: 'shortcutNextTab', category: 'tabs' },
   { id: 'previous-tab', labelKey: 'shortcutPreviousTab', category: 'tabs' },
   // —— 视图与滚动 ——
   { id: 'scroll-to-top', labelKey: 'mgActScrollTop', category: 'view' },
   { id: 'scroll-to-bottom', labelKey: 'mgActScrollBottom', category: 'view' },
+  { id: 'scroll-page-up', labelKey: 'mgActScrollPageUp', category: 'view' },
+  { id: 'scroll-page-down', labelKey: 'mgActScrollPageDown', category: 'view' },
   { id: 'zoom-in', labelKey: 'shortcutZoomIn', category: 'view' },
   { id: 'zoom-out', labelKey: 'shortcutZoomOut', category: 'view' },
   { id: 'reset-zoom', labelKey: 'shortcutResetZoom', category: 'view' },
@@ -79,7 +82,7 @@ export const GESTURE_ACTIONS: GestureAction[] = [
 ];
 
 // 默认绑定:shape -> actionId(左划后退 / 右划前进)。只用 4 方向基向组成的形状,
-// 其余形状(RD/UR/LD/RL 等)默认未绑定,用户可在设置页下拉里自行分配。
+// RL 形状默认未绑定,用户可在设置页下拉里自行分配。
 export const DEFAULT_GESTURES: { [shape: string]: string } = {
   L: 'back',
   R: 'forward',
@@ -88,11 +91,14 @@ export const DEFAULT_GESTURES: { [shape: string]: string } = {
   UD: 'reload',
   DU: 'new-tab',
   DR: 'close-tab',
+  RD: 'close-all-tabs',
   UL: 'reopen-closed-tab',
   RU: 'next-tab',
   LU: 'previous-tab',
   DL: 'find-in-page',
   LR: 'reset-zoom',
+  UR: 'scroll-page-up',
+  LD: 'scroll-page-down',
 };
 
 // 反转默认:actionId -> 默认 shape(供设置页展示「默认」+ 计算「恢复默认」)。
@@ -116,7 +122,17 @@ export const effectiveShape = (
   ) {
     return overrides[actionId] ?? null;
   }
-  return REVERSE_DEFAULTS[actionId] ?? null;
+  const defaultShape = REVERSE_DEFAULTS[actionId] ?? null;
+  // 新增默认绑定时,优先保留旧配置中已占用该形状的用户自定义动作。
+  if (
+    defaultShape &&
+    GESTURE_ACTIONS.some(
+      (action) => action.id !== actionId && overrides?.[action.id] === defaultShape,
+    )
+  ) {
+    return null;
+  }
+  return defaultShape;
 };
 
 // 合并默认与用户覆盖,返回生效的 shape -> actionId 映射(供 preload 查表)。

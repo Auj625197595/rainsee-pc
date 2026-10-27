@@ -62,6 +62,12 @@ const selectTabActions: ShortcutAction[] = Array.from(
 export const SHORTCUT_ACTIONS: ShortcutAction[] = [
   // —— 文件与标签 ——
   {
+    id: 'open-local-file',
+    labelKey: 'shortcutOpenLocalFile',
+    category: 'file',
+    defaults: ['CmdOrCtrl+O'],
+  },
+  {
     id: 'new-window',
     labelKey: 'shortcutNewWindow',
     category: 'file',
