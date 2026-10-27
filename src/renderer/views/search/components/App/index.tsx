@@ -17,12 +17,17 @@ import {
   SearchEngineOptionIcon,
   SearchEngineOptionName,
   SearchEngineOptionCheck,
+  ShortcutChip,
+  ShortcutChipIcon,
+  ShortcutChipName,
+  ShortcutHint,
 } from './style';
 import store from '../../store';
 import { clipboard, ipcRenderer } from 'electron';
 import { isURL, realurl } from '~/utils';
 import { extractSearchQuery, getExternalProtocol } from '~/utils/url';
 import { getWebUIURL } from '~/common/webui';
+import { resolveInternalAppsUrl } from '~/common/internal-flags';
 import { Suggestions } from '../Suggestions';
 import { MultiLink } from '../MultiLink';
 import { FilterBar } from '../FilterBar';
@@ -36,6 +41,7 @@ import {
   TOOLBAR_HEIGHT,
 } from '~/constants/design';
 import { useI18n } from '~/renderer/components/I18n';
+import { buildEngineSearchUrl } from '~/utils/search-shortcut';
 
 const SUGGESTION_ROW_HEIGHT = 38;
 const MAX_VISIBLE_SUGGESTIONS = 10;
@@ -49,6 +55,9 @@ const normalizeInternalInputUrl = (value: string, searchEngineUrl: string) => {
   if (match) {
     return `${getWebUIURL('flags')}${match[2] || ''}`;
   }
+
+  const appsUrl = resolveInternalAppsUrl(trimmed, getWebUIURL('settings'));
+  if (appsUrl) return appsUrl;
 
   return realurl(trimmed, searchEngineUrl);
 };
@@ -77,6 +86,43 @@ const onKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
     // state, executing the stale search suggestion would search the URL text
     // instead of navigating to it. A URL-shaped current value always wins;
     // explicitly selected non-URL search suggestions still work as before.
+    // 快捷字词模式:输入一律按临时引擎搜索,不判网址。空输入回车打开该引擎首页。
+    if (store.shortcutEngine) {
+      const engine = store.shortcutEngine;
+      const selected = suggestions.selectedSuggestion;
+      if (selected?.isSearch && store.executeSuggestion(selected, text)) {
+        store.hide({ enter: true });
+        return;
+      }
+      const query = text.trim();
+      if (query) {
+        store.navigate(buildEngineSearchUrl(engine, query));
+      } else {
+        try {
+          store.navigate(new URL(engine.url.replace('%s', '')).origin);
+        } catch {
+          return;
+        }
+      }
+      store.hide({ enter: true });
+      return;
+    }
+
+    // 未进入快捷模式但整句是「字词 空格 搜索词」(粘贴、光标中间插空格等):
+    // 默认选中项仍是普通搜索时,按快捷字词对应引擎搜索。用户主动选了别的联想项则以联想项为准。
+    const shortcutSearch = store.parseShortcutInput(text);
+    if (
+      shortcutSearch &&
+      (!suggestions.selectedSuggestion ||
+        suggestions.selectedSuggestion.type === 'search')
+    ) {
+      store.navigate(
+        buildEngineSearchUrl(shortcutSearch.engine, shortcutSearch.query),
+      );
+      store.hide({ enter: true });
+      return;
+    }
+
     const inputIsUrl =
       isURL(text) || text.trim().indexOf('://') !== -1;
     console.log('[search-enter] state', {
@@ -110,7 +156,7 @@ const onKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
     }
 
     // 默认回车:按输入框当前内容判定网址 / 搜索(对齐安卓 realurl)。
-    // 这样自动补全成完整域名后回车会直达网址,而非把网址当搜索词。
+    // 这样自动补全成 yjllq.com 后回车会直达网址,而非把网址当搜索词。
     url = normalizeInternalInputUrl(text, searchEngine.url);
     console.log('[search-enter] default navigation', {
       input: text,
@@ -142,6 +188,35 @@ const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
   if (e.nativeEvent.isComposing || e.keyCode === 229 || store.isComposing) {
     store.canSuggest = false;
     return;
+  }
+
+  // 快捷字词:「字词 + 空格/Tab」进入临时引擎模式;模式内光标在开头退格退出并还原字词,Esc 退出。
+  const noModifier = !e.ctrlKey && !e.altKey && !e.metaKey;
+  if (
+    noModifier &&
+    !e.shiftKey &&
+    (e.key === ' ' || e.key === 'Tab') &&
+    store.tryEnterShortcutMode()
+  ) {
+    e.preventDefault();
+    return;
+  }
+  if (store.shortcutEngine) {
+    if (
+      e.key === 'Backspace' &&
+      noModifier &&
+      input.selectionStart === 0 &&
+      input.selectionEnd === 0
+    ) {
+      e.preventDefault();
+      store.exitShortcutMode(true);
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      store.exitShortcutMode(false);
+      return;
+    }
   }
 
   if (store.deleteInlineAutocomplete(e.key)) {
@@ -232,6 +307,16 @@ const pasteAndSearch = () => {
   store.clearInlineAutocomplete();
   store.clearCompositionAutocomplete();
 
+  // 粘贴内容是「字词 空格 搜索词」时按快捷字词对应引擎搜索。
+  const shortcutSearch = store.parseShortcutInput(text);
+  if (shortcutSearch) {
+    store.navigate(
+      buildEngineSearchUrl(shortcutSearch.engine, shortcutSearch.query),
+    );
+    store.hide({ enter: true });
+    return;
+  }
+
   // 复用回车的默认地址/搜索判定，但不采用粘贴前遗留的联想项。
   const url = normalizeInternalInputUrl(text, store.searchEngine.url);
   if (getExternalProtocol(url)) {
@@ -267,7 +352,7 @@ export const App = observer(() => {
     height +=
       Math.min(store.suggestions.list.length, MAX_VISIBLE_SUGGESTIONS) *
       SUGGESTION_ROW_HEIGHT;
-    height += FILTER_BAR_HEIGHT;
+    if (!store.shortcutEngine) height += FILTER_BAR_HEIGHT;
   }
 
   // 多链接助手高度独立累加:不依赖 suggestionsVisible——
@@ -356,8 +441,25 @@ export const App = observer(() => {
               }}
             ></CurrentIcon>
           )}
+          {store.shortcutEngine && (
+            <ShortcutChip title={t('svShortcutChipTitle')}>
+              <ShortcutChipIcon
+                style={{
+                  backgroundImage: `url(${store.shortcutEngine.icon || ICON_SEARCH})`,
+                }}
+              />
+              <ShortcutChipName>{store.shortcutEngine.name}</ShortcutChipName>
+            </ShortcutChip>
+          )}
           <InputArea>
             <Input
+              placeholder={
+                store.shortcutEngine
+                  ? t('svShortcutPlaceholder', {
+                      name: store.shortcutEngine.name,
+                    })
+                  : undefined
+              }
               onKeyDown={onKeyDown}
               onInput={onInput}
               onCompositionStart={() => store.beginComposition()}
@@ -381,6 +483,15 @@ export const App = observer(() => {
               </InlineCompletion>
             )}
           </InputArea>
+          {store.shortcutCandidate && (
+            <ShortcutHint>
+              {t('svShortcutHintBefore')}
+              <kbd>Space</kbd>
+              {t('svShortcutHintAfter', {
+                name: store.shortcutCandidate.name,
+              })}
+            </ShortcutHint>
+          )}
           {store.openInNewTab && (
             <NewTabHint title={t('svNewTabHintTitle')}>
               <ArrowSquareOut size={12} weight="bold" />
@@ -418,7 +529,9 @@ export const App = observer(() => {
         )}
         <MultiLink visible={multiLinkVisible} />
         <Suggestions visible={suggestionsVisible}></Suggestions>
-        <FilterBar visible={suggestionsVisible}></FilterBar>
+        <FilterBar
+          visible={suggestionsVisible && !store.shortcutEngine}
+        ></FilterBar>
       </StyledApp>
     </ThemeProvider>
   );

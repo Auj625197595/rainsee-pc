@@ -250,3 +250,75 @@ export const NewTabHint = styled.div`
         : 'rgba(74, 123, 255, 0.22)'};
   `}
 `;
+
+// 快捷字词模式:输入框前的引擎胶囊(「字词 + 空格」临时切换引擎)。
+export const ShortcutChip = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  max-width: 160px;
+  height: 22px;
+  margin-left: 8px;
+  padding: 0 8px 0 6px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+
+  ${({ theme }: { theme?: any }) => css`
+    color: ${theme['searchBox.lightForeground'] ? '#dbe3ff' : '#2b4fc7'};
+    background: ${theme['searchBox.lightForeground']
+      ? 'rgba(120, 150, 255, 0.22)'
+      : 'rgba(74, 123, 255, 0.12)'};
+  `}
+`;
+
+export const ShortcutChipIcon = styled.span`
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border-radius: 3px;
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+`;
+
+export const ShortcutChipName = styled.span`
+  overflow: hidden;
+  text-overflow: ellipsis;
+`;
+
+// 输入恰为某快捷字词时的右侧提示:「按 空格 用 xx 搜索」。
+export const ShortcutHint = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-right: 10px;
+  font-size: 12px;
+  white-space: nowrap;
+
+  kbd {
+    font-family: inherit;
+    font-size: 11px;
+    padding: 0 5px;
+    line-height: 16px;
+    border-radius: 4px;
+  }
+
+  ${({ theme }: { theme?: any }) => css`
+    color: ${theme['searchBox.lightForeground']
+      ? 'rgba(255, 255, 255, 0.6)'
+      : 'rgba(0, 0, 0, 0.55)'};
+
+    kbd {
+      border: 1px solid
+        ${theme['searchBox.lightForeground']
+          ? 'rgba(255, 255, 255, 0.3)'
+          : 'rgba(0, 0, 0, 0.2)'};
+    }
+  `}
+`;

@@ -6,9 +6,11 @@ import { isImmersiveHeaderWindow } from '../../utils/windows';
 import { getShellTranslator } from '../../utils/i18n';
 import {realurl} from '~/utils';
 import {extractSearchQuery, getExternalProtocol} from '~/utils/url';
+import {buildEngineSearchUrl, parseShortcutSearch} from '~/utils/search-shortcut';
 import {callViewMethod} from '~/utils/view';
 import {notifyDualEngineSearch} from '../../utils/dual-engine';
 import {getWebUIURL} from '~/common/webui';
+import {resolveInternalAppsUrl} from '~/common/internal-flags';
 import {clipboard, ipcRenderer} from 'electron';
 import {ToolbarButton} from '../ToolbarButton';
 import {StyledAddressBar, InputContainer, Input, Text} from './style';
@@ -16,6 +18,7 @@ import {ICON_SEARCH} from '~/renderer/constants';
 import {SiteButtons} from '../SiteButtons';
 import {SearchEngineSwitcher} from '../SearchEngineSwitcher';
 import {getAddressBarSearchAnchor} from '../../utils/dialogs';
+import {isSamePageUrl} from '../../utils/same-page-url';
 import MyInput from "./input";
 import * as remote from "@electron/remote";
 
@@ -88,7 +91,7 @@ const onFocus = (e: React.FocusEvent<HTMLInputElement>) => {
   if (store.addressbarShowSuggestionsOnFocus) {
     store.addressbarShowSuggestionsOnFocus = false;
     const val = e.currentTarget.value;
-    changeText(val, val.length, true, store.addressbarOpenInNewTab);
+    changeText(val, val.length, true, store.isAddressSearchOpensInNewTab());
   }
 };
 
@@ -157,12 +160,22 @@ const normalizeInternalInputUrl = (value: string) => {
     return `${getWebUIURL('flags')}${match[2] || ''}`;
   }
 
+  const appsUrl = resolveInternalAppsUrl(trimmed, getWebUIURL('settings'));
+  if (appsUrl) return appsUrl;
+
   return realurl(trimmed, store.settings.searchEngine.url);
 };
 
 const enterNow = (value: string, target: any) => {
   if (!store.tabs.selectedTab || !target) return;
-  const url = normalizeInternalInputUrl(value);
+  // 「快捷字词 空格 搜索词」:临时用该字词对应的引擎搜索(粘贴并前往等不经搜索弹窗的路径)。
+  const shortcutSearch = parseShortcutSearch(
+    value,
+    store.settings.object.searchEngines,
+  );
+  const url = shortcutSearch
+    ? buildEngineSearchUrl(shortcutSearch.engine, shortcutSearch.query)
+    : normalizeInternalInputUrl(value);
   // 外部协议(motrixnext://、thunder://、magnet:、mailto: 等)→ 唤起系统默认应用,
   // 不在页内加载也不当搜索词。须在改写地址栏值/导航之前拦截,以免地址栏被改成协议串。
   if (getExternalProtocol(url)) {
@@ -170,7 +183,10 @@ const enterNow = (value: string, target: any) => {
     blurNow(target);
     return;
   }
-  const query = extractSearchQuery(store.settings.searchEngine.url, url);
+  // 快捷字词是用户点名的单个引擎,不再触发双引擎/多标签效率搜索。
+  const query = shortcutSearch
+    ? ''
+    : extractSearchQuery(store.settings.searchEngine.url, url);
   if (
     query &&
     store.settings.object.efficiencySearchMode === 'multi-tab'
@@ -179,8 +195,11 @@ const enterNow = (value: string, target: any) => {
     blurNow(target);
     return;
   }
+  // 网址未变更(点击地址栏后未改内容直接回车)时,即使开了「新标签搜索」
+  // 也不重复开页,与 Chrome 一致按当前页重新加载。
+  const reloadSamePage = isSamePageUrl(url, store.tabs.selectedTab.url);
   store.tabs.selectedTab.addressbarValue = url;
-  if (store.addressbarOpenInNewTab) {
+  if (store.isAddressSearchOpensInNewTab() && !reloadSamePage) {
     store.tabs.addTab({url, active: true}).then((tab) => {
       if (
         query &&
@@ -245,7 +264,7 @@ const changeText = (
       selectAll,
       suppressAutocomplete,
       ...anchor,
-      openInNewTab: store.addressbarOpenInNewTab,
+      openInNewTab: store.isAddressSearchOpensInNewTab(),
     });
     store.addressbarEditing = true;
   }

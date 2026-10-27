@@ -2,13 +2,7 @@ import * as React from 'react';
 
 import { ipcRenderer } from 'electron';
 import { observable, computed, makeObservable } from 'mobx';
-import {
-  IBookmark,
-  IHistoryItem,
-  ISearchEngine,
-  ISuggestion,
-  IVisitedItem,
-} from '~/interfaces';
+import { IBookmark, ISearchEngine, ISuggestion } from '~/interfaces';
 import {
   SuggestionsQueryContext,
   SuggestionsStore,
@@ -18,7 +12,12 @@ import { extractLinks, MultiLinkResult } from '../utils/multi-link';
 import { DialogStore } from '~/models/dialog-store';
 import { callViewMethod } from '~/utils/view';
 import { getExternalProtocol, parseBookmarklet } from '~/utils/url';
-import { findSearchQuery } from '~/utils/search-engine';
+import type { HistorySuggestRemoveRequest } from '~/utils/history-suggest';
+import {
+  findEngineByShortcut,
+  getEngineShortcut,
+  parseShortcutSearch,
+} from '~/utils/search-shortcut';
 
 let lastSuggestion: string;
 
@@ -42,9 +41,6 @@ interface BridgeSnapshot {
 
 export class Store extends DialogStore {
   public suggestions = new SuggestionsStore(this);
-
-  @observable
-  public visitedItems: IHistoryItem[] = [];
 
   @observable
   public bookmarks: IBookmark[] = [];
@@ -85,9 +81,18 @@ export class Store extends DialogStore {
   @observable
   public searchEnginePickerVisible = false;
 
+  // 快捷字词模式:地址栏输入「字词 + 空格」后临时切换到的引擎。仅本次输入有效,
+  // 不改默认引擎;弹窗隐藏、退格到开头、Esc 都会退出。
+  @observable
+  public shortcutEngine: ISearchEngine | null = null;
+
+  // 用户退格主动退出快捷模式后,回车不再按「字词 空格 搜索词」整句兜底解析。
+  private shortcutSuppressed = false;
+
   @computed
   public get effectiveSearchEngine() {
     return (
+      this.shortcutEngine ||
       this.searchEngineOverride ||
       this.settings.searchEngines[this.settings.searchEngine]
     );
@@ -133,7 +138,6 @@ export class Store extends DialogStore {
     });
 
     makeObservable(this, {
-      visitedItems: observable,
       bookmarks: observable,
       tabs: observable,
       inputText: observable,
@@ -146,7 +150,9 @@ export class Store extends DialogStore {
       immersive: observable,
       searchEngineOverride: observable,
       searchEnginePickerVisible: observable,
+      shortcutEngine: observable,
       effectiveSearchEngine: computed,
+      shortcutCandidate: computed,
       multiLink: computed,
     });
 
@@ -169,9 +175,10 @@ export class Store extends DialogStore {
           data.searchType,
         );
         this.searchEnginePickerVisible = false;
+        this.shortcutEngine = null;
+        this.shortcutSuppressed = false;
         // 主进程下发的剪贴板内容(弹窗弹出时读一次),置顶建议项使用。
         this.clipboard = (data.clipboard || '').trim();
-        this.loadHistory();
         this.loadBookmarks();
 
         this.canSuggest =
@@ -185,6 +192,16 @@ export class Store extends DialogStore {
         this.inputRef.current.value = data.text;
         this.inputText = data.text;
         this.inputRef.current.focus();
+
+        // 地址栏已是「字词 空格 ...」(上次快捷模式失焦后回写的文本)且光标在末尾时恢复快捷模式。
+        if (
+          !data.selectAll &&
+          !this.searchEngineOverride &&
+          data.cursorPos >= data.text.length &&
+          this.restoreShortcutMode(data.text)
+        ) {
+          return;
+        }
 
         if (data.selectAll) {
           this.inputRef.current.select();
@@ -209,12 +226,12 @@ export class Store extends DialogStore {
       const text = typeof payload?.text === 'string' ? payload.text : '';
       if (!bridgeId) return;
 
-      await Promise.all([this.loadHistory(), this.loadBookmarks()]);
+      // 历史由主进程按查询检索,这里只需刷新书签。
+      await this.loadBookmarks();
       const context = this.suggestions.getContext({
         searchEngine:
           this.resolveSearchEngine(payload.engineKeyword) ||
           this.settings.searchEngines[this.settings.searchEngine],
-        visitedItems: this.visitedItems.slice(),
         bookmarks: this.bookmarks.slice(),
         tabs: Array.isArray(payload.tabs) ? payload.tabs : [],
         clipboard:
@@ -242,7 +259,7 @@ export class Store extends DialogStore {
       });
     });
 
-    ipcRenderer.on('pc-search-bridge-action', (_e, payload) => {
+    ipcRenderer.on('pc-search-bridge-action', async (_e, payload) => {
       const bridgeId = String(payload?.bridgeId || '');
       const snapshot = this.bridgeSnapshots.get(bridgeId);
       const itemId = Number(payload?.itemId);
@@ -256,10 +273,7 @@ export class Store extends DialogStore {
       }
 
       if (payload.action === 'remove') {
-        const removed = this.removeHistorySuggestionFromItems(
-          suggestion,
-          snapshot.context.visitedItems,
-        );
+        const removed = await this.removeHistoryEntries(suggestion);
         ipcRenderer.send('pc-search-bridge-action-result', {
           bridgeId,
           ok: removed,
@@ -280,18 +294,21 @@ export class Store extends DialogStore {
       });
     });
 
-    this.loadHistory();
     this.loadBookmarks();
 
     ipcRenderer.send(`can-show-${this.id}`);
 
     this.onHide = (data) => {
       if (this.origin !== 'newtab') {
+        // 快捷模式下把字词拼回去,地址栏保留完整输入;再次聚焦时据此恢复模式。
+        const prefix = this.shortcutEngine
+          ? `${getEngineShortcut(this.settings.searchEngines, this.shortcutEngine)} `
+          : '';
         ipcRenderer.send(`addressbar-update-input-${this.id}`, {
           id: this.tabId,
-          text: this.inputRef.current.value,
-          selectionStart: this.inputRef.current.selectionStart,
-          selectionEnd: this.inputRef.current.selectionEnd,
+          text: prefix + this.inputRef.current.value,
+          selectionStart: prefix.length + this.inputRef.current.selectionStart,
+          selectionEnd: prefix.length + this.inputRef.current.selectionEnd,
           ...data,
         });
       }
@@ -309,7 +326,96 @@ export class Store extends DialogStore {
       this.immersive = false;
       this.searchEngineOverride = null;
       this.searchEnginePickerVisible = false;
+      this.shortcutEngine = null;
+      this.shortcutSuppressed = false;
     };
+  }
+
+  // 当前输入恰好等于某个快捷字词(尚未按空格)时的候选引擎,用于输入框右侧提示。
+  public get shortcutCandidate(): ISearchEngine | null {
+    if (this.shortcutEngine || this.searchEngineOverride) return null;
+    const text = this.inputText;
+    if (!text || /\s/.test(text)) return null;
+    return findEngineByShortcut(this.settings.searchEngines, text);
+  }
+
+  // 空格键:光标前已键入的内容(不含行内补全的选中后缀)恰为快捷字词时进入快捷模式。
+  public tryEnterShortcutMode(): boolean {
+    if (this.shortcutEngine || this.searchEngineOverride) return false;
+    const input = this.inputRef.current;
+    if (!input) return false;
+
+    let typed: string | null = null;
+    if (this.hasInlineAutocomplete(input)) {
+      typed = input.value.substring(0, this.inlineAutocompleteStart);
+    } else if (
+      input.selectionStart === input.value.length &&
+      input.selectionEnd === input.value.length
+    ) {
+      typed = input.value;
+    }
+    if (!typed || /\s/.test(typed)) return false;
+
+    const engine = findEngineByShortcut(this.settings.searchEngines, typed);
+    if (!engine) return false;
+    this.enterShortcutMode(engine, '');
+    return true;
+  }
+
+  private restoreShortcutMode(text: string) {
+    const parsed = /^(\S+) ([\s\S]*)$/.exec(text);
+    if (!parsed) return false;
+    const engine = findEngineByShortcut(this.settings.searchEngines, parsed[1]);
+    if (!engine) return false;
+    this.enterShortcutMode(engine, parsed[2]);
+    return true;
+  }
+
+  public enterShortcutMode(engine: ISearchEngine, rest: string) {
+    const input = this.inputRef.current;
+    this.shortcutEngine = engine;
+    this.searchEnginePickerVisible = false;
+    this.clearInlineAutocomplete();
+    this.clearCompositionAutocomplete();
+    input.value = rest;
+    input.setSelectionRange(rest.length, rest.length);
+    this.inputText = rest;
+    this.canSuggest = false;
+    this.suggestions.selected = 0;
+    this.syncImmersivePreview();
+    this.suggest();
+  }
+
+  // restoreText=true(退格到开头):把字词还原回输入框,方便改字词;
+  // false(Esc):直接丢弃字词,保留搜索词。
+  public exitShortcutMode(restoreText: boolean) {
+    const engine = this.shortcutEngine;
+    if (!engine) return false;
+    const input = this.inputRef.current;
+    this.shortcutEngine = null;
+    this.clearInlineAutocomplete();
+    this.clearCompositionAutocomplete();
+    if (restoreText) {
+      const shortcut = getEngineShortcut(this.settings.searchEngines, engine);
+      const rest = input.value;
+      const value = rest ? `${shortcut} ${rest}` : shortcut;
+      input.value = value;
+      input.setSelectionRange(shortcut.length, shortcut.length);
+      this.inputText = value;
+      this.shortcutSuppressed = true;
+    }
+    this.canSuggest = false;
+    this.suggestions.selected = 0;
+    this.syncImmersivePreview();
+    this.suggest();
+    return true;
+  }
+
+  // 未进入快捷模式时(粘贴、光标中间插空格等)回车的整句兜底解析。
+  public parseShortcutInput(text: string) {
+    if (this.shortcutEngine || this.searchEngineOverride) return null;
+    if (this.shortcutSuppressed) return null;
+    return parseShortcutSearch(text, this.settings.searchEngines);
   }
 
   public toggleSearchEnginePicker() {
@@ -322,6 +428,8 @@ export class Store extends DialogStore {
 
     await ipcRenderer.invoke(`switch-search-engine-${this.windowId}`, index);
     this.searchEnginePickerVisible = false;
+    // 手动选了引擎即以所选为准,结束快捷模式(保留已输入的搜索词)。
+    this.shortcutEngine = null;
     this.clearInlineAutocomplete();
     this.clearCompositionAutocomplete();
     this.suggestions.selected = 0;
@@ -511,6 +619,8 @@ export class Store extends DialogStore {
 
   // 打开结果。搜索词存在时先按效率搜索模式分流，网址直达不受影响。
   public navigate(url: string, searchQuery?: string) {
+    // 快捷字词是用户点名的单个引擎,不再触发双引擎/多标签效率搜索。
+    if (this.shortcutEngine) searchQuery = undefined;
     // bookmarklet(javascript: 脚本):改走 add-tab 咽喉——主进程 view-manager 会识别
     // javascript: URL 改为在当前网页执行(executeJavaScript),既不新开标签也不 loadURL。
     if (parseBookmarklet(url) !== null) {
@@ -586,10 +696,10 @@ export class Store extends DialogStore {
     return true;
   }
 
-  public removeHistorySuggestion(suggestion: ISuggestion) {
-    if (!this.removeHistorySuggestionFromItems(suggestion, this.visitedItems)) {
-      return;
-    }
+  public async removeHistorySuggestion(suggestion: ISuggestion) {
+    if (!(await this.removeHistoryEntries(suggestion))) return;
+    // 删除走 IPC,期间弹窗可能已隐藏(onHide 已清空输入),不再刷新。
+    if (!this.visible) return;
 
     const input = this.inputRef.current;
     if (this.hasInlineAutocomplete(input)) {
@@ -605,38 +715,26 @@ export class Store extends DialogStore {
     this.suggest();
   }
 
-  private removeHistorySuggestionFromItems(
-    suggestion: ISuggestion,
-    visitedItems: IHistoryItem[],
-  ) {
+  // 在主进程全量历史上删除:网址项连同协议/www 变体一并删除(列表按此去重),
+  // 搜索词项删除所有引擎下该词的搜索结果页。
+  private async removeHistoryEntries(suggestion: ISuggestion) {
     if (suggestion.type !== 'history' && suggestion.type !== 'searchTerm') {
       return false;
     }
 
-    const searchQuery = (suggestion.primaryText || '').trim().toLowerCase();
-    const ids = visitedItems
-      .filter((item) => {
-        if (!item._id || !item.url) return false;
-        if (suggestion.type === 'history') {
-          return item.url === suggestion.url;
-        }
-
-        const query = findSearchQuery(
-          item.url,
-          this.settings.searchEngines,
-        );
-        return !!query && query.toLowerCase() === searchQuery;
-      })
-      .map((item) => item._id);
-
-    if (ids.length === 0) return false;
-
-    const idSet = new Set(ids);
-    this.visitedItems = this.visitedItems.filter(
-      (item) => !item._id || !idSet.has(item._id),
-    );
-    ipcRenderer.send('history-remove', ids);
-    return true;
+    const request: HistorySuggestRemoveRequest = {
+      type: suggestion.type,
+      url: suggestion.url,
+      query: suggestion.primaryText,
+    };
+    let removed = false;
+    try {
+      removed = !!(await ipcRenderer.invoke('history-suggest-remove', request));
+    } catch (error) {
+      console.error('[history-suggest] remove failed', error);
+    }
+    if (removed) this.suggestions.forgetHistorySuggestion(suggestion);
+    return removed;
   }
 
   private pruneBridgeSnapshots() {
@@ -649,11 +747,6 @@ export class Store extends DialogStore {
       if (!first) break;
       this.bridgeSnapshots.delete(first);
     }
-  }
-
-  public async loadHistory() {
-    // 建议层最多展示 50 条；限制 IPC 快照，避免每次聚焦地址栏都传输全量历史。
-    this.visitedItems = await ipcRenderer.invoke('topsites-get', 500);
   }
 
   public async loadBookmarks() {

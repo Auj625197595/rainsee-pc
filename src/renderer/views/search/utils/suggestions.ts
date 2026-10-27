@@ -1,12 +1,12 @@
+import { ipcRenderer } from 'electron';
+
 import { networkMainChannel } from '~/common/rpc/network';
-import {
-  IBookmark,
-  IHistoryItem,
-  ISearchEngine,
-  ISuggestion,
-} from '~/interfaces';
+import { IBookmark, ISearchEngine, ISuggestion } from '~/interfaces';
 import { BAIDU_SUGGEST_URL } from '~/constants/settings';
-import { findSearchQuery } from '~/utils/search-engine';
+import type {
+  HistorySuggestRequest,
+  HistorySuggestResult,
+} from '~/utils/history-suggest';
 
 import store from '../store';
 
@@ -18,80 +18,35 @@ const cleanUrl = (url: string) => {
   return u;
 };
 
-// 历史记录建议:网址前缀匹配优先,其次标题包含匹配。canSuggest 用于自动补全。
-export const getHistorySuggestions = (
-  filter: string,
-  visitedItems: IHistoryItem[] = store.visitedItems,
-): ISuggestion[] => {
-  filter = filter.trim().toLowerCase();
-  if (filter === '') return [];
-
-  const filterPart = filter.replace(URL_REGEX, '');
-  const urlMatched: ISuggestion[] = [];
-  const titleMatched: ISuggestion[] = [];
-  const seen = new Set<string>();
-
-  for (const item of visitedItems) {
-    const urlPart = cleanUrl(item.url);
-    if (seen.has(urlPart)) continue;
-
-    if (
-      urlPart.toLowerCase().startsWith(filterPart) ||
-      `www.${urlPart}`.startsWith(filterPart)
-    ) {
-      seen.add(urlPart);
-      urlMatched.push({
-        primaryText: item.title,
-        displayUrl: urlPart,
-        url: item.url,
-        favicon: item.favicon,
-        canSuggest: true,
-        type: 'history',
-      });
-    } else if ((item.title || '').toLowerCase().includes(filter)) {
-      seen.add(urlPart);
-      titleMatched.push({
-        primaryText: item.title,
-        displayUrl: urlPart,
-        url: item.url,
-        favicon: item.favicon,
-        canSuggest: false,
-        type: 'history',
-      });
-    }
-  }
-
-  return urlMatched.concat(titleMatched).slice(0, 6);
+export const EMPTY_HISTORY_RESULT: HistorySuggestResult = {
+  history: [],
+  searchTerms: [],
 };
 
-// 历史搜索词建议:从历史 URL 中按任意搜索引擎规则提取搜索词并去重。
-export const getSearchHistorySuggestions = (
-  filter: string,
-  visitedItems: IHistoryItem[] = store.visitedItems,
-  searchEngines: ISearchEngine[] = store.settings.searchEngines,
-): ISuggestion[] => {
-  filter = filter.trim().toLowerCase();
-  // 过滤词为空时(如聚焦空地址栏),按最近访问顺序返回历史搜索词,不做前缀过滤。
-
-  const result: ISuggestion[] = [];
-  const seen = new Set<string>();
-
-  for (const item of visitedItems) {
-    const query = findSearchQuery(item.url, searchEngines);
-    if (!query) continue;
-    const key = query.toLowerCase();
-    if (seen.has(key)) continue;
-    if (filter !== '' && !key.startsWith(filter)) continue;
-    seen.add(key);
-    result.push({
-      primaryText: query,
-      isSearch: true,
-      type: 'searchTerm',
-    });
-    if (result.length >= 6) break;
+// 历史网址与历史搜索词建议:主进程在全量历史上检索并按网址/搜索词去重,
+// 这里只拿回命中的少量条目,不再把历史快照传到弹窗。
+// 网址项:前缀命中优先(canSuggest 用于行内补全),其次关键词命中标题或网址。
+// 搜索词项:过滤词为空(聚焦空地址栏)时按最近访问返回,否则前缀过滤。
+export const fetchHistorySuggestions = async (
+  request: HistorySuggestRequest,
+): Promise<HistorySuggestResult> => {
+  if (!request.urls && !request.terms) return EMPTY_HISTORY_RESULT;
+  if (!request.terms && (request.filter || '').trim() === '') {
+    return EMPTY_HISTORY_RESULT;
   }
 
-  return result;
+  try {
+    const result = await ipcRenderer.invoke('history-suggest', request);
+    return {
+      history: Array.isArray(result?.history) ? result.history : [],
+      searchTerms: Array.isArray(result?.searchTerms)
+        ? result.searchTerms
+        : [],
+    };
+  } catch (error) {
+    console.error('[history-suggest] query failed', error);
+    return EMPTY_HISTORY_RESULT;
+  }
 };
 
 // 书签建议:标题或网址包含匹配。

@@ -45,6 +45,7 @@ import {
 import { NormalButton } from '../App';
 import { EfficiencySearchMode, ISearchEngine } from '~/interfaces';
 import { Check, MagnifyingGlass, Sparkle } from '@phosphor-icons/react';
+import { resolveEngineShortcuts } from '~/utils/search-shortcut';
 
 // 导航行右侧的 > 箭头(跟随 currentColor)
 const ChevronIcon = () => (
@@ -350,7 +351,8 @@ const reorderEngines = (fromKeyword: string, toKeyword: string) => {
   store.save();
 };
 
-export const SearchEngine = observer(({ data }: { data: ISearchEngine }) => {
+export const SearchEngine = observer(
+  ({ data, shortcut }: { data: ISearchEngine; shortcut: string }) => {
   const t = getSettingsTranslator();
   const isDefault = store.searchEngine.keyword === data.keyword;
   const dragging = store.draggedEngineKeyword === data.keyword;
@@ -391,7 +393,7 @@ export const SearchEngine = observer(({ data }: { data: ISearchEngine }) => {
         </div>
       </TableCell>
       <TableCell>
-        <div>{data.keyword}</div>
+        <div title={data.keyword}>{shortcut}</div>
       </TableCell>
       <DragHandle
         draggable
@@ -402,7 +404,8 @@ export const SearchEngine = observer(({ data }: { data: ISearchEngine }) => {
       <EditButton onClick={onEditMenuClick(data)} title={t('edit')} />
     </TableRow>
   );
-});
+  },
+);
 
 const onAddClick = () => {
   store.dialogVisible = true;
@@ -410,10 +413,14 @@ const onAddClick = () => {
   store.searchEngineInputRef.current.value = '';
   store.searchEngineKeywordInputRef.current.value = '';
   store.searchEngineUrlInputRef.current.value = '';
+  store.searchEngineShortcutInputRef.current.value = '';
+  store.searchEngineShortcutPlaceholder = '';
+  store.searchEngineShortcutError = '';
 };
 
 export const ManageSearchEngines = observer(() => {
   const t = getSettingsTranslator();
+  const shortcuts = resolveEngineShortcuts(store.settings.searchEngines);
 
   return (
     <>
@@ -421,6 +428,9 @@ export const ManageSearchEngines = observer(() => {
         <Back onClick={onBackClick} />
         {t('manageSearchEngines')}
       </Header>
+      <SecondaryText style={{ margin: '0 0 8px' }}>
+        {t('abShortcutIntro')}
+      </SecondaryText>
       <Row>
         <Title>{t('abSearchEngine')}</Title>
         <Control>
@@ -430,12 +440,16 @@ export const ManageSearchEngines = observer(() => {
       <EnginesTable>
         <TableRow>
           <TableHeader>{t('abSearchEngine')}</TableHeader>
-          <TableHeader>{t('sdlgKeyword')}</TableHeader>
+          <TableHeader>{t('sdlgShortcut')}</TableHeader>
           <TableHeader></TableHeader>
           <TableHeader></TableHeader>
         </TableRow>
         {store.settings.searchEngines.map((item, key) => (
-          <SearchEngine key={item.keyword} data={item} />
+          <SearchEngine
+            key={item.keyword}
+            data={item}
+            shortcut={shortcuts[key]}
+          />
         ))}
       </EnginesTable>
     </>
