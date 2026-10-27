@@ -4,6 +4,7 @@ import styled, { css } from 'styled-components';
 import {
   IProfileFingerprint,
   IProfileProxySettings,
+  IProxyRoutingSettings,
   ProfileProxyMode,
 } from '~/common/profile-network';
 import { ITheme } from '~/interfaces';
@@ -20,9 +21,27 @@ interface IProfileNetworkPayload {
   fingerprintSupported: boolean;
   fingerprint: IProfileFingerprint;
   proxy: IProfileProxySettings;
+  proxyControl: IProxyControl;
+  proxyRuleStatus: IProxyRuleStatus;
+}
+
+interface IProxyRuleStatus {
+  updating: boolean;
+  gfwUpdatedAt?: number;
+  gfwRules: number;
+  gfwIgnored: number;
+  lastError?: string;
+}
+
+interface IProxyControl {
+  source: 'profile' | 'extension';
+  extensionId?: string;
+  extensionName?: string;
+  mode?: string;
 }
 
 interface IProxyForm {
+  force: boolean;
   mode: ProfileProxyMode;
   host: string;
   port: string;
@@ -30,6 +49,7 @@ interface IProxyForm {
   password: string;
   bypass: string;
   pacScript: string;
+  routing: IProxyRoutingSettings;
 }
 
 const SectionHeading = styled.div`
@@ -166,6 +186,73 @@ const ProxyHint = styled(SecondaryText)`
   margin-top: 12px;
 `;
 
+const RouteActions = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+
+  ${Input} {
+    flex: 1;
+  }
+`;
+
+const RouteRuleGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+
+  @media (max-width: 760px) {
+    grid-template-columns: 1fr;
+  }
+`;
+
+const ProxyControlNotice = styled.div`
+  margin-top: 12px;
+  padding: 9px 12px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  line-height: 1.45;
+
+  ${({ theme }: { theme?: ITheme }) => {
+    const palette = getPalette(theme);
+    return css`
+      color: ${palette.textMain};
+      background-color: ${palette.primary}12;
+      box-shadow: inset 0 0 0 1px ${palette.primary}2b;
+    `;
+  }}
+`;
+
+const ForceProxyOption = styled.label`
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 12px;
+  cursor: pointer;
+
+  input {
+    width: 16px;
+    height: 16px;
+    margin: 2px 0 0;
+    flex: 0 0 auto;
+    accent-color: ${({ theme }: { theme?: ITheme }) =>
+      getPalette(theme).primary};
+  }
+`;
+
+const ForceProxyText = styled.span`
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+`;
+
+const ForceProxyTitle = styled.span`
+  font-size: 13px;
+  font-weight: 600;
+`;
+
 const Status = styled.div<{ $error: boolean }>`
   margin-top: 10px;
   padding: 9px 12px;
@@ -187,6 +274,13 @@ const Status = styled.div<{ $error: boolean }>`
 const toForm = (proxy: IProfileProxySettings): IProxyForm => ({
   ...proxy,
   port: proxy.port ? String(proxy.port) : '',
+  routing: proxy.routing || {
+    mode: 'global',
+    proxyRules: '',
+    directRules: '',
+    bypassLocal: true,
+    gfwListUrl: '',
+  },
 });
 
 export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
@@ -196,6 +290,7 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
   const [fingerprintSupported, setFingerprintSupported] =
     React.useState(false);
   const [proxy, setProxy] = React.useState<IProxyForm>({
+    force: false,
     mode: 'system',
     host: '',
     port: '',
@@ -203,11 +298,31 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
     password: '',
     bypass: '<local>',
     pacScript: '',
+    routing: {
+      mode: 'global',
+      proxyRules: '',
+      directRules: '',
+      bypassLocal: true,
+      gfwListUrl: '',
+    },
   });
   const [busy, setBusy] = React.useState(false);
+  const [proxyControl, setProxyControl] = React.useState<IProxyControl>({
+    source: 'profile',
+  });
   const [status, setStatus] = React.useState({ text: '', error: false });
+  const [ruleStatus, setRuleStatus] = React.useState<IProxyRuleStatus>({
+    updating: false,
+    gfwRules: 0,
+    gfwIgnored: 0,
+  });
+  const [routeTestInput, setRouteTestInput] = React.useState('');
 
   React.useEffect(() => {
+    const onProxyControlChanged = (_event: unknown, value: IProxyControl) => {
+      if (value) setProxyControl(value);
+    };
+    ipcRenderer.on('profile-proxy-control-changed', onProxyControlChanged);
     ipcRenderer
       .invoke('profile-network-get')
       .then((payload: IProfileNetworkPayload) => {
@@ -215,10 +330,18 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
         setFingerprintSupported(Boolean(payload.fingerprintSupported));
         setFingerprint(payload.fingerprint);
         if (payload.proxy) setProxy(toForm(payload.proxy));
+        if (payload.proxyControl) setProxyControl(payload.proxyControl);
+        if (payload.proxyRuleStatus) setRuleStatus(payload.proxyRuleStatus);
       })
       .catch(() =>
         setStatus({ text: t('sysNetReadFailed'), error: true }),
       );
+    return () => {
+      ipcRenderer.removeListener(
+        'profile-proxy-control-changed',
+        onProxyControlChanged,
+      );
+    };
   }, []);
 
   const updateProxy = (key: keyof IProxyForm, value: string) => {
@@ -226,7 +349,90 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
     setStatus({ text: '', error: false });
   };
 
-  const saveCurrentProxy = async (): Promise<boolean> => {
+  const updateRouting = <K extends keyof IProxyRoutingSettings>(
+    key: K,
+    value: IProxyRoutingSettings[K],
+  ) => {
+    setProxy((current) => ({
+      ...current,
+      routing: { ...current.routing, [key]: value },
+    }));
+    setStatus({ text: '', error: false });
+  };
+
+  const onUpdateRules = async () => {
+    if (busy) return;
+    setBusy(true);
+    setStatus({ text: t('sysRouteUpdating'), error: false });
+    try {
+      if (!(await saveCurrentProxy())) return;
+      const result = (await ipcRenderer.invoke(
+        'profile-proxy-rules-update',
+      )) as { ok: boolean; status?: IProxyRuleStatus; message?: string };
+      if (result.status) setRuleStatus(result.status);
+      setStatus({
+        text: result.ok
+          ? t('sysRouteUpdateOk')
+          : result.message || t('sysRouteUpdateFailed'),
+        error: !result.ok,
+      });
+    } catch {
+      setStatus({ text: t('sysRouteUpdateFailed'), error: true });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onRouteTest = async () => {
+    if (busy || !routeTestInput.trim()) return;
+    setBusy(true);
+    try {
+      if (!(await saveCurrentProxy())) return;
+      const result = (await ipcRenderer.invoke(
+        'profile-proxy-route-test',
+        routeTestInput,
+      )) as {
+        ok: boolean;
+        host?: string;
+        action?: 'proxy' | 'direct';
+        source?: string;
+        rule?: string;
+        message?: string;
+      };
+      if (!result.ok || !result.host || !result.action) {
+        setStatus({ text: result.message || t('sysProxyTestFailed'), error: true });
+        return;
+      }
+      const reasonKey =
+        result.source === 'local'
+          ? 'sysRouteReasonLocal'
+          : result.source === 'direct_rule'
+          ? 'sysRouteReasonDirectRule'
+          : result.source === 'proxy_rule'
+          ? 'sysRouteReasonProxyRule'
+          : result.source === 'gfwlist'
+          ? 'sysRouteReasonGfw'
+          : result.source === 'unknown'
+          ? 'sysRouteReasonUnknown'
+          : 'sysRouteReasonDefault';
+      const reason = t(reasonKey as any, { rule: result.rule || '' });
+      setStatus({
+        text: t(
+          result.action === 'proxy'
+            ? 'sysRouteTestProxy'
+            : 'sysRouteTestDirect',
+          { host: result.host, reason },
+        ),
+        error: false,
+      });
+    } catch {
+      setStatus({ text: t('sysProxyTestFailed'), error: true });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveCurrentProxy = async (): Promise<IProxyControl | false> => {
     const result = (await ipcRenderer.invoke('profile-proxy-save', {
       ...proxy,
       port:
@@ -235,23 +441,33 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
         proxy.mode === 'pac'
           ? 0
           : Number(proxy.port),
-    })) as { ok: boolean; message?: string; proxy?: IProfileProxySettings };
+    })) as {
+      ok: boolean;
+      message?: string;
+      proxy?: IProfileProxySettings;
+      proxyControl?: IProxyControl;
+    };
     if (!result.ok) {
       setStatus({ text: result.message || t('sysProxySaveFailed'), error: true });
       return false;
     }
     if (result.proxy) setProxy(toForm(result.proxy));
-    return true;
+    const effectiveControl = result.proxyControl || proxyControl;
+    if (result.proxyControl) setProxyControl(result.proxyControl);
+    return effectiveControl;
   };
 
   const onSave = async () => {
     if (busy) return;
     setBusy(true);
     try {
-      if (await saveCurrentProxy()) {
+      const effectiveControl = await saveCurrentProxy();
+      if (effectiveControl) {
         setStatus({
           text:
-            proxy.mode === 'direct'
+            effectiveControl.source === 'extension'
+              ? t('sysProxySavedAsFallback')
+              : proxy.mode === 'direct'
               ? t('sysProxyDirectOn')
               : proxy.mode === 'system'
               ? t('sysProxySystemOn')
@@ -386,6 +602,41 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
           </SecondaryText>
         </div>
 
+        <ForceProxyOption>
+          <input
+            type="checkbox"
+            checked={proxy.force}
+            disabled={busy}
+            onChange={(event) => {
+              setProxy((current) => ({
+                ...current,
+                force: event.target.checked,
+              }));
+              setStatus({ text: '', error: false });
+            }}
+          />
+          <ForceProxyText>
+            <ForceProxyTitle>{t('sysProxyForce')}</ForceProxyTitle>
+            <SecondaryText>{t('sysProxyForceDesc')}</SecondaryText>
+          </ForceProxyText>
+        </ForceProxyOption>
+
+        {proxyControl.source === 'extension' && (
+          <ProxyControlNotice>
+            {t(
+              proxyControl.mode === 'system'
+                ? 'sysProxyControlledByExtensionSystem'
+                : proxyControl.mode === 'direct'
+                ? 'sysProxyControlledByExtensionDirect'
+                : 'sysProxyControlledByExtension',
+              {
+                name:
+                  proxyControl.extensionName || proxyControl.extensionId || '',
+              },
+            )}
+          </ProxyControlNotice>
+        )}
+
         <FieldGrid>
           <Field>
             <FieldLabel>{t('sysProxyType')}</FieldLabel>
@@ -401,8 +652,14 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
               <option value="pac">{t('sysProxyPac')}</option>
             </Select>
           </Field>
-          {proxy.mode === 'system' ? (
-            <ProxyHint>{t('sysProxySystemHint')}</ProxyHint>
+          {proxy.mode === 'system' || proxy.mode === 'direct' ? (
+            <ProxyHint>
+              {t(
+                proxy.mode === 'direct'
+                  ? 'sysProxyDirectHint'
+                  : 'sysProxySystemHint',
+              )}
+            </ProxyHint>
           ) : proxy.mode === 'pac' ? (
             <Field $wide>
               <FieldLabel>{t('sysPacLabel')}</FieldLabel>
@@ -463,7 +720,7 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
               </Field>
             </>
           )}
-          {proxy.mode !== 'system' && (
+          {proxy.mode !== 'system' && proxy.mode !== 'direct' && (
             <Field $wide>
               <FieldLabel>{t('sysBypassLabel')}</FieldLabel>
               <Input
@@ -474,6 +731,156 @@ export const ProfileNetwork = ({ profileName }: { profileName: string }) => {
               />
             </Field>
           )}
+          {proxy.mode === 'http' || proxy.mode === 'socks5' ? (
+            <>
+              <Field $wide>
+                <FieldLabel>{t('sysRouteMode')}</FieldLabel>
+                <Select
+                  value={proxy.routing.mode}
+                  disabled={busy}
+                  onChange={(event) =>
+                    updateRouting(
+                      'mode',
+                      event.target.value as IProxyRoutingSettings['mode'],
+                    )
+                  }
+                >
+                  <option value="global">{t('sysRouteGlobal')}</option>
+                  <option value="proxy_list">{t('sysRouteProxyList')}</option>
+                  <option value="direct_list">{t('sysRouteDirectList')}</option>
+                  <option value="bypass_mainland">
+                    {t('sysRouteBypassMainland')}
+                  </option>
+                  <option value="proxy_mainland">
+                    {t('sysRouteProxyMainland')}
+                  </option>
+                </Select>
+              </Field>
+              {proxy.routing.mode === 'proxy_list' ||
+              proxy.routing.mode === 'direct_list' ? (
+                <Field $wide>
+                  <FieldLabel>
+                    {t(
+                      proxy.routing.mode === 'proxy_list'
+                        ? 'sysRouteProxyRules'
+                        : 'sysRouteDirectRules',
+                    )}
+                  </FieldLabel>
+                  <Textarea
+                    value={
+                      proxy.routing.mode === 'proxy_list'
+                        ? proxy.routing.proxyRules
+                        : proxy.routing.directRules
+                    }
+                    disabled={busy}
+                    placeholder={t('sysRouteRulesPlaceholder')}
+                    onChange={(event) =>
+                      updateRouting(
+                        proxy.routing.mode === 'proxy_list'
+                          ? 'proxyRules'
+                          : 'directRules',
+                        event.target.value,
+                      )
+                    }
+                  />
+                </Field>
+              ) : (proxy.routing.mode === 'bypass_mainland' ||
+                  proxy.routing.mode === 'proxy_mainland') && (
+                <RouteRuleGrid>
+                  <Field>
+                    <FieldLabel>{t('sysRouteProxyRules')}</FieldLabel>
+                    <Textarea
+                      value={proxy.routing.proxyRules}
+                      disabled={busy}
+                      placeholder={t('sysRouteRulesPlaceholder')}
+                      onChange={(event) =>
+                        updateRouting('proxyRules', event.target.value)
+                      }
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel>{t('sysRouteDirectRules')}</FieldLabel>
+                    <Textarea
+                      value={proxy.routing.directRules}
+                      disabled={busy}
+                      placeholder={t('sysRouteRulesPlaceholder')}
+                      onChange={(event) =>
+                        updateRouting('directRules', event.target.value)
+                      }
+                    />
+                  </Field>
+                </RouteRuleGrid>
+              )}
+              {proxy.routing.mode !== 'global' && (
+                <ForceProxyOption>
+                  <input
+                    type="checkbox"
+                    checked={proxy.routing.bypassLocal}
+                    disabled={busy}
+                    onChange={(event) =>
+                      updateRouting('bypassLocal', event.target.checked)
+                    }
+                  />
+                  <ForceProxyText>
+                    <ForceProxyTitle>{t('sysRouteBypassLocal')}</ForceProxyTitle>
+                  </ForceProxyText>
+                </ForceProxyOption>
+              )}
+              {(proxy.routing.mode === 'bypass_mainland' ||
+                proxy.routing.mode === 'proxy_mainland') && (
+                <>
+                  <Field $wide>
+                    <FieldLabel>{t('sysRouteGfwUrl')}</FieldLabel>
+                    <Input
+                      value={proxy.routing.gfwListUrl}
+                      disabled={busy}
+                      onChange={(event) =>
+                        updateRouting('gfwListUrl', event.target.value)
+                      }
+                    />
+                  </Field>
+                  <RouteActions>
+                    <SecondaryText>
+                      {t('sysRouteDataStatus', {
+                        gfw: ruleStatus.gfwRules,
+                        ignored: ruleStatus.gfwIgnored,
+                        updated: ruleStatus.gfwUpdatedAt
+                          ? t('sysRouteUpdatedAt', {
+                              time: new Date(ruleStatus.gfwUpdatedAt).toLocaleString(),
+                            })
+                          : '',
+                      })}
+                    </SecondaryText>
+                    <NormalButton
+                      variant="soft"
+                      disabled={busy || ruleStatus.updating}
+                      onClick={onUpdateRules}
+                    >
+                      {t('sysRouteUpdate')}
+                    </NormalButton>
+                  </RouteActions>
+                </>
+              )}
+              <Field $wide>
+                <FieldLabel>{t('sysRouteTestLabel')}</FieldLabel>
+                <RouteActions>
+                  <Input
+                    value={routeTestInput}
+                    disabled={busy}
+                    placeholder={t('sysRouteTestPlaceholder')}
+                    onChange={(event) => setRouteTestInput(event.target.value)}
+                  />
+                  <NormalButton
+                    variant="soft"
+                    disabled={busy || !routeTestInput.trim()}
+                    onClick={onRouteTest}
+                  >
+                    {t('sysRouteTestButton')}
+                  </NormalButton>
+                </RouteActions>
+              </Field>
+            </>
+          ) : null}
         </FieldGrid>
 
         <ProxyActions>

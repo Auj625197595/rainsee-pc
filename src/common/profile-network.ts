@@ -1,6 +1,15 @@
+import {
+  DEFAULT_GFWLIST_URL,
+  parseProxyRules,
+} from './proxy-routing';
+import type { IProxyRoutingSettings, ProxyRoutingMode } from './proxy-routing';
+
 export type ProfileProxyMode = 'direct' | 'system' | 'http' | 'socks5' | 'pac';
 
+export type { IProxyRoutingSettings, ProxyRoutingMode };
+
 export interface IProfileProxySettings {
+  force: boolean;
   mode: ProfileProxyMode;
   host: string;
   port: number;
@@ -8,6 +17,7 @@ export interface IProfileProxySettings {
   password: string;
   bypass: string;
   pacScript: string;
+  routing: IProxyRoutingSettings;
 }
 
 export interface IProfileFingerprint {
@@ -25,6 +35,7 @@ export interface IProxyValidationResult {
   settings?: IProfileProxySettings;
   // 消息 key(由调用方在展示边界翻译;本模块保持无 Electron 依赖)
   error?: import('./i18n').MessageKey;
+  errorLine?: number;
 }
 
 const hashText = (value: string): number => {
@@ -95,6 +106,54 @@ export const normalizeProfileProxy = (
     return { ok: false, error: 'pnetErrInvalidProxy' };
   }
   const raw = value as Record<string, unknown>;
+  const force = raw.force === true;
+  const rawRouting =
+    raw.routing && typeof raw.routing === 'object'
+      ? (raw.routing as Record<string, unknown>)
+      : {};
+  const routeMode = rawRouting.mode;
+  const routingMode: ProxyRoutingMode =
+    routeMode === 'gfwlist'
+      ? 'bypass_mainland'
+      : routeMode === 'proxy_list' ||
+        routeMode === 'direct_list' ||
+        routeMode === 'bypass_mainland' ||
+        routeMode === 'proxy_mainland'
+      ? routeMode
+      : 'global';
+  const parseRoutingField = (key: 'proxyRules' | 'directRules') => {
+    const text = typeof rawRouting[key] === 'string' ? String(rawRouting[key]) : '';
+    return parseProxyRules(text);
+  };
+  const parsedProxyRules = parseRoutingField('proxyRules');
+  const parsedDirectRules = parseRoutingField('directRules');
+  if (!parsedProxyRules.ok || !parsedDirectRules.ok) {
+    const failed = !parsedDirectRules.ok ? parsedDirectRules : parsedProxyRules;
+    return {
+      ok: false,
+      error: 'pnetErrRouteRuleInvalid',
+      errorLine: failed.errorLine,
+    };
+  }
+  const gfwListUrl =
+    typeof rawRouting.gfwListUrl === 'string'
+      ? rawRouting.gfwListUrl.trim()
+      : DEFAULT_GFWLIST_URL;
+  if (
+    (routingMode === 'bypass_mainland' ||
+      routingMode === 'proxy_mainland') &&
+    !/^https:\/\//i.test(gfwListUrl) &&
+    !/^file:\/\//i.test(gfwListUrl)
+  ) {
+    return { ok: false, error: 'pnetErrRouteUrlInvalid' };
+  }
+  const routing: IProxyRoutingSettings = {
+    mode: routingMode,
+    proxyRules: parsedProxyRules.normalized,
+    directRules: parsedDirectRules.normalized,
+    bypassLocal: rawRouting.bypassLocal !== false,
+    gfwListUrl: gfwListUrl || DEFAULT_GFWLIST_URL,
+  };
   const mode = raw.mode;
   if (
     mode !== 'direct' &&
@@ -109,6 +168,7 @@ export const normalizeProfileProxy = (
     return {
       ok: true,
       settings: {
+        force,
         mode,
         host: '',
         port: 0,
@@ -116,6 +176,7 @@ export const normalizeProfileProxy = (
         password: '',
         bypass: '<local>',
         pacScript: '',
+        routing,
       },
     };
   }
@@ -124,6 +185,7 @@ export const normalizeProfileProxy = (
     return {
       ok: true,
       settings: {
+        force,
         mode,
         host: typeof raw.host === 'string' ? raw.host.trim() : '',
         port: Number.isInteger(Number(raw.port)) ? Number(raw.port) : 0,
@@ -133,6 +195,7 @@ export const normalizeProfileProxy = (
         bypass:
           typeof raw.bypass === 'string' ? raw.bypass.trim() : '<local>',
         pacScript: '',
+        routing,
       },
     };
   }
@@ -159,6 +222,7 @@ export const normalizeProfileProxy = (
     return {
       ok: true,
       settings: {
+        force,
         mode,
         host: '',
         port: 0,
@@ -166,6 +230,7 @@ export const normalizeProfileProxy = (
         password: '',
         bypass,
         pacScript,
+        routing,
       },
     };
   }
@@ -196,6 +261,16 @@ export const normalizeProfileProxy = (
 
   return {
     ok: true,
-    settings: { mode, host, port, username, password, bypass, pacScript: '' },
+    settings: {
+      force,
+      mode,
+      host,
+      port,
+      username,
+      password,
+      bypass,
+      pacScript: '',
+      routing,
+    },
   };
 };

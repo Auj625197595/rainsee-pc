@@ -4,6 +4,7 @@ import {
   safeStorage,
   session,
   Session,
+  webContents,
 } from 'electron';
 import {
   existsSync,
@@ -18,6 +19,7 @@ import { randomBytes } from 'crypto';
 import {
   deriveProfileFingerprint,
   IProfileProxySettings,
+  IProxyRoutingSettings,
   normalizeProfileProxy,
   ProfileProxyMode,
 } from '~/common/profile-network';
@@ -25,12 +27,28 @@ import { activeProfileName } from './bootstrap-paths';
 import { WEBUI_BASE_URL, WEBUI_URL_SUFFIX } from '~/constants/files';
 import { getMainTranslator } from './i18n';
 import { Application } from './application';
+import {
+  getEffectiveProxyCredentials,
+  getEffectiveProxyState,
+  onEffectiveProxyChanged,
+  setProfileProxyBaseline,
+} from './proxy-coordinator';
+import {
+  buildGeneratedProxyPacData,
+  getProxyRuleStatus,
+  onProxyRuleDataChanged,
+  startProxyRuleUpdater,
+  testProxyRoute,
+  updateProxyRuleData,
+} from './proxy-rule-service';
+import { DEFAULT_GFWLIST_URL } from '~/common/proxy-routing';
 
 // IPC 回执文案按当前设置的语言即时创建翻译器,不缓存。
 const profileNetworkTranslator = () =>
   getMainTranslator(Application.instance.settings?.object?.language);
 
 interface IStoredProxy {
+  force: boolean;
   mode: ProfileProxyMode;
   host: string;
   port: number;
@@ -39,10 +57,11 @@ interface IStoredProxy {
   passwordPlaintext?: string;
   bypass: string;
   pacScript: string;
+  routing: IProxyRoutingSettings;
 }
 
 interface IStoredProfileNetwork {
-  version: 1;
+  version: 2;
   fingerprint: {
     enabled: boolean;
     seed: string;
@@ -54,18 +73,26 @@ interface IStoredProfileNetwork {
 const CONFIG_FILE = join(app.getPath('userData'), 'profile-network-v3.json');
 const SETTINGS_URL = `${WEBUI_BASE_URL}settings${WEBUI_URL_SUFFIX}`;
 const DEFAULT_PROXY: IStoredProxy = {
+  force: false,
   mode: 'system',
   host: '',
   port: 0,
   username: '',
   bypass: '<local>',
   pacScript: '',
+  routing: {
+    mode: 'global',
+    proxyRules: '',
+    directRules: '',
+    bypassLocal: true,
+    gfwListUrl: DEFAULT_GFWLIST_URL,
+  },
 };
 
 const makeSeed = () => randomBytes(24).toString('hex');
 
 const defaultConfig = (): IStoredProfileNetwork => ({
-  version: 1,
+  version: 2,
   fingerprint: { enabled: true, seed: makeSeed() },
   proxy: { ...DEFAULT_PROXY },
 });
@@ -103,7 +130,16 @@ const loadConfig = (): IStoredProfileNetwork => {
       ? parsed.fingerprint.seed
       : fallback.fingerprint.seed;
   const rawProxy = parsed?.proxy || {};
+  const rawRouting = rawProxy.routing || {};
+  const legacyBypass =
+    typeof rawProxy.bypass === 'string'
+      ? rawProxy.bypass
+          .split(',')
+          .map((item: string) => item.trim())
+          .filter(Boolean)
+      : [];
   const proxyMode: ProfileProxyMode =
+    rawProxy.mode === 'direct' ||
     rawProxy.mode === 'system' ||
     rawProxy.mode === 'http' ||
     rawProxy.mode === 'socks5' ||
@@ -111,12 +147,13 @@ const loadConfig = (): IStoredProfileNetwork => {
       ? rawProxy.mode
       : fallback.proxy.mode;
   const config: IStoredProfileNetwork = {
-    version: 1,
+    version: 2,
     fingerprint: {
       enabled: parsed?.fingerprint?.enabled !== false,
       seed,
     },
     proxy: {
+      force: rawProxy.force === true,
       mode: proxyMode,
       host: typeof rawProxy.host === 'string' ? rawProxy.host : '',
       port: Number.isInteger(rawProxy.port) ? rawProxy.port : 0,
@@ -133,9 +170,43 @@ const loadConfig = (): IStoredProfileNetwork => {
         typeof rawProxy.bypass === 'string' ? rawProxy.bypass : '<local>',
       pacScript:
         typeof rawProxy.pacScript === 'string' ? rawProxy.pacScript : '',
+      routing: {
+        mode:
+          rawRouting.mode === 'gfwlist'
+            ? 'bypass_mainland'
+            : rawRouting.mode === 'proxy_list' ||
+              rawRouting.mode === 'direct_list' ||
+              rawRouting.mode === 'bypass_mainland' ||
+              rawRouting.mode === 'proxy_mainland'
+            ? rawRouting.mode
+            : 'global',
+        proxyRules:
+          typeof rawRouting.proxyRules === 'string'
+            ? rawRouting.proxyRules
+            : '',
+        directRules:
+          typeof rawRouting.directRules === 'string'
+            ? rawRouting.directRules
+            : legacyBypass.filter((item: string) => item !== '<local>').join('\n'),
+        bypassLocal:
+          typeof rawRouting.bypassLocal === 'boolean'
+            ? rawRouting.bypassLocal
+            : legacyBypass.length === 0 || legacyBypass.includes('<local>'),
+        gfwListUrl:
+          typeof rawRouting.gfwListUrl === 'string' && rawRouting.gfwListUrl
+            ? rawRouting.gfwListUrl
+            : DEFAULT_GFWLIST_URL,
+      },
     },
   };
-  if (!parsed || seed !== parsed?.fingerprint?.seed) writeConfig(config);
+  if (
+    !parsed ||
+    parsed.version !== 2 ||
+    seed !== parsed?.fingerprint?.seed ||
+    rawRouting.mode === 'gfwlist'
+  ) {
+    writeConfig(config);
+  }
   return config;
 };
 
@@ -156,6 +227,7 @@ const decryptPassword = (): string => {
 };
 
 const publicProxy = (): IProfileProxySettings => ({
+  force: config.proxy.force,
   mode: config.proxy.mode,
   host: config.proxy.host,
   port: config.proxy.port,
@@ -163,13 +235,30 @@ const publicProxy = (): IProfileProxySettings => ({
   password: decryptPassword(),
   bypass: config.proxy.bypass,
   pacScript: config.proxy.pacScript,
+  routing: { ...config.proxy.routing },
 });
+
+const fixedProxyBypassRules = () => {
+  const rules = config.proxy.routing.directRules
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (config.proxy.routing.bypassLocal) rules.unshift('<local>');
+  return rules.join(',');
+};
+
+const generatedPacScript = () =>
+  buildGeneratedProxyPacData(
+    config.proxy.mode as 'http' | 'socks5',
+    config.proxy.host,
+    config.proxy.port,
+    config.proxy.routing,
+  );
 
 const electronProxyConfig = (): Electron.ProxyConfig => {
   const mode = config.proxy.mode;
   if (mode === 'direct') return { mode: 'direct' };
   if (mode === 'system') return { mode: 'system' };
-  const proxyBypassRules = config.proxy.bypass || '<local>';
   if (mode === 'pac') {
     const script = config.proxy.pacScript.trim();
     // http(s)/file 开头视为 PAC URL,否则当作脚本文本封装为 data URI。
@@ -179,18 +268,63 @@ const electronProxyConfig = (): Electron.ProxyConfig => {
           script,
           'utf8',
         ).toString('base64')}`;
-    return { mode: 'pac_script', pacScript, proxyBypassRules };
+    return { mode: 'pac_script', pacScript };
+  }
+  if (config.proxy.routing.mode !== 'global') {
+    return { mode: 'pac_script', pacScript: generatedPacScript() };
   }
   return {
     mode: 'fixed_servers',
     proxyRules: `${mode}://${config.proxy.host}:${config.proxy.port}`,
-    proxyBypassRules,
+    proxyBypassRules: fixedProxyBypassRules(),
   };
 };
 
-const applyProxyToSession = async (target: Session, closeConnections = false) => {
-  await target.setProxy(electronProxyConfig());
-  if (closeConnections) await target.closeAllConnections();
+const chromeProxyValue = (): any => {
+  const mode = config.proxy.mode;
+  if (mode === 'direct' || mode === 'system') return { mode };
+  if (mode === 'pac') {
+    const script = config.proxy.pacScript.trim();
+    return {
+      mode: 'pac_script',
+      pacScript: /^https?:\/\/|^file:\/\//i.test(script)
+        ? { url: script }
+        : { data: script },
+    };
+  }
+  if (config.proxy.routing.mode !== 'global') {
+    return { mode: 'pac_script', pacScript: { url: generatedPacScript() } };
+  }
+  return {
+    mode: 'fixed_servers',
+    rules: {
+      singleProxy: {
+        scheme: mode === 'socks5' ? 'socks5' : 'http',
+        host: config.proxy.host,
+        port: config.proxy.port,
+      },
+      bypassList: fixedProxyBypassRules().split(',').filter(Boolean),
+    },
+  };
+};
+
+const profileProxyBaseline = () => {
+  const password = decryptPassword();
+  return {
+    force: config.proxy.force,
+    value: chromeProxyValue(),
+    config: electronProxyConfig(),
+    credentials:
+      config.proxy.mode !== 'direct' &&
+      config.proxy.mode !== 'system' &&
+      (config.proxy.username || password)
+        ? { username: config.proxy.username, password }
+        : null,
+  };
+};
+
+const applyProxyToSession = async (target: Session, _closeConnections = false) => {
+  await setProfileProxyBaseline(target, profileProxyBaseline());
 };
 
 const knownSessions = new Set<Session>();
@@ -226,6 +360,7 @@ const saveProxy = (proxy: IProfileProxySettings) => {
     }
   }
   config.proxy = {
+    force: proxy.force,
     mode: proxy.mode,
     host: proxy.host,
     port: proxy.port,
@@ -234,6 +369,7 @@ const saveProxy = (proxy: IProfileProxySettings) => {
     passwordPlaintext,
     bypass: proxy.bypass,
     pacScript: proxy.pacScript,
+    routing: { ...proxy.routing },
   };
   writeConfig(config);
 };
@@ -247,6 +383,27 @@ const fingerprintPayload = () =>
       )
     : { enabled: false };
 
+const proxyControlPayload = async () => {
+  const target = session.fromPartition('persist:view');
+  const effective = await getEffectiveProxyState(target);
+  if (effective.source !== 'extension' || !effective.extensionId) {
+    return { source: 'profile' as const };
+  }
+  const extension = target.getExtension(effective.extensionId);
+  return {
+    source: 'extension' as const,
+    extensionId: effective.extensionId,
+    extensionName: extension?.name || effective.extensionId,
+    // `system`/`direct` are still extension-owned Chrome proxy settings. Pass
+    // the effective mode to the settings UI so it can explain that distinction
+    // instead of making an extension's "off" option look like an active proxy.
+    mode:
+      typeof effective.value?.mode === 'string'
+        ? effective.value.mode
+        : effective.config.mode,
+  };
+};
+
 const requireSettingsSender = (event: Electron.IpcMainInvokeEvent) => {
   const senderUrl = event.sender.getURL().split(/[?#]/, 1)[0];
   if (senderUrl !== SETTINGS_URL && senderUrl !== `${SETTINGS_URL}/`) {
@@ -254,14 +411,19 @@ const requireSettingsSender = (event: Electron.IpcMainInvokeEvent) => {
   }
 };
 
-export const getActiveProxyCredentials = () => {
-  if (config.proxy.mode === 'direct' || config.proxy.mode === 'system') {
-    return null;
+const broadcastProxyControl = async () => {
+  const payload = await proxyControlPayload();
+  for (const contents of webContents.getAllWebContents()) {
+    if (contents.isDestroyed()) continue;
+    const contentsUrl = contents.getURL().split(/[?#]/, 1)[0];
+    if (contentsUrl === SETTINGS_URL || contentsUrl === `${SETTINGS_URL}/`) {
+      contents.send('profile-proxy-control-changed', payload);
+    }
   }
-  const password = decryptPassword();
-  if (!config.proxy.username && !password) return null;
-  return { username: config.proxy.username, password };
 };
+
+export const getActiveProxyCredentials = (target?: Session) =>
+  getEffectiveProxyCredentials(target || session.fromPartition('persist:view'));
 
 const testProxy = async (): Promise<{
   ok: boolean;
@@ -310,7 +472,7 @@ export const setupProfileNetworkIpc = () => {
     event.returnValue = fingerprintPayload();
   });
 
-  ipcMain.handle('profile-network-get', (event) => {
+  ipcMain.handle('profile-network-get', async (event) => {
     requireSettingsSender(event);
     return {
       available: true,
@@ -319,6 +481,8 @@ export const setupProfileNetworkIpc = () => {
       fingerprintSupported: Boolean(activeProfileName),
       fingerprint: fingerprintPayload(),
       proxy: publicProxy(),
+      proxyControl: await proxyControlPayload(),
+      proxyRuleStatus: getProxyRuleStatus(),
     };
   });
 
@@ -360,14 +524,20 @@ export const setupProfileNetworkIpc = () => {
       return {
         ok: false,
         message: validation.error
-          ? t(validation.error)
+          ? t(validation.error, {
+              line: validation.errorLine || 0,
+            })
           : t('pnetErrInvalidProxy'),
       };
     }
     try {
       saveProxy(validation.settings);
       await applyProxyEverywhere(true);
-      return { ok: true, proxy: publicProxy() };
+      return {
+        ok: true,
+        proxy: publicProxy(),
+        proxyControl: await proxyControlPayload(),
+      };
     } catch (error) {
       return {
         ok: false,
@@ -392,9 +562,39 @@ export const setupProfileNetworkIpc = () => {
       console.error('[profile-network] 应用代理失败:', error),
     );
   });
-  app.whenReady().then(() =>
-    applyProxyEverywhere().catch((error) =>
+
+  ipcMain.handle('profile-proxy-route-test', (event, input: unknown) => {
+    requireSettingsSender(event);
+    return testProxyRoute(
+      typeof input === 'string' ? input : '',
+      config.proxy.routing,
+    );
+  });
+
+  ipcMain.handle('profile-proxy-rules-update', async (event) => {
+    requireSettingsSender(event);
+    const status = await updateProxyRuleData(
+      config.proxy.routing.gfwListUrl,
+      true,
+    );
+    return { ok: !status.lastError, status, message: status.lastError };
+  });
+  app.whenReady().then(() => {
+    // Electron 43 forbids resolving a Session before app.ready. Install the
+    // coordinator listener here rather than during synchronous IPC setup.
+    onEffectiveProxyChanged(session.fromPartition('persist:view'), () => {
+      void broadcastProxyControl().catch((error) =>
+        console.error('[profile-network] 广播代理控制权失败:', error),
+      );
+    });
+    onProxyRuleDataChanged(() => {
+      void applyProxyEverywhere(true).catch((error) =>
+        console.error('[profile-network] 更新路由规则失败:', error),
+      );
+    });
+    startProxyRuleUpdater(() => config.proxy.routing.gfwListUrl);
+    return applyProxyEverywhere().catch((error) =>
       console.error('[profile-network] 初始化代理失败:', error),
-    ),
-  );
+    );
+  });
 };

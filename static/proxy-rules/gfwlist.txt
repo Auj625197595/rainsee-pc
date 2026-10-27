@@ -1,0 +1,14 @@
+! Offline bootstrap snapshot. Runtime updates replace this with the official GFWList.
+||google.com
+||googleapis.com
+||gstatic.com
+||youtube.com
+||youtu.be
+||twitter.com
+||x.com
+||facebook.com
+||instagram.com
+||telegram.org
+||wikipedia.org
+||githubusercontent.com
+
