@@ -11,7 +11,9 @@ class Store extends DialogStore {
     super({ hideOnBlur: false });
     makeObservable(this, { domain: observable, sources: observable, selectedId: observable, videoRequested: observable, audioRequested: observable, audioAvailable: observable, shareAudio: observable });
     ipcRenderer.on('update-tab-info', (_e, _id, data) => {
-      this.domain = getDomain(data?.url || ''); this.sources = Array.isArray(data?.sources) ? data.sources : [];
+      // 扩展 chooseDesktopMedia 传的是扩展名而非 URL,原样展示。
+      const url = data?.url || '';
+      this.domain = url.includes('://') ? getDomain(url) : url; this.sources = Array.isArray(data?.sources) ? data.sources : [];
       this.videoRequested = data?.videoRequested !== false; this.audioRequested = data?.audioRequested === true;
       this.audioAvailable = data?.audioAvailable === true;
       if (!this.audioAvailable) this.shareAudio = false;

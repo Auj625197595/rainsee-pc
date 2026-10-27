@@ -53,6 +53,10 @@ export const getPermissionText = (permission: string) => {
     return '保持屏幕常亮';
   }
 
+  if (permission === 'local-network-access') {
+    return '访问本地网络';
+  }
+
   if (permission === 'idle-detection') {
     return '检测用户是否处于空闲状态';
   }

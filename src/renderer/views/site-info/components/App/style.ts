@@ -362,3 +362,190 @@ export const EmptyState = styled.div`
   font-size: 13px;
   opacity: 0.62;
 `;
+
+const inputBorder = ({ theme }: { theme: ITheme }) =>
+  theme['dialog.lightForeground']
+    ? 'rgba(255, 255, 255, 0.2)'
+    : 'rgba(60, 64, 67, 0.22)';
+
+const accent = ({ theme }: { theme: ITheme }) =>
+  theme['dialog.lightForeground'] ? '#91c9ff' : '#1967d2';
+
+export const CookieToolbar = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 12px 8px;
+`;
+
+export const ExportPanel = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 12px 8px;
+  padding: 10px 12px;
+  border: 1px solid ${inputBorder};
+  border-radius: 8px;
+  background-color: ${({ theme }: { theme: ITheme }) =>
+    theme['dialog.lightForeground']
+      ? 'rgba(255, 255, 255, 0.06)'
+      : 'rgba(255, 255, 255, 0.6)'};
+`;
+
+export const ExportLabel = styled.div`
+  width: 100%;
+  font-size: 13px;
+  font-weight: 600;
+`;
+
+export const ExportHint = styled.div`
+  width: 100%;
+  font-size: 12px;
+  color: ${accent};
+`;
+
+export const CookieMainButton = styled.button`
+  min-width: 0;
+  flex: 1;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+`;
+
+export const Form = styled.form`
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 12px 12px;
+`;
+
+export const Field = styled.label`
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+
+  > span {
+    opacity: 0.72;
+  }
+`;
+
+export const FieldRow = styled.div`
+  display: flex;
+  gap: 10px;
+
+  > * {
+    min-width: 0;
+    flex: 1;
+  }
+`;
+
+const inputCss = css`
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid ${inputBorder};
+  border-radius: 6px;
+  outline: none;
+  background-color: ${({ theme }: { theme: ITheme }) =>
+    theme['dialog.lightForeground']
+      ? 'rgba(255, 255, 255, 0.08)'
+      : 'rgba(255, 255, 255, 0.72)'};
+  color: inherit;
+  color-scheme: ${({ theme }: { theme: ITheme }) =>
+    theme['dialog.lightForeground'] ? 'dark' : 'light'};
+  font: inherit;
+  font-size: 13px;
+
+  &:focus-visible {
+    border-color: ${accent};
+  }
+
+  &:disabled {
+    opacity: 0.5;
+  }
+
+  option {
+    color: ${({ theme }: { theme: ITheme }) =>
+      theme['dialog.lightForeground'] ? '#f1f3f4' : '#202124'};
+    background-color: ${({ theme }: { theme: ITheme }) =>
+      theme['dialog.lightForeground'] ? '#24272d' : '#ffffff'};
+  }
+`;
+
+export const TextInput = styled.input`
+  ${inputCss}
+  height: 32px;
+`;
+
+export const TextArea = styled.textarea`
+  ${inputCss}
+  min-height: 64px;
+  resize: vertical;
+  font-family: Consolas, 'SFMono-Regular', monospace;
+  font-size: 12px;
+  word-break: break-all;
+`;
+
+export const Select = styled.select`
+  ${inputCss}
+  height: 32px;
+`;
+
+export const FieldHint = styled.span`
+  font-size: 11px;
+  opacity: 0.58 !important;
+`;
+
+export const CheckRow = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: 13px;
+
+  label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+  }
+
+  input {
+    margin: 0;
+    accent-color: ${accent};
+  }
+`;
+
+export const FormError = styled.div`
+  font-size: 12px;
+  color: ${({ theme }: { theme: ITheme }) =>
+    theme['dialog.lightForeground'] ? '#f28b82' : '#d93025'};
+`;
+
+export const FormActions = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+
+  > :first-child {
+    margin-right: auto;
+  }
+`;
+
+export const PrimaryButton = styled(ActionButton)`
+  border-color: transparent;
+  background-color: ${accent};
+  color: ${({ theme }: { theme: ITheme }) =>
+    theme['dialog.lightForeground'] ? '#202124' : '#ffffff'};
+
+  &:not(:disabled):hover {
+    background-color: ${accent};
+    filter: brightness(1.08);
+  }
+`;

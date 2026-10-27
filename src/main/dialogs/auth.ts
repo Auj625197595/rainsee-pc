@@ -1,8 +1,8 @@
-import { VIEW_Y_OFFSET } from '~/constants/design';
 import { IFormFillData } from '~/interfaces';
 import { hasSameHostname, hostMatches } from '~/utils/url';
 import { BrowserWindow } from 'electron';
 import { Application } from '../application';
+import { getAppContentBounds } from './dialog';
 
 interface AuthCredentialOption {
   id: string;
@@ -153,12 +153,12 @@ export const requestAuth = (
       name: 'auth',
       browserWindow,
       getBounds: () => {
-        const { width } = browserWindow.getContentBounds();
+        const area = getAppContentBounds(browserWindow, appWindow);
         return {
           width: 400,
           height: hasSavedCredentials ? 420 : 370,
-          x: width / 2 - 400 / 2,
-          y: VIEW_Y_OFFSET,
+          x: area.x + area.width / 2 - 400 / 2,
+          y: area.y,
         };
       },
       tabAssociation: {

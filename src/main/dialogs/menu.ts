@@ -54,7 +54,7 @@ export class MenuDialog extends PersistentDialog {
     browserWindow.on('resize', this.onBoundsUpdate);
     browserWindow.on('move', this.onBoundsUpdate);
 
-    // 通知渲染层刷新每次显示需更新的状态（alwaysOnTop / updateAvailable）
+    // 通知渲染层刷新每次显示需更新的状态（alwaysOnTop 等）
     this.send('visible', true, {
       alwaysOnTop: browserWindow.isAlwaysOnTop(),
     });

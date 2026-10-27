@@ -49,6 +49,10 @@ export class PreviewDialog extends PersistentDialog {
     super.rearrange({ width, y: this.tab.y });
   }
 
+  public transferStateTo(next: PersistentDialog) {
+    (next as PreviewDialog).tab = this.tab;
+  }
+
   public async show(browserWindow: BrowserWindow) {
     this.cancelScheduledHide();
     if (!(await super.show(browserWindow, false))) return;

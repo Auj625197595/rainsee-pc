@@ -1,19 +1,10 @@
-import { VIEW_Y_OFFSET, SIDEBAR_RAIL_WIDTH } from '~/constants/design';
 import { BrowserWindow } from 'electron';
 import { Application } from '../application';
 import { IBluetoothDevice } from '~/interfaces';
+import { getAppContentBounds } from './dialog';
 
 const DIALOG_WIDTH = 396;
 const DIALOG_HEIGHT = 340;
-
-// 标签页侧边栏位于左侧时,弹窗应贴内容区左上角(与权限弹窗同款偏移,见 permissions.ts)。
-const getSidebarXOffset = (appWindow: any): number => {
-  if (appWindow?.viewManager?.fullscreen) return 0;
-  const settings = Application.instance.settings.object;
-  if (settings.tabsLayout !== 'left') return 0;
-  const pinned = (settings as any).sidebarPinned !== false;
-  return pinned ? settings.sidebarWidth : SIDEBAR_RAIL_WIDTH;
-};
 
 export interface IBluetoothChooserHandle {
   // resolve 选中的 deviceId,''表示用户取消/请求失效。
@@ -73,12 +64,15 @@ export const requestBluetoothDevice = (
   dialog = Application.instance.dialogs.show({
     name: 'bluetooth',
     browserWindow,
-    getBounds: () => ({
-      width: DIALOG_WIDTH,
-      height: DIALOG_HEIGHT,
-      x: getSidebarXOffset(appWindow),
-      y: VIEW_Y_OFFSET,
-    }),
+    getBounds: () => {
+      const area = getAppContentBounds(browserWindow, appWindow);
+      return {
+        width: DIALOG_WIDTH,
+        height: DIALOG_HEIGHT,
+        x: area.x,
+        y: area.y,
+      };
+    },
     tabAssociation: {
       tabId,
       getTabInfo: (id: number) =>

@@ -64,6 +64,7 @@ export class HistoryBookmarksDialog extends PersistentDialog {
     x: number,
     y: number,
     kind: 'history' | 'bookmarks',
+    closed: unknown[] = [],
   ) {
     this.cancelHoverHide();
     this.pos = { x, y };
@@ -72,7 +73,7 @@ export class HistoryBookmarksDialog extends PersistentDialog {
     browserWindow.removeListener('move', this.onBoundsUpdate);
     browserWindow.on('resize', this.onBoundsUpdate);
     browserWindow.on('move', this.onBoundsUpdate);
-    this.send('visible', true, { kind });
+    this.send('visible', true, { kind, closed });
   }
 
   public hide(bringToTop = false) {

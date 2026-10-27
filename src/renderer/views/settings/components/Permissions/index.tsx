@@ -519,6 +519,14 @@ const RULE_DEFINITIONS: RuleDefinition[] = [
     descriptionKey: 'permWakeLockDesc',
   },
   {
+    id: 'local-network-access',
+    permission: 'local-network-access',
+    mediaTypes: '',
+    kind: 'permission',
+    titleKey: 'permLocalNetwork',
+    descriptionKey: 'permLocalNetworkDesc',
+  },
+  {
     id: 'open-external',
     permission: 'openExternal',
     mediaTypes: '',

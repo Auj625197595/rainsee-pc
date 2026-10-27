@@ -31,6 +31,15 @@ export const Snapshot = styled.img`
   pointer-events: none;
 `;
 
+// 桌面截图快照:直接绘制 ImageBitmap,免去 PNG 编解码
+export const SnapshotCanvas = styled.canvas`
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+`;
+
 // 暗色遮罩(框选区域之外)
 export const Dim = styled.div`
   position: absolute;
@@ -117,24 +126,58 @@ export const TextAnnotationTarget = styled.div<{ $active: boolean }>`
   }
 `;
 
-// 框选完成后的操作工具条(跟随选区右下角)
+// 框选完成后的操作工具条(跟随选区右下角)。宽度随内容,位置由 toolbarPosition()
+// 按实测尺寸自动避让视口边缘/顶部提示条;一行放不下时按分组换行,不出滚动条。
+// 左内边距由 ToolbarRow 的负边距 + 分组左内边距提供,见 ToolGroup。
 export const Toolbar = styled.div`
   position: absolute;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px;
+  padding: 6px 6px 6px 0;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: calc(100vw - 16px);
   border-radius: 8px;
+  overflow: hidden;
   background: rgba(28, 32, 40, 0.96);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   z-index: 10;
   cursor: default;
-  max-width: calc(100vw - 16px);
-  overflow-x: auto;
+`;
+
+export const ToolbarRow = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  row-gap: 4px;
+  margin-left: -6px;
+`;
+
+// 工具条分组:组内不拆行,换行只发生在组与组之间。分隔线画在每组左侧;
+// 位于行首的组整体左移 6px,分隔线落到 Toolbar 边框外被裁掉,
+// 因此换行后行首不会残留一根竖线。
+export const ToolGroup = styled.div`
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  padding-left: 12px;
+
+  &::before {
+    content: '';
+    position: absolute;
+    left: 5px;
+    top: 50%;
+    width: 1px;
+    height: 18px;
+    transform: translateY(-50%);
+    background: rgba(255, 255, 255, 0.16);
+  }
 `;
 
 export const ToolButton = styled.button`
   display: flex;
+  flex: 0 0 auto;
+  white-space: nowrap;
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
@@ -193,6 +236,7 @@ export const ToolIconButton = styled.button<{
 export const ColorSwatch = styled.input`
   width: 24px;
   height: 24px;
+  flex: 0 0 24px;
   padding: 0;
   border: 2px solid rgba(255, 255, 255, 0.75);
   border-radius: 50%;
@@ -211,25 +255,63 @@ export const ColorSwatch = styled.input`
 
 export const SizeInput = styled.input`
   width: 54px;
+  flex: 0 0 54px;
   accent-color: #2f6fed;
 `;
 
-export const TextEditor = styled.input`
+export const TextEditorGroup = styled.div`
   position: absolute;
   z-index: 30;
-  width: 180px;
-  height: 32px;
+  width: 220px;
+`;
+
+export const TextEditor = styled.textarea`
+  display: block;
+  width: 100%;
+  height: 80px;
   box-sizing: border-box;
   border: 1px solid #2f6fed;
   border-radius: 4px;
   outline: none;
-  padding: 4px 7px;
+  padding: 7px 8px;
+  resize: none;
+  overflow-y: auto;
   background: rgba(255, 255, 255, 0.96);
   color: #111827;
   font-size: 16px;
+  font-family: sans-serif;
+  font-weight: 600;
+  line-height: 1.25;
+`;
+
+export const TextEditorActions = styled.div`
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  padding-top: 4px;
+`;
+
+export const TextEditorButton = styled.button<{ $confirm?: boolean }>`
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  color: #fff;
+  background: ${({ $confirm }) => ($confirm ? '#2f6fed' : '#ef4444')};
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+  cursor: pointer;
+
+  &:hover {
+    filter: brightness(1.08);
+  }
 `;
 
 export const ToolDivider = styled.span`
+  flex: 0 0 1px;
   width: 1px;
   height: 18px;
   background: rgba(255, 255, 255, 0.16);

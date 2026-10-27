@@ -32,10 +32,24 @@ export interface SiteCookieData {
   path: string;
   secure: boolean;
   httpOnly: boolean;
+  hostOnly: boolean;
   session: boolean;
   sameSite: string;
   expirationDate?: number;
 }
+
+export interface SiteCookieSaveResult {
+  ok: boolean;
+  error?: 'noTarget' | 'name' | 'value' | 'domain' | 'set';
+  cookies: SiteCookieData[];
+}
+
+const SAME_SITE_VALUES = new Set([
+  'unspecified',
+  'no_restriction',
+  'lax',
+  'strict',
+]);
 
 export interface SiteCertificateData {
   subjectName: string;
@@ -69,6 +83,7 @@ const toCookieData = (cookie: Electron.Cookie): SiteCookieData => ({
   path: cookie.path || '/',
   secure: !!cookie.secure,
   httpOnly: !!cookie.httpOnly,
+  hostOnly: !!cookie.hostOnly,
   session: !!cookie.session,
   sameSite: cookie.sameSite || 'unspecified',
   expirationDate: cookie.expirationDate,
@@ -228,6 +243,103 @@ export class SiteInfoDialog extends PersistentDialog {
       existing.name,
     );
     return this.readCookies();
+  }
+
+  /**
+   * 新增或编辑 Cookie。original 为空表示新增；名称/域/路径变化时先删旧条目，
+   * 避免改名后新旧两条并存。domain 不带前导点且等于当前主机名时按 hostOnly 写入。
+   */
+  public async saveCookie(
+    original: SiteCookieData | null,
+    cookie: SiteCookieData,
+  ): Promise<SiteCookieSaveResult> {
+    const fail = (error: SiteCookieSaveResult['error']) => ({
+      ok: false,
+      error,
+      cookies: this.currentCookies,
+    });
+    const target = this.targetWebContents;
+    if (!target || target.isDestroyed()) return fail('noTarget');
+    let pageUrl: URL;
+    try {
+      pageUrl = new URL(this.currentUrl);
+    } catch {
+      return fail('noTarget');
+    }
+    if (pageUrl.protocol !== 'http:' && pageUrl.protocol !== 'https:') {
+      return fail('noTarget');
+    }
+
+    const name = String(cookie?.name ?? '').trim();
+    const value = String(cookie?.value ?? '');
+    if (!name || /[\s;=,]/.test(name)) return fail('name');
+    if (/[;\r\n]/.test(value)) return fail('value');
+
+    const pageHost = pageUrl.hostname.toLowerCase();
+    const rawDomain =
+      String(cookie?.domain ?? '').trim().toLowerCase() || pageHost;
+    const bareDomain = rawDomain.replace(/^\./, '');
+    // 只允许当前主机或其父域，否则写入后当前页面也读不到。
+    if (
+      !bareDomain ||
+      (pageHost !== bareDomain && !pageHost.endsWith(`.${bareDomain}`))
+    ) {
+      return fail('domain');
+    }
+    const hostOnly = !rawDomain.startsWith('.') && bareDomain === pageHost;
+
+    let path = String(cookie?.path ?? '').trim() || '/';
+    if (!path.startsWith('/')) path = `/${path}`;
+
+    const sameSite = (
+      SAME_SITE_VALUES.has(cookie?.sameSite) ? cookie.sameSite : 'unspecified'
+    ) as Electron.CookiesSetDetails['sameSite'];
+    // Chromium 拒绝非 Secure 的 SameSite=None。
+    const secure = !!cookie?.secure || sameSite === 'no_restriction';
+    const expirationDate = Number(cookie?.expirationDate);
+
+    const details: Electron.CookiesSetDetails = {
+      url: `${secure ? 'https:' : pageUrl.protocol}//${bareDomain}${path}`,
+      name,
+      value,
+      path,
+      secure,
+      httpOnly: !!cookie?.httpOnly,
+      sameSite,
+    };
+    if (!hostOnly) details.domain = `.${bareDomain}`;
+    if (!cookie?.session && expirationDate > 0) {
+      details.expirationDate = expirationDate;
+    }
+
+    const existing = original
+      ? this.currentCookies.find(
+          (item) =>
+            item.name === original.name &&
+            item.domain === original.domain &&
+            item.path === original.path,
+        )
+      : undefined;
+
+    try {
+      if (
+        existing &&
+        (existing.name !== name ||
+          existing.path !== path ||
+          existing.hostOnly !== hostOnly ||
+          existing.domain.replace(/^\./, '') !== bareDomain)
+      ) {
+        await target.session.cookies.remove(
+          this.cookieRemovalUrl(existing),
+          existing.name,
+        );
+      }
+      await target.session.cookies.set(details);
+    } catch (error) {
+      console.warn('[site-info] set cookie failed', error);
+      return { ok: false, error: 'set', cookies: await this.readCookies() };
+    }
+    return { ok: true, cookies: await this.readCookies() };
   }
 
   public async clearCookies() {

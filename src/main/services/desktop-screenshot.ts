@@ -10,6 +10,7 @@ import {
 } from 'electron';
 import * as fs from 'fs';
 import { join } from 'path';
+import { monitorEventLoopDelay } from 'perf_hooks';
 import { pathToFileURL } from 'url';
 import { Application } from '../application';
 import { getMainTranslator } from '../i18n';
@@ -25,8 +26,7 @@ interface OverlayEntry {
   resolvePaint: (() => void) | null;
 }
 
-// 开源版：截图「问 AI」通道已移除,仅保留以图搜图。
-export type ScreenshotImageAction = 'search';
+export type ScreenshotImageAction = 'search' | 'ai';
 
 const timestamp = () => {
   const d = new Date();
@@ -53,6 +53,18 @@ export class DesktopScreenshotService {
 
   private openSequence = 0;
 
+  // [ss-perf] 诊断:主进程事件循环阻塞直方图(原生采样,开销可忽略)。每次唤起时
+  // 打出自上次唤起以来的最大阻塞,判断快捷键回调是否被主线程长任务推迟。
+  private loopDelay = (() => {
+    try {
+      const histogram = monitorEventLoopDelay({ resolution: 20 });
+      histogram.enable();
+      return histogram;
+    } catch {
+      return null;
+    }
+  })();
+
   public constructor(
     private onImageAction?: (
       action: ScreenshotImageAction,
@@ -64,15 +76,36 @@ export class DesktopScreenshotService {
     return this.opening || this.active;
   }
 
-  public async open() {
+  public async open(trigger = 'unknown') {
+    const t0 = Date.now();
+    const since = () => Date.now() - t0;
     // A foreground menu accelerator and globalShortcut can arrive together.
-    if (this.visible) return;
+    if (this.visible) {
+      console.log(
+        `[ss-perf] open skipped trigger=${trigger} opening=${this.opening} active=${this.active}`,
+      );
+      return;
+    }
 
+    const recyclePending = !!this.recycleTimer;
     this.cancelRecycle();
 
     const sequence = ++this.openSequence;
     this.opening = true;
     this.active = true;
+    // 主线程繁忙度:setImmediate 回调迟到多少,就说明主进程事件循环被占用了多久
+    // (快捷键回调本身也会被同样程度地推迟)。
+    setImmediate(() =>
+      console.log(`[ss-perf] #${sequence} main loop lag=${since()}ms`),
+    );
+    const loop = this.loopDelay;
+    console.log(
+      `[ss-perf] #${sequence} open trigger=${trigger} overlays=${this.overlays.length} recyclePending=${recyclePending}` +
+        (loop
+          ? ` loopDelaySinceLast max=${Math.round(loop.max / 1e6)}ms p99=${Math.round(loop.percentile(99) / 1e6)}ms`
+          : ''),
+    );
+    loop?.reset();
     try {
       const displays = screen.getAllDisplays();
       if (displays.length === 0) {
@@ -93,15 +126,36 @@ export class DesktopScreenshotService {
         }),
         { width: 1, height: 1 },
       );
-      const [sources] = await Promise.all([
-        desktopCapturer.getSources({
+      console.log(
+        `[ss-perf] #${sequence} displays=${displays
+          .map((d) => `${d.id}:${d.bounds.width}x${d.bounds.height}@${d.scaleFactor}`)
+          .join(',')} thumbnail=${thumbnailSize.width}x${thumbnailSize.height} +${since()}ms`,
+      );
+      // Create/load the overlay first: getSources blocks the main thread for
+      // a few hundred ms on Windows, and the overlay renderer can parse its
+      // bundles in parallel during that time. Hidden windows are not captured.
+      const overlaysReady = this.ensureOverlays(displays).then(() =>
+        console.log(`[ss-perf] #${sequence} overlays ready +${since()}ms`),
+      );
+      console.log(`[ss-perf] #${sequence} ensureOverlays sync +${since()}ms`);
+      const capture = desktopCapturer
+        .getSources({
           types: ['screen'],
           thumbnailSize,
           fetchWindowIcons: false,
-        }),
-        this.ensureOverlays(displays),
-      ]);
-      if (sequence !== this.openSequence) return;
+        })
+        .then((result) => {
+          console.log(
+            `[ss-perf] #${sequence} getSources done count=${result.length} +${since()}ms`,
+          );
+          return result;
+        });
+      console.log(`[ss-perf] #${sequence} getSources sync +${since()}ms`);
+      const [sources] = await Promise.all([capture, overlaysReady]);
+      if (sequence !== this.openSequence) {
+        console.log(`[ss-perf] #${sequence} superseded after capture`);
+        return;
+      }
 
       const paintTasks: Promise<void>[] = [];
       const captureEntries: OverlayEntry[] = [];
@@ -115,17 +169,46 @@ export class DesktopScreenshotService {
           sources[index];
         if (!entry || !source || source.thumbnail.isEmpty()) continue;
         captureEntries.push(entry);
+        // A hidden overlay that has been shown before gets its rAF throttled to
+        // ~1fps, so the renderer's double-rAF paint handshake took ~2s on every
+        // reopen. The screen is already captured here, so show the window fully
+        // transparent first; it keeps compositing at full rate and is revealed
+        // with opacity 1 once the snapshot has painted. Linux has no opacity, so
+        // it keeps painting hidden to avoid flashing the previous capture.
+        if (process.platform !== 'linux') {
+          entry.window.setOpacity(0);
+          entry.window.showInactive();
+        }
+        // Send raw pixels instead of a PNG data URL: toDataURL() PNG-encodes a
+        // full-resolution screen on the main thread (~360ms at 2560x1440),
+        // while toBitmap() is a ~3ms copy and the renderer decodes it in ~15ms.
+        const encodeStart = Date.now();
+        const { width, height } = source.thumbnail.getSize();
+        const bitmap = source.thumbnail.toBitmap();
+        console.log(
+          `[ss-perf] #${sequence} display=${display.id} toBitmap=${Date.now() - encodeStart}ms size=${width}x${height} +${since()}ms`,
+        );
         paintTasks.push(
-          this.paintSnapshot(entry, source.thumbnail.toDataURL()),
+          this.paintSnapshot(
+            entry,
+            { bitmap, width, height },
+            sequence,
+            t0,
+          ),
         );
       }
       if (captureEntries.length === 0) {
+        console.warn(`[ss-perf] #${sequence} no usable capture, closing`);
         this.close();
         return;
       }
 
       await Promise.all(paintTasks);
-      if (sequence !== this.openSequence) return;
+      console.log(`[ss-perf] #${sequence} all painted +${since()}ms`);
+      if (sequence !== this.openSequence) {
+        console.log(`[ss-perf] #${sequence} superseded after paint`);
+        return;
+      }
 
       const cursorDisplay = screen.getDisplayNearestPoint(
         screen.getCursorScreenPoint(),
@@ -143,6 +226,7 @@ export class DesktopScreenshotService {
       focused?.window.show();
       focused?.window.focus();
       if (focused) this.enforceTopmost(focused);
+      console.log(`[ss-perf] #${sequence} shown total=${since()}ms`);
     } catch (error) {
       console.error('[desktop-screenshot] open failed', error);
       this.close();
@@ -253,6 +337,7 @@ export class DesktopScreenshotService {
       `screenshot-save-${id}`,
       `screenshot-copy-${id}`,
       `screenshot-search-${id}`,
+      `screenshot-ai-${id}`,
       `screenshot-render-ready-${id}`,
     ];
     let resolveLoading: () => void = () => undefined;
@@ -305,7 +390,9 @@ export class DesktopScreenshotService {
     ipcMain.on(`screenshot-search-${id}`, (_event, dataURL: string) => {
       void runImageAction('search', dataURL);
     });
-    // 开源版：screenshot-ai 通道已移除。
+    ipcMain.on(`screenshot-ai-${id}`, (_event, dataURL: string) => {
+      void runImageAction('ai', dataURL);
+    });
     ipcMain.on(`screenshot-save-${id}`, async (_event, dataURL: string) => {
       try {
         const t = getMainTranslator(
@@ -333,7 +420,12 @@ export class DesktopScreenshotService {
       this.overlays = this.overlays.filter((item) => item !== entry);
       for (const channel of channels) ipcMain.removeAllListeners(channel);
     });
+    const createdAt = Date.now();
+    console.log(`[ss-perf] create overlay display=${display.id}`);
     win.webContents.once('did-finish-load', () => {
+      console.log(
+        `[ss-perf] overlay display=${display.id} did-finish-load ${Date.now() - createdAt}ms`,
+      );
       finishLoading();
     });
     win.webContents.once('did-fail-load', (_event, code, description) => {
@@ -359,12 +451,25 @@ export class DesktopScreenshotService {
     void win.loadURL(url);
   }
 
-  private paintSnapshot(entry: OverlayEntry, snapshot: string) {
+  private paintSnapshot(
+    entry: OverlayEntry,
+    snapshot: { bitmap: Buffer; width: number; height: number },
+    sequence: number,
+    t0: number,
+  ) {
     this.finishPaint(entry);
+    const sentAt = Date.now();
     return new Promise<void>((resolve) => {
-      entry.resolvePaint = resolve;
+      entry.resolvePaint = () => {
+        console.log(
+          `[ss-perf] #${sequence} display=${entry.displayId} paint handshake=${Date.now() - sentAt}ms +${Date.now() - t0}ms`,
+        );
+        resolve();
+      };
       entry.paintTimer = setTimeout(() => {
-        console.warn('[desktop-screenshot] renderer paint handshake timed out');
+        console.warn(
+          `[desktop-screenshot] renderer paint handshake timed out #${sequence} display=${entry.displayId}`,
+        );
         this.finishPaint(entry);
       }, 3000);
       entry.paintTimer.unref?.();
@@ -373,7 +478,9 @@ export class DesktopScreenshotService {
         return;
       }
       entry.window.webContents.send('visible', true, {
-        snapshot,
+        bitmap: snapshot.bitmap,
+        width: snapshot.width,
+        height: snapshot.height,
         source: 'desktop',
         displayId: entry.displayId,
       });

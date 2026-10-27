@@ -1,18 +1,10 @@
-import { VIEW_Y_OFFSET, SIDEBAR_RAIL_WIDTH } from '~/constants/design';
 import { BrowserWindow } from 'electron';
 import { Application } from '../application';
 import { IHidDevice } from '~/interfaces';
+import { getAppContentBounds } from './dialog';
 
 const DIALOG_WIDTH = 512;
 const DIALOG_HEIGHT = 440;
-
-const getSidebarXOffset = (appWindow: any): number => {
-  if (appWindow?.viewManager?.fullscreen) return 0;
-  const settings = Application.instance.settings.object;
-  if (settings.tabsLayout !== 'left') return 0;
-  const pinned = (settings as any).sidebarPinned !== false;
-  return pinned ? settings.sidebarWidth : SIDEBAR_RAIL_WIDTH;
-};
 
 export interface IHidChooserHandle {
   promise: Promise<string>;
@@ -62,12 +54,15 @@ export const requestHidDevice = (
   dialog = Application.instance.dialogs.show({
     name: 'hid',
     browserWindow,
-    getBounds: () => ({
-      width: DIALOG_WIDTH,
-      height: DIALOG_HEIGHT,
-      x: getSidebarXOffset(appWindow),
-      y: VIEW_Y_OFFSET,
-    }),
+    getBounds: () => {
+      const area = getAppContentBounds(browserWindow, appWindow);
+      return {
+        width: DIALOG_WIDTH,
+        height: DIALOG_HEIGHT,
+        x: area.x,
+        y: area.y,
+      };
+    },
     tabAssociation: {
       tabId,
       getTabInfo: (id: number) => appWindow.viewManager.getById(id)?.requestedHid,

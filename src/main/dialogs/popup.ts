@@ -562,12 +562,16 @@ export class PopupView {
 
     // 向上取整(ceil)：preferred-size-changed 常给出小数尺寸，向下取整会让内容区比
     // 真实内容小不到 1px，触发滚动条并连带挤出另一方向，表现为水平/垂直都显示不全。
+    // Windows/Chromium 在窗口重新布局时偶尔会发出 0 宽度的瞬时测量；已有有效尺寸
+    // 时保留它，不能让这个无效值把 popup 收缩到最小宽度。
+    const widthInput = rect.width && rect.width > 0 ? rect.width : this.lastWidth > 0 ? this.lastWidth : 0
+    const heightInput = rect.height && rect.height > 0 ? rect.height : this.lastHeight > 0 ? this.lastHeight : 0
     const width = Math.ceil(
-      Math.min(PopupView.BOUNDS.maxWidth, Math.max(rect.width || 0, PopupView.BOUNDS.minWidth))
+      Math.min(PopupView.BOUNDS.maxWidth, Math.max(widthInput, PopupView.BOUNDS.minWidth))
     )
 
     const height = Math.ceil(
-      Math.min(PopupView.BOUNDS.maxHeight, Math.max(rect.height || 0, PopupView.BOUNDS.minHeight))
+      Math.min(PopupView.BOUNDS.maxHeight, Math.max(heightInput, PopupView.BOUNDS.minHeight))
     )
 
     // preferred size 已经向上取整,此处只过滤完全相同的尺寸。不能忽略 1px 差异:
@@ -971,9 +975,35 @@ export class PopupView {
   private queuePreferredSize(size: Electron.Size) {
     if (this.devToolsOpened) return
 
+    // A preferred-size-changed event with a zero dimension is a transient
+    // Chromium measurement during reflow (the FlowPick popup emits width=0
+    // immediately after its valid 500px measurement). Preserve the last valid
+    // dimension so it cannot collapse an already visible popup.
+    const widthValid = Number.isFinite(size.width) && size.width > 0
+    const heightValid = Number.isFinite(size.height) && size.height > 0
+    if (
+      !widthValid &&
+      this.lastWidth <= 0 &&
+      !heightValid &&
+      this.lastHeight <= 0
+    ) {
+      // Do not turn an entirely invalid initial measurement into a minimum
+      // popup; a later event or the DOM/CDP fallback will establish its size.
+      return
+    }
     const preferredSize = {
-      width: Number.isFinite(size.width) ? Math.max(0, size.width) : 0,
-      height: Number.isFinite(size.height) ? Math.max(0, size.height) : 0,
+      width:
+        widthValid
+          ? size.width
+          : this.lastWidth > 0
+            ? this.lastWidth
+            : 0,
+      height:
+        heightValid
+          ? size.height
+          : this.lastHeight > 0
+            ? this.lastHeight
+            : 0,
     }
     const width = this.clampWidth(preferredSize.width)
     const height = this.clampHeight(preferredSize.height)

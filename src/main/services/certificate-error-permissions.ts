@@ -15,13 +15,27 @@ export const getCertificateErrorHost = (value: string): string => {
   }
 };
 
+// 与 Chrome 一致，证书例外按主机名生效、不区分端口：放行 itsm.example.com 后,
+// 同主机 :8081 子框架(子框架没有证书错误页，无法单独放行)也能加载。
+// 持久化记录仍保存带端口的 host,仅内存匹配时去掉端口。
+const getCertificateErrorHostname = (value: string): string => {
+  const host = getCertificateErrorHost(value);
+  if (!host) return '';
+  try {
+    return new URL(`https://${host}`).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+};
+
 export const isCertificateErrorAllowed = (url: string): boolean => {
-  const host = getCertificateErrorHost(url);
-  return !!host && allowedHosts.has(host);
+  const hostname = getCertificateErrorHostname(url);
+  return !!hostname && allowedHosts.has(hostname);
 };
 
 export const allowCertificateErrorHost = (host: string): void => {
-  if (host) allowedHosts.add(host);
+  const hostname = getCertificateErrorHostname(host);
+  if (hostname) allowedHosts.add(hostname);
 };
 
 // certificate-error requires a synchronous callback. Keep the persisted rules

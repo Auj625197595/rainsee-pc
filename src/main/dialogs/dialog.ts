@@ -2,7 +2,36 @@ import { BrowserView, app, ipcMain, BrowserWindow } from 'electron';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { EventEmitter } from 'events';
-import { roundifyRectangle } from '../services/dialogs-service';
+import { roundifyRectangle } from '../utils/rectangle';
+import { VIEW_Y_OFFSET } from '~/constants/design';
+
+/** Return the last measured BrowserView content rectangle, with the legacy
+ * titlebar offset as a startup fallback before the renderer anchor is ready. */
+export const getAppContentBounds = (browserWindow: BrowserWindow, appWindow?: any) => {
+  const windowBounds = browserWindow.getContentBounds();
+  const measured = appWindow?.viewManager?.contentBounds;
+  if (measured && measured.width > 0 && measured.height > 0) {
+    return measured;
+  }
+  return {
+    x: 0,
+    y: VIEW_Y_OFFSET,
+    width: windowBounds.width,
+    height: Math.max(0, windowBounds.height - VIEW_Y_OFFSET),
+  };
+};
+
+// 冷加载超时:当前这次 show 等 dom-ready 超过阈值即抛出,由 DialogsService 销毁重建。
+// 正式版日志里卡死的冷加载与扩展 SW 启动失败同时出现,销毁卡住的弹窗后其他弹窗立即
+// 恢复;正常冷加载 0.3-0.6s,偶发 1.7s,阈值留足余量。
+export const COLD_LOAD_TIMEOUT_MS = 3000;
+
+export class DialogLoadStalledError extends Error {
+  public constructor(public readonly dialog: PersistentDialog, waitMs: number) {
+    super(`Dialog ${dialog.name} cold-load stalled after ${waitMs}ms`);
+    this.name = 'DialogLoadStalledError';
+  }
+}
 
 interface IOptions {
   name: string;
@@ -53,6 +82,13 @@ export class PersistentDialog extends EventEmitter {
   // dom-ready 后重新把弹窗挂回窗口。
   private visibilityRequest = 0;
   private showPending = false;
+
+  // 冷加载超时阈值,0 表示不超时(重建后的新实例只重建一次,不再超时)。
+  public coldLoadTimeoutMs = COLD_LOAD_TIMEOUT_MS;
+
+  // 冷加载诊断:各加载阶段相对构造时刻的耗时,慢加载/卡住时随进程信息一起打日志。
+  private readonly createdAt = Date.now();
+  private loadTrace: string[] = [];
 
   // 本弹窗自建的所有 ipcMain channel,destroy 时统一 removeAllListeners。
   // 子类把自建的 channel(如 resize-dialog-${id})也 push 进来,避免销毁后泄漏。
@@ -113,7 +149,15 @@ export class PersistentDialog extends EventEmitter {
     // 等待时触发 unhandledRejection。
     this.readyPromise.catch(() => {});
 
+    this.traceLoadStages();
+
     webContents.once('dom-ready', () => {
+      const loadMs = Date.now() - this.createdAt;
+      if (loadMs >= 1000) {
+        console.log(
+          `[dialog-perf] ${this.name} slow dom-ready load=${loadMs}ms ${this.describeLoad()}`,
+        );
+      }
       if (this.readySettled) return;
       this.readySettled = true;
       this.loaded = true;
@@ -166,6 +210,61 @@ export class PersistentDialog extends EventEmitter {
     if (emitFailure) this.emit('load-failed', error);
   }
 
+  // 卡死重建时把调用方在 show 前写入实例的状态交接给新实例(如 preview 的 tab)。
+  // 参数式状态随重放的 show/open 参数传递,无需在此处理。
+  public transferStateTo(_next: PersistentDialog) {
+    // 默认无额外状态
+  }
+
+  private markLoad(stage: string) {
+    if (this.loadTrace.length >= 24) return;
+    this.loadTrace.push(`${stage}@${Date.now() - this.createdAt}`);
+  }
+
+  private traceLoadStages() {
+    const wc = this.webContents;
+    wc.once('did-start-loading', () => this.markLoad('start-loading'));
+    wc.once('did-start-navigation', () => this.markLoad('start-nav'));
+    wc.once('did-navigate', () => this.markLoad('navigated'));
+    wc.once('dom-ready', () => this.markLoad('dom-ready'));
+    wc.once('did-finish-load', () => this.markLoad('finish-load'));
+    wc.on('render-process-gone', (_e, details) =>
+      this.markLoad(`process-gone:${details.reason}`),
+    );
+    wc.on('unresponsive', () => this.markLoad('unresponsive'));
+    wc.on('responsive', () => this.markLoad('responsive'));
+  }
+
+  // 冷加载诊断快照:渲染进程 pid 及其进程类型/CPU,判断是否与卡住的扩展 SW 共进程
+  // 或进程根本没起来(pid=0)。
+  public describeLoad() {
+    const wc = this.browserView?.webContents;
+    if (!wc || wc.isDestroyed()) return 'destroyed';
+    let pid = 0;
+    try {
+      pid = wc.getOSProcessId();
+    } catch {
+      // 进程尚未分配
+    }
+    let proc = 'n/a';
+    if (pid) {
+      try {
+        const metric = app.getAppMetrics().find((m) => m.pid === pid);
+        if (metric) {
+          proc = `${metric.type}/${metric.serviceName || metric.name || '-'} cpu=${metric.cpu.percentCPUUsage.toFixed(1)}% age=${Date.now() - metric.creationTime}ms`;
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return (
+      `pid=${pid} proc=${proc} rendererId=${wc.getProcessId()} ` +
+      `loading=${wc.isLoading()} waitingResponse=${wc.isWaitingForResponse()} ` +
+      `crashed=${wc.isCrashed()} url=${wc.getURL() || '-'} ` +
+      `trace=[${this.loadTrace.join(' ')}]`
+    );
+  }
+
   public get webContents() {
     return this.browserView.webContents;
   }
@@ -176,10 +275,12 @@ export class PersistentDialog extends EventEmitter {
 
   public rearrange(rect: IRectangle = {}) {
     this.bounds = roundifyRectangle({
-      height: rect.height || this.bounds.height || 0,
-      width: rect.width || this.bounds.width || 0,
-      x: rect.x || this.bounds.x || 0,
-      y: rect.y || this.bounds.y || 0,
+      // 0 is a valid coordinate for left/top aligned BrowserViews. Using `||`
+      // here kept the previous right/bottom position when a panel moved to x/y=0.
+      height: rect.height ?? this.bounds.height ?? 0,
+      width: rect.width ?? this.bounds.width ?? 0,
+      x: rect.x ?? this.bounds.x ?? 0,
+      y: rect.y ?? this.bounds.y ?? 0,
     });
 
     if (this.visible) {
@@ -208,13 +309,19 @@ export class PersistentDialog extends EventEmitter {
     if (!this.loaded) {
       const startedAt = Date.now();
       try {
-        await this.readyPromise;
+        await this.waitForReady(request, startedAt);
       } catch (error) {
-        if (request === this.visibilityRequest) this.showPending = false;
+        // 已被后续 show/hide 取代的旧请求不报错,与正常加载完成后的放弃路径一致。
+        if (request !== this.visibilityRequest) return false;
+        this.showPending = false;
         throw error;
       }
       const waitMs = Date.now() - startedAt;
-      if (waitMs >= 100) {
+      if (waitMs >= 1000) {
+        console.log(
+          `[dialog-perf] ${this.name} cold-load wait=${waitMs}ms ${this.describeLoad()}`,
+        );
+      } else if (waitMs >= 100) {
         console.log(`[dialog-perf] ${this.name} cold-load wait=${waitMs}ms`);
       }
     }
@@ -257,6 +364,30 @@ export class PersistentDialog extends EventEmitter {
 
     this.emit('shown');
     return true;
+  }
+
+  // 等渲染页就绪。超时只对仍是当前意图的请求生效:被取代的旧请求继续静默等待,
+  // 加载完成后由 show 的意图检查放弃。
+  private async waitForReady(request: number, startedAt: number) {
+    const timeoutMs = this.coldLoadTimeoutMs;
+    if (timeoutMs > 0) {
+      let timer: NodeJS.Timeout;
+      const timedOut = await Promise.race([
+        this.readyPromise.then(() => false),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(true), timeoutMs);
+        }),
+      ]).finally(() => clearTimeout(timer));
+      if (!timedOut) return;
+      if (request === this.visibilityRequest && !this.loaded) {
+        const waitMs = Date.now() - startedAt;
+        console.warn(
+          `[dialog-perf] ${this.name} cold-load stalled wait=${waitMs}ms ${this.describeLoad()}`,
+        );
+        throw new DialogLoadStalledError(this, waitMs);
+      }
+    }
+    await this.readyPromise;
   }
 
   public hideVisually() {

@@ -1,4 +1,4 @@
-import { ipcRenderer } from 'electron';
+import { clipboard, ipcRenderer } from 'electron';
 import { makeObservable, observable } from 'mobx';
 
 import { IPermissionRecord } from '~/interfaces';
@@ -24,6 +24,7 @@ export interface SiteCookieData {
   path: string;
   secure: boolean;
   httpOnly: boolean;
+  hostOnly: boolean;
   session: boolean;
   sameSite: string;
   expirationDate?: number;
@@ -41,6 +42,57 @@ export interface SiteCertificateData {
   authorized: boolean;
   authorizationError: string;
 }
+
+export type CookieExportFormat = 'json' | 'header' | 'netscape';
+
+export type CookieSaveError = 'noTarget' | 'name' | 'value' | 'domain' | 'set';
+
+// 字段与 Cookie-Editor / EditThisCookie 的 JSON 导出一致，便于互相导入。
+const toExportJson = (cookies: SiteCookieData[]) =>
+  JSON.stringify(
+    cookies.map((cookie) => ({
+      domain: cookie.domain,
+      ...(cookie.session ? {} : { expirationDate: cookie.expirationDate }),
+      hostOnly: cookie.hostOnly,
+      httpOnly: cookie.httpOnly,
+      name: cookie.name,
+      path: cookie.path,
+      sameSite: cookie.sameSite,
+      secure: cookie.secure,
+      session: cookie.session,
+      storeId: null as string | null,
+      value: cookie.value,
+    })),
+    null,
+    2,
+  );
+
+const toHeaderString = (cookies: SiteCookieData[]) =>
+  cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ');
+
+// curl / wget / yt-dlp 通用的 cookies.txt 格式。
+const toNetscape = (cookies: SiteCookieData[]) =>
+  [
+    '# Netscape HTTP Cookie File',
+    '# https://curl.se/docs/http-cookies.html',
+    '',
+    ...cookies.map((cookie) => {
+      const domain =
+        !cookie.hostOnly && !cookie.domain.startsWith('.')
+          ? `.${cookie.domain}`
+          : cookie.domain;
+      return [
+        cookie.httpOnly ? `#HttpOnly_${domain}` : domain,
+        cookie.hostOnly ? 'FALSE' : 'TRUE',
+        cookie.path || '/',
+        cookie.secure ? 'TRUE' : 'FALSE',
+        cookie.session ? 0 : Math.floor(cookie.expirationDate || 0),
+        cookie.name,
+        cookie.value,
+      ].join('\t');
+    }),
+    '',
+  ].join('\n');
 
 const EMPTY_DATA: SiteInfoData = {
   title: '',
@@ -141,6 +193,35 @@ export class Store extends DialogStore {
       ...this.data,
       cookies: Array.isArray(cookies) ? cookies : this.data.cookies,
     };
+  }
+
+  public async saveCookie(
+    original: SiteCookieData | null,
+    cookie: SiteCookieData,
+  ): Promise<{ ok: boolean; error?: CookieSaveError }> {
+    const result = await ipcRenderer.invoke(
+      `site-info-save-cookie-${this.windowId}`,
+      original ? { ...original } : null,
+      { ...cookie },
+    );
+    this.data = {
+      ...this.data,
+      cookies: Array.isArray(result?.cookies)
+        ? result.cookies
+        : this.data.cookies,
+    };
+    return { ok: !!result?.ok, error: result?.error };
+  }
+
+  public exportCookies(format: CookieExportFormat) {
+    const { cookies } = this.data;
+    const text =
+      format === 'json'
+        ? toExportJson(cookies)
+        : format === 'header'
+        ? toHeaderString(cookies)
+        : toNetscape(cookies);
+    clipboard.writeText(text);
   }
 
   public async clearCookies() {
