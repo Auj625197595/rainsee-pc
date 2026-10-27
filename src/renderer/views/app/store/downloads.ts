@@ -31,5 +31,15 @@ export class DownloadsStore {
       const i = this.list.find((x) => x.id === id);
       i.completed = true;
     });
+
+    // 自动重试耗尽,收敛为失败终态(仍可手动 download-resume 重试)。
+    ipcRenderer.on('download-failed', (e, id: string) => {
+      const i = this.list.find((x) => x.id === id);
+      if (i) {
+        i.failed = true;
+        i.paused = false;
+        i.retrying = false;
+      }
+    });
   }
 }

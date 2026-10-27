@@ -8,9 +8,9 @@ import {getWebUIContext} from '~/common/webui-context';
 
 const webUIContext = getWebUIContext();
 
-export type DownloadFilter = 'all' | 'active' | 'completed' | 'canceled';
+export type DownloadFilter = 'all' | 'active' | 'completed' | 'canceled' | 'failed';
 
-export type DownloadStatus = 'active' | 'completed' | 'canceled';
+export type DownloadStatus = 'active' | 'completed' | 'canceled' | 'failed';
 
 export interface IDownloadGroup {
   key: DownloadStatus;
@@ -18,10 +18,14 @@ export interface IDownloadGroup {
   items: IDownloadItem[];
 }
 
-const GROUP_TITLES: Record<DownloadStatus, 'dlvActive' | 'dlvCompleted' | 'dlvCanceled'> = {
+const GROUP_TITLES: Record<
+  DownloadStatus,
+  'dlvActive' | 'dlvCompleted' | 'dlvCanceled' | 'dlvFailed'
+> = {
   active: 'dlvActive',
   completed: 'dlvCompleted',
   canceled: 'dlvCanceled',
+  failed: 'dlvFailed',
 };
 
 export class Store {
@@ -46,6 +50,7 @@ export class Store {
 
   public statusOf(item: IDownloadItem): DownloadStatus {
     if (item.canceled) return 'canceled';
+    if (item.failed) return 'failed';
     if (item.completed) return 'completed';
     return 'active';
   }
@@ -58,10 +63,11 @@ export class Store {
   // 最新下载排在最前面。
   @computed
   public get sections(): IDownloadGroup[] {
-    const order: DownloadStatus[] = ['active', 'completed', 'canceled'];
+    const order: DownloadStatus[] = ['active', 'completed', 'failed', 'canceled'];
     const buckets: Record<DownloadStatus, IDownloadItem[]> = {
       active: [],
       completed: [],
+      failed: [],
       canceled: [],
     };
 
@@ -139,13 +145,15 @@ export class Store {
     this.lastJson = JSON.stringify(this.downloads);
   }
 
-  // 清除列表中所有已完成 / 已取消的记录(不影响进行中的下载)。
+  // 清除列表中所有已完成 / 已取消 / 已失败的记录(不影响进行中的下载)。
   @action
   public clearFinished() {
     this.downloads
-      .filter((x) => x.completed || x.canceled)
+      .filter((x) => x.completed || x.canceled || x.failed)
       .forEach((x) => ipcRenderer.send('download-remove', x.id));
-    this.downloads = this.downloads.filter((x) => !x.completed && !x.canceled);
+    this.downloads = this.downloads.filter(
+      (x) => !x.completed && !x.canceled && !x.failed,
+    );
     this.lastJson = JSON.stringify(this.downloads);
   }
 

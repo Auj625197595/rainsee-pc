@@ -1,5 +1,9 @@
 import styled, { css } from 'styled-components';
 import { ITheme } from '~/interfaces';
+import {
+  FileCategory,
+  FILE_TYPE_COLORS,
+} from '~/renderer/components/FileTypeIcon';
 
 export type DownloadStatus =
   | 'downloading'
@@ -9,59 +13,68 @@ export type DownloadStatus =
 
 const STATUS_COLORS: Record<
   DownloadStatus,
-  { badgeBg: string; badgeFg: string; ring: string; progress: string }
+  { fg: string; darkFg: string; progress: string }
 > = {
-  downloading: {
-    badgeBg: '#eef2ff',
-    badgeFg: '#3452ff',
-    ring: '#d7e4ff',
-    progress: '#3452ff',
-  },
-  completed: {
-    badgeBg: '#eaf9f3',
-    badgeFg: '#28a37a',
-    ring: '#d8eee4',
-    progress: '#34c38f',
-  },
-  paused: {
-    badgeBg: '#fff4de',
-    badgeFg: '#d68a14',
-    ring: '#f3e3c5',
-    progress: '#f0b24d',
-  },
-  failed: {
-    badgeBg: '#ffe8e8',
-    badgeFg: '#d34f5b',
-    ring: '#f2d5d9',
-    progress: '#e06a78',
-  },
+  downloading: { fg: '#3b6cff', darkFg: '#8fb0ff', progress: '#3b6cff' },
+  completed: { fg: '#28a37a', darkFg: '#6fd6a8', progress: '#34c38f' },
+  paused: { fg: '#d68a14', darkFg: '#f3c26a', progress: '#f0b24d' },
+  failed: { fg: '#d34f5b', darkFg: '#ff9393', progress: '#e06a78' },
 };
 
-export const StyledDownloadItem = styled.div`
-  border-radius: 14px;
-  background-color: rgba(255, 255, 255, 0.92);
-  padding: 8px 10px;
-  box-shadow: 0 4px 12px rgba(20, 32, 72, 0.04);
-  cursor: default;
-  position: relative;
-  transition: 0.12s background-color;
+export const TitleActions = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  transition: 0.12s opacity;
 
-  & + & {
-    margin-top: 6px;
-  }
-
-  ${({ theme }: { theme?: ITheme }) =>
-    theme.dark &&
+  /* 已完成的条目只在悬停/聚焦时露出操作,保持列表安静;进行中的条目常驻暂停按钮。 */
+  ${({ persistent }: { persistent?: boolean }) =>
+    !persistent &&
     css`
-      background-color: rgba(255, 255, 255, 0.06);
-      box-shadow: none;
+      opacity: 0;
     `}
 `;
 
-export const Body = styled.div`
+export const StyledDownloadItem = styled.div`
   display: flex;
   align-items: center;
   gap: 10px;
+  padding: 8px 6px 8px 10px;
+  border-radius: 10px;
+  position: relative;
+  outline: none;
+  transition: 0.12s background-color;
+
+  ${({ clickable }: { theme?: ITheme; clickable?: boolean }) => css`
+    cursor: ${clickable ? 'pointer' : 'default'};
+  `}
+
+  &:hover,
+  &:focus-visible {
+    background-color: rgba(15, 23, 42, 0.045);
+
+    ${TitleActions} {
+      opacity: 1;
+    }
+  }
+
+  &:focus-visible {
+    box-shadow: inset 0 0 0 2px rgba(79, 124, 255, 0.55);
+  }
+
+  &:focus-within ${TitleActions} {
+    opacity: 1;
+  }
+
+  ${({ theme }: { theme?: ITheme; clickable?: boolean }) =>
+    theme.dark &&
+    css`
+      &:hover,
+      &:focus-visible {
+        background-color: rgba(255, 255, 255, 0.06);
+      }
+    `}
 `;
 
 export const Icon = styled.div`
@@ -69,20 +82,54 @@ export const Icon = styled.div`
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  width: 38px;
-  height: 38px;
-  border-radius: 12px;
-  font-size: 10px;
-  font-weight: 900;
-  background-color: #eef2ff;
-  color: #3452ff;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  overflow: hidden;
 
-  ${({ theme }: { theme?: ITheme }) =>
-    theme.dark &&
-    css`
-      background-color: rgba(52, 82, 255, 0.18);
-      color: #9db0ff;
-    `}
+  img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  /* 应用自带图标保持原比例居中,不裁切。 */
+  img.app-icon {
+    width: 26px;
+    height: 26px;
+    object-fit: contain;
+  }
+
+  ${({
+    theme,
+    category,
+    hasPreview,
+    dimmed,
+  }: {
+    theme?: ITheme;
+    category: FileCategory;
+    hasPreview?: boolean;
+    dimmed?: boolean;
+  }) => {
+    const c = FILE_TYPE_COLORS[category];
+    return css`
+      color: ${theme.dark ? c.darkFg : c.fg};
+      background-color: ${hasPreview
+        ? theme.dark
+          ? 'rgba(255,255,255,0.06)'
+          : '#f4f6fa'
+        : theme.dark
+          ? c.darkBg
+          : c.bg};
+      opacity: ${dimmed ? 0.55 : 1};
+      ${hasPreview &&
+      css`
+        box-shadow: inset 0 0 0 1px
+          ${theme.dark ? 'rgba(255,255,255,0.08)' : 'rgba(15,23,42,0.06)'};
+      `}
+    `;
+  }}
 `;
 
 export const Main = styled.div`
@@ -94,14 +141,8 @@ export const TitleRow = styled.div`
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-`;
-
-export const TitleActions = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
+  gap: 6px;
+  min-height: 22px;
 `;
 
 export const Title = styled.div`
@@ -111,56 +152,58 @@ export const Title = styled.div`
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 500;
+  line-height: 18px;
   ${({ canceled }: { canceled?: boolean }) =>
     canceled &&
     css`
       text-decoration: line-through;
+      opacity: 0.6;
     `}
 `;
 
-export const MoreButton = styled.button`
+export const ActionButton = styled.button`
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
   border: none;
   cursor: pointer;
-  border-radius: 10px;
-  background-color: #f2f7ff;
-  color: #6f86b7;
-  transition: 0.12s background-color;
+  border-radius: 6px;
+  background-color: transparent;
+  color: inherit;
+  opacity: 0.5;
+  transition: 0.12s background-color, 0.12s color;
 
   svg {
-    width: 14px;
-    height: 14px;
+    width: 13px;
+    height: 13px;
   }
 
   &:hover {
-    background-color: #e7f0ff;
+    opacity: 1;
+    background-color: rgba(15, 23, 42, 0.07);
   }
 
-  ${({ theme, toggled }: { theme?: ITheme; toggled?: boolean }) =>
-    theme.dark
-      ? css`
-          background-color: rgba(255, 255, 255, 0.08);
-          color: rgba(255, 255, 255, 0.7);
-          &:hover {
-            background-color: rgba(255, 255, 255, 0.14);
-          }
-        `
-      : toggled &&
-        css`
-          background-color: #e7f0ff;
-        `}
+  &:focus-visible {
+    outline: 2px solid #4f7cff;
+    outline-offset: 0;
+  }
+
+  ${({ theme }: { theme?: ITheme }) =>
+    theme.dark &&
+    css`
+      &:hover {
+        background-color: rgba(255, 255, 255, 0.1);
+      }
+    `}
 `;
 
-export const PauseButton = styled(MoreButton)``;
-
 export const StatusRow = styled.div`
-  margin-top: 5px;
+  margin-top: 1px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -171,25 +214,20 @@ export const StatusPrimary = styled.div`
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 `;
 
 export const StatusBadge = styled.span`
   flex-shrink: 0;
-  border-radius: 999px;
-  padding: 3px 9px;
-  font-size: 10px;
-  font-weight: 900;
+  font-size: 12px;
+  font-weight: 500;
   white-space: nowrap;
 
-  ${({ status }: { status: DownloadStatus }) => {
-    const c = STATUS_COLORS[status];
-    return css`
-      background-color: ${c.badgeBg};
-      color: ${c.badgeFg};
-      box-shadow: inset 0 0 0 1px ${c.ring};
-    `;
-  }}
+  ${({ theme, status }: { theme?: ITheme; status: DownloadStatus }) => css`
+    color: ${theme.dark
+      ? STATUS_COLORS[status].darkFg
+      : STATUS_COLORS[status].fg};
+  `}
 `;
 
 export const Detail = styled.span`
@@ -197,42 +235,43 @@ export const Detail = styled.span`
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
-  font-weight: 650;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 17px;
   opacity: 0.5;
 `;
 
 export const TransferInfo = styled(Detail)`
   font-variant-numeric: tabular-nums;
-  opacity: 0.64;
+  opacity: 0.6;
 `;
 
 export const Speed = styled.span`
   flex-shrink: 0;
   white-space: nowrap;
-  font-size: 11px;
-  font-weight: 800;
+  font-size: 12px;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
-  color: #3452ff;
+  color: #3b6cff;
 
   ${({ theme }: { theme?: ITheme }) =>
     theme.dark &&
     css`
-      color: #9db0ff;
+      color: #8fb0ff;
     `}
 `;
 
 export const ProgressBackground = styled.div`
-  margin-top: 7px;
-  height: 4px;
+  margin-top: 6px;
+  height: 3px;
   border-radius: 999px;
   overflow: hidden;
-  background-color: rgba(20, 32, 72, 0.08);
+  background-color: rgba(15, 23, 42, 0.07);
 
   ${({ theme }: { theme?: ITheme }) =>
     theme.dark &&
     css`
-      background-color: rgba(255, 255, 255, 0.12);
+      background-color: rgba(255, 255, 255, 0.1);
     `}
 `;
 

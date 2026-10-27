@@ -1,28 +1,49 @@
 import * as React from 'react';
+import { clipboard } from 'electron';
 import { observer } from 'mobx-react-lite';
 import { ThemeProvider } from 'styled-components';
-import { CaretDown, FolderOpen } from '@phosphor-icons/react';
+import {
+  CaretDown,
+  Check,
+  CopySimple,
+  DownloadSimple,
+  FolderOpen,
+} from '@phosphor-icons/react';
 import { UIStyle } from '~/renderer/mixins/default-styles';
 import { IDownloadPromptResult } from '~/interfaces';
+import {
+  FILE_TYPE_COLORS,
+  FileTypeIcon,
+  getFileCategory,
+} from '~/renderer/components/FileTypeIcon';
+import { formatBytes } from '~/renderer/views/downloads/utils';
 import store from '../../store';
 import {
   Actions,
+  badgeColors,
   CancelButton,
+  ChangeButton,
+  Divider,
   ErrorText,
   Field,
   FieldLabel,
+  FileBadge,
   FileInput,
   Header,
+  HeaderText,
+  IconButton,
+  Meta,
+  MetaDot,
   OpenOption,
-  PathButton,
+  PathControl,
   PathText,
   PrimaryButton,
   Select,
   SelectControl,
+  Size,
   Source,
   StyledApp,
   Title,
-  UrlInput,
 } from './style';
 import { useI18n } from '~/renderer/components/I18n';
 
@@ -35,6 +56,7 @@ export const App = observer(() => {
   const [openWhenDone, setOpenWhenDone] = React.useState(false);
   const [error, setError] = React.useState('');
   const [busy, setBusy] = React.useState(false);
+  const [copied, setCopied] = React.useState(false);
 
   React.useEffect(() => {
     if (!store.visible) return;
@@ -44,11 +66,22 @@ export const App = observer(() => {
     setOpenWhenDone(false);
     setError('');
     setBusy(false);
+    setCopied(false);
     requestAnimationFrame(() => {
-      fileNameRef.current?.focus();
-      fileNameRef.current?.select();
+      const input = fileNameRef.current;
+      if (!input) return;
+      input.focus();
+      // 与 Chrome 另存为一致:只选中扩展名之前的部分,方便直接改名。
+      const dot = input.value.lastIndexOf('.');
+      input.setSelectionRange(0, dot > 0 ? dot : input.value.length);
     });
   }, [store.visible, store.data]);
+
+  React.useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(timer);
+  }, [copied]);
 
   const selectDirectory = async () => {
     const selected = await store.selectDirectory();
@@ -56,6 +89,11 @@ export const App = observer(() => {
       setDirectory(selected);
       setError('');
     }
+  };
+
+  const copyLink = () => {
+    clipboard.writeText(store.data.url);
+    setCopied(true);
   };
 
   const submit = async (action: IDownloadPromptResult['action']) => {
@@ -74,15 +112,16 @@ export const App = observer(() => {
     }
   };
 
+  const confirm = () =>
+    submit(openWhenDone && !externalDownloader ? 'open' : 'save');
+
   const externalDownloader = downloaderType !== 'browser';
+  const theme = { ...store.theme, dark: store.theme['dialog.lightForeground'] };
+  const category = getFileCategory(fileName || store.data.fileName);
+  const size = store.data.size || 0;
 
   return (
-    <ThemeProvider
-      theme={{
-        ...store.theme,
-        dark: store.theme['dialog.lightForeground'],
-      }}
-    >
+    <ThemeProvider theme={theme}>
       <StyledApp
         visible={store.visible}
         onKeyDown={(event) => {
@@ -91,46 +130,78 @@ export const App = observer(() => {
       >
         <UIStyle />
         <Header>
-          <Title>{t('dlpTitle')}</Title>
-          <Source title={store.data.source}>
-            {t('dlpFrom', { source: store.data.source })}
-          </Source>
-          <UrlInput
-            aria-label={t('dlpLinkAria')}
-            title={store.data.url}
-            value={store.data.url}
-            readOnly
-            spellCheck={false}
-            onFocus={(event) => event.currentTarget.select()}
-          />
+          <FileBadge style={badgeColors(FILE_TYPE_COLORS[category], theme)}>
+            <FileTypeIcon category={category} size={22} />
+          </FileBadge>
+          <HeaderText>
+            <Title>{t('dlpTitle')}</Title>
+            <Meta>
+              <Source title={store.data.url}>
+                {t('dlpFrom', { source: store.data.source })}
+              </Source>
+              {size > 0 && (
+                <>
+                  <MetaDot>·</MetaDot>
+                  <Size>{formatBytes(size)}</Size>
+                </>
+              )}
+            </Meta>
+          </HeaderText>
+          <IconButton
+            type="button"
+            title={copied ? t('dlpLinkCopied') : store.data.url}
+            aria-label={t('dlpCopyLink')}
+            onClick={copyLink}
+          >
+            {copied ? (
+              <Check size={16} weight="bold" />
+            ) : (
+              <CopySimple size={16} />
+            )}
+          </IconButton>
         </Header>
 
+        <Divider />
+
         <Field>
-          <FieldLabel htmlFor="download-file-name">{t('dlpFilename')}</FieldLabel>
+          <FieldLabel htmlFor="download-file-name">
+            {t('dlpFilename')}
+          </FieldLabel>
           <FileInput
             ref={fileNameRef}
             id="download-file-name"
             value={fileName}
-            autoFocus
             spellCheck={false}
             onChange={(event) => {
               setFileName(event.target.value);
               setError('');
             }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') confirm();
+            }}
           />
         </Field>
 
         <Field>
-          <FieldLabel>{t('dlpLocation')}</FieldLabel>
-          <PathButton
-            type="button"
-            title={directory}
-            aria-label={t('dlpChooseLocationAria')}
-            onClick={selectDirectory}
-          >
-            <PathText>{directory}</PathText>
-            <FolderOpen size={17} />
-          </PathButton>
+          <FieldLabel id="download-location-label">
+            {t('dlpLocation')}
+          </FieldLabel>
+          <PathControl title={directory} onClick={selectDirectory}>
+            <FolderOpen size={16} />
+            <PathText aria-labelledby="download-location-label">
+              {directory}
+            </PathText>
+            <ChangeButton
+              type="button"
+              aria-label={t('dlpChooseLocationAria')}
+              onClick={(event) => {
+                event.stopPropagation();
+                selectDirectory();
+              }}
+            >
+              {t('dlpChange')}
+            </ChangeButton>
+          </PathControl>
         </Field>
 
         <Field>
@@ -160,9 +231,7 @@ export const App = observer(() => {
           ) : (
             <OpenOption
               title={
-                externalDownloader
-                  ? t('dlpAutoOpenUnsupported')
-                  : undefined
+                externalDownloader ? t('dlpAutoOpenUnsupported') : undefined
               }
             >
               <input
@@ -181,14 +250,9 @@ export const App = observer(() => {
           >
             {t('cancel')}
           </CancelButton>
-          <PrimaryButton
-            type="button"
-            disabled={busy}
-            onClick={() =>
-              submit(openWhenDone && !externalDownloader ? 'open' : 'save')
-            }
-          >
-            {busy ? t('dlpBusy') : t('save')}
+          <PrimaryButton type="button" disabled={busy} onClick={confirm}>
+            <DownloadSimple size={15} weight="bold" />
+            {busy ? t('dlpBusy') : t('dlpDownload')}
           </PrimaryButton>
         </Actions>
       </StyledApp>

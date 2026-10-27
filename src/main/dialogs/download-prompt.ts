@@ -5,8 +5,8 @@ import { PersistentDialog } from './dialog';
 import { Application } from '../application';
 import { getMainTranslator } from '../i18n';
 
-const WIDTH = 430;
-const HEIGHT = 382;
+const WIDTH = 440;
+const HEIGHT = 404;
 
 interface IPromptQueueItem {
   browserWindow: BrowserWindow;
@@ -18,6 +18,16 @@ const canceledResult = (): IDownloadPromptResult => ({
   action: 'cancel',
   fileName: '',
   directory: '',
+  downloaderType: 'browser',
+});
+
+// 浮层被外部关闭(切标签/点网页触发 hideAllPersistent,或浮层加载/显示失败)
+// 时使用:用户点了网页上的"下载"就是要这个文件,外部关闭按默认名/目录继续
+// 下载,绝不静默杀任务;只有浮层上的"取消"按钮/Esc 才真正取消。
+const dismissedResult = (data?: IDownloadPromptData): IDownloadPromptResult => ({
+  action: 'dismiss',
+  fileName: data?.fileName ?? '',
+  directory: data?.directory ?? '',
   downloaderType: 'browser',
 });
 
@@ -124,9 +134,12 @@ export class DownloadPromptDialog extends PersistentDialog {
     });
   }
 
+  // 外部关闭(切标签/点网页的 hideAllPersistent)不走取消:finishCurrent 按-dismiss
+  // 结束当前询问,下载继续。窗口已销毁(onWindowClosed)除外,那种情况宿主 view
+  // 会随窗口销毁,任务本身也活不下去。
   public hide(bringToTop = false, hideVisually = true) {
     if (this.current) {
-      this.finishCurrent(canceledResult());
+      this.finishCurrent(dismissedResult(this.current.data));
       return;
     }
     super.hide(bringToTop, hideVisually);
@@ -148,13 +161,19 @@ export class DownloadPromptDialog extends PersistentDialog {
 
     this.current = next;
     try {
-      if (!(await super.show(next.browserWindow, true))) return;
+      // show 返回 false = 等待冷加载期间被 hide 顶掉/宿主窗口销毁。不能就此
+      // 返回:current 悬空会让下载项永久停在暂停态,队列也被卡死。按外部关闭
+      // 收尾(下载继续),finishCurrent 对 current 已被 hide 清空的情况是幂等的。
+      if (!(await super.show(next.browserWindow, true))) {
+        this.finishCurrent(dismissedResult(next.data));
+        return;
+      }
       this.rearrange();
       next.browserWindow.on('resize', this.onWindowResize);
       next.browserWindow.once('closed', this.onWindowClosed);
       this.send('visible', true, next.data);
     } catch {
-      this.finishCurrent(canceledResult());
+      this.finishCurrent(dismissedResult(next.data));
     }
   }
 

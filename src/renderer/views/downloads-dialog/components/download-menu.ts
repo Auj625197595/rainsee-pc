@@ -7,7 +7,7 @@ import { IDownloadItem } from '~/interfaces';
 // 保证两处入口的行为始终一致。
 
 export const openItem = (item: IDownloadItem) => {
-  if (item.completed) shell.openPath(item.savePath);
+  if (item.completed && !item.fileMissing) shell.openPath(item.savePath);
 };
 
 export const toggleOpenWhenDone = (item: IDownloadItem) => {
@@ -63,10 +63,13 @@ export const getDownloadMenuTemplate = (
   const t = createLocaleTranslator(undefined);
   const template: Electron.MenuItemConstructorOptions[] = [];
 
-  if (!item.canceled) {
+  // 文件已被删除/移走:打开、在文件夹中显示、删除文件均无意义,只保留复制链接与移除。
+  const missing = !!item.completed && !!item.fileMissing;
+
+  if (!item.canceled && !missing) {
     if (item.completed) {
       template.push({ label: t('dldOpenFile'), click: () => openItem(item) });
-    } else {
+    } else if (!item.failed) {
       template.push({
         type: 'checkbox',
         label: t('dldOpenWhenDone'),
@@ -78,14 +81,21 @@ export const getDownloadMenuTemplate = (
   }
 
   if (!item.completed && !item.canceled) {
-    template.push(
-      item.paused && !item.retrying
-        ? { label: t('dldResume'), click: () => resumeDownload(item) }
-        : { label: t('dldPause'), click: () => pauseDownload(item) },
-    );
+    if (item.failed) {
+      template.push({
+        label: t('dldRetry'),
+        click: () => resumeDownload(item),
+      });
+    } else {
+      template.push(
+        item.paused && !item.retrying
+          ? { label: t('dldResume'), click: () => resumeDownload(item) }
+          : { label: t('dldPause'), click: () => pauseDownload(item) },
+      );
+    }
   }
 
-  if (!item.canceled) {
+  if (!item.canceled && !missing) {
     template.push({
       label: t('dldShowInFolder'),
       click: () => showInFolder(item),
@@ -95,11 +105,11 @@ export const getDownloadMenuTemplate = (
   template.push({ label: t('dldCopyLink'), click: () => copyLink(item) });
   template.push({ type: 'separator' });
 
-  if (item.completed) {
+  if (item.completed && !missing) {
     template.push({ label: t('dldDeleteFile'), click: () => trashDownload(item) });
   }
 
-  if (item.completed || item.canceled) {
+  if (item.completed || item.canceled || item.failed) {
     template.push({
       label: t('dldRemoveFromList'),
       click: () => removeDownload(item),

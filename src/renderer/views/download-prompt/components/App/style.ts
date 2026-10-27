@@ -2,175 +2,198 @@ import styled, { css } from 'styled-components';
 import { ITheme } from '~/interfaces';
 import { DialogStyle } from '~/renderer/mixins/dialogs';
 
+type ThemeProps = { theme?: ITheme };
+
 const isDark = (theme?: ITheme) =>
   Boolean(theme?.dark || theme?.['dialog.lightForeground']);
 const foreground = (theme?: ITheme) =>
   isDark(theme) ? '#f2f4f8' : theme?.['dialog.textColor'] || '#1e2433';
 const muted = (theme?: ITheme) =>
-  isDark(theme) ? 'rgba(232, 236, 244, 0.62)' : '#727b8e';
+  isDark(theme) ? 'rgba(232, 236, 244, 0.6)' : '#6f788a';
 const border = (theme?: ITheme) =>
-  isDark(theme) ? 'rgba(255, 255, 255, 0.13)' : '#dfe4ed';
+  isDark(theme) ? 'rgba(255, 255, 255, 0.1)' : 'rgba(30, 42, 66, 0.1)';
 const controlBackground = (theme?: ITheme) =>
-  isDark(theme) ? 'rgba(255, 255, 255, 0.065)' : 'rgba(255, 255, 255, 0.82)';
+  isDark(theme) ? 'rgba(255, 255, 255, 0.055)' : 'rgba(244, 246, 250, 0.9)';
+const accent = (theme?: ITheme) => (isDark(theme) ? '#5b9cf0' : '#2f74d0');
+const focusRing = (theme?: ITheme) =>
+  isDark(theme) ? 'rgba(91, 156, 240, 0.24)' : 'rgba(47, 116, 208, 0.16)';
 
 export const StyledApp = styled(DialogStyle)`
-  padding: 16px 18px;
-  border-radius: 18px;
-  border: 1px solid
-    ${({ theme }: { theme?: ITheme }) =>
-      isDark(theme) ? 'rgba(255, 255, 255, 0.1)' : 'rgba(28, 39, 63, 0.08)'};
-  backdrop-filter: blur(24px) saturate(150%);
-  -webkit-backdrop-filter: blur(24px) saturate(150%);
-  box-shadow: 0 1px 4px rgba(20, 32, 72, 0.05),
-    0 4px 12px rgba(20, 32, 72, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  padding: 18px 20px 16px;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   font-family: -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  /* 边缘与扩展列表浮层(extensions-list)保持一致:圆角/描边/毛玻璃/阴影。 */
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  box-shadow:
+    0 1px 4px rgba(20, 32, 72, 0.05),
+    0 4px 12px rgba(20, 32, 72, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7);
 
-  ${({ theme }: { theme?: ITheme }) => css`
+  ${({ theme }: ThemeProps) => css`
     color-scheme: ${isDark(theme) ? 'dark' : 'light'};
     background-color: ${isDark(theme)
-      ? 'rgba(31, 33, 39, 0.94)'
-      : 'rgba(252, 253, 255, 0.92)'};
+      ? 'rgba(40, 42, 48, 0.82)'
+      : 'rgba(255, 255, 255, 0.78)'};
     color: ${foreground(theme)};
   `}
 `;
 
 export const Header = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+`;
+
+export const FileBadge = styled.div`
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+`;
+
+export const HeaderText = styled.div`
+  flex: 1;
   min-width: 0;
 `;
 
 export const Title = styled.div`
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 650;
   line-height: 1.35;
-  letter-spacing: -0.01em;
 `;
 
-export const Source = styled.div`
-  max-width: 100%;
-  margin-top: 3px;
+export const Meta = styled.div`
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: ${({ theme }: ThemeProps) => muted(theme)};
+`;
+
+export const Source = styled.span`
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
-  font-weight: 400;
-  line-height: 1.5;
-  color: ${({ theme }: { theme?: ITheme }) => muted(theme)};
 `;
 
-export const UrlInput = styled.input`
-  width: 100%;
-  height: 28px;
-  margin-top: 5px;
-  padding: 0 8px;
-  border: 1px solid ${({ theme }: { theme?: ITheme }) => border(theme)};
-  border-radius: 7px;
-  outline: none;
-  font-family: 'Cascadia Code', Consolas, monospace;
-  font-size: 11px;
-  color: ${({ theme }: { theme?: ITheme }) => muted(theme)};
-  background: ${({ theme }: { theme?: ITheme }) => controlBackground(theme)};
+export const MetaDot = styled.span`
+  flex-shrink: 0;
+  opacity: 0.6;
+`;
 
-  &:focus {
-    border-color: ${({ theme }: { theme?: ITheme }) =>
-      isDark(theme) ? '#6d9bd3' : '#5b91df'};
-    box-shadow: 0 0 0 3px
-      ${({ theme }: { theme?: ITheme }) =>
-        isDark(theme) ? 'rgba(93, 148, 214, 0.2)' : 'rgba(70, 127, 211, 0.16)'};
+export const Size = styled.span`
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+`;
+
+export const IconButton = styled.button`
+  flex-shrink: 0;
+  align-self: flex-start;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  background: transparent;
+  color: ${({ theme }: ThemeProps) => muted(theme)};
+  transition: background-color 0.15s ease, color 0.15s ease;
+
+  &:hover {
+    color: ${({ theme }: ThemeProps) => foreground(theme)};
+    background: ${({ theme }: ThemeProps) =>
+      isDark(theme) ? 'rgba(255, 255, 255, 0.08)' : 'rgba(31, 44, 68, 0.06)'};
   }
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px ${({ theme }: ThemeProps) => focusRing(theme)};
+  }
+`;
+
+export const Divider = styled.div`
+  height: 1px;
+  margin: 16px -20px 4px;
+  background: ${({ theme }: ThemeProps) => border(theme)};
 `;
 
 export const Field = styled.div`
   display: grid;
-  gap: 5px;
-  margin-top: 11px;
+  gap: 6px;
+  margin-top: 12px;
 `;
 
 export const FieldLabel = styled.label`
   font-size: 12px;
   font-weight: 500;
-  color: ${({ theme }: { theme?: ITheme }) => muted(theme)};
+  color: ${({ theme }: ThemeProps) => muted(theme)};
 `;
 
 const controlStyle = css`
   width: 100%;
-  height: 38px;
-  border-radius: 10px;
+  height: 36px;
+  border-radius: 9px;
   outline: none;
   font: inherit;
   font-size: 13px;
-  font-weight: 500;
-  color: ${({ theme }: { theme?: ITheme }) => foreground(theme)};
-  background: ${({ theme }: { theme?: ITheme }) => controlBackground(theme)};
-  border: 1px solid ${({ theme }: { theme?: ITheme }) => border(theme)};
+  color: ${({ theme }: ThemeProps) => foreground(theme)};
+  background: ${({ theme }: ThemeProps) => controlBackground(theme)};
+  border: 1px solid ${({ theme }: ThemeProps) => border(theme)};
   transition: border-color 0.15s ease, box-shadow 0.15s ease,
     background-color 0.15s ease;
 
-  &:focus {
-    border-color: ${({ theme }: { theme?: ITheme }) =>
-      isDark(theme) ? '#6d9bd3' : '#5b91df'};
-    box-shadow: 0 0 0 3px
-      ${({ theme }: { theme?: ITheme }) =>
-        isDark(theme) ? 'rgba(93, 148, 214, 0.2)' : 'rgba(70, 127, 211, 0.16)'};
+  &:hover {
+    border-color: ${({ theme }: ThemeProps) =>
+      isDark(theme) ? 'rgba(255, 255, 255, 0.2)' : 'rgba(30, 42, 66, 0.2)'};
+  }
+
+  &:focus,
+  &:focus-within {
+    border-color: ${({ theme }: ThemeProps) => accent(theme)};
+    box-shadow: 0 0 0 3px ${({ theme }: ThemeProps) => focusRing(theme)};
+    background: ${({ theme }: ThemeProps) =>
+      isDark(theme) ? 'rgba(255, 255, 255, 0.07)' : '#fff'};
   }
 `;
 
 export const FileInput = styled.input`
   ${controlStyle}
   padding: 0 12px;
+  font-weight: 500;
 
   &::selection {
     color: #fff;
-    background: ${({ theme }: { theme?: ITheme }) =>
-      isDark(theme) ? '#386da9' : '#397ed0'};
+    background: ${({ theme }: ThemeProps) => accent(theme)};
   }
 `;
 
-export const SelectControl = styled.div`
-  position: relative;
-
-  > svg {
-    position: absolute;
-    top: 50%;
-    right: 12px;
-    transform: translateY(-50%);
-    color: ${({ theme }: { theme?: ITheme }) => muted(theme)};
-    pointer-events: none;
-  }
-`;
-
-export const Select = styled.select`
+export const PathControl = styled.div`
   ${controlStyle}
-  appearance: none;
-  padding: 0 38px 0 12px;
-
-  option {
-    color: ${({ theme }: { theme?: ITheme }) => foreground(theme)};
-    background: ${({ theme }: { theme?: ITheme }) =>
-      isDark(theme) ? '#2b2d33' : '#fff'};
-  }
-`;
-
-export const PathButton = styled.button`
-  ${controlStyle}
-  padding: 0 12px;
+  padding: 0 4px 0 12px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  text-align: left;
+  gap: 8px;
   cursor: pointer;
 
   > svg {
     flex-shrink: 0;
-    color: ${({ theme }: { theme?: ITheme }) => muted(theme)};
-  }
-
-  &:hover {
-    border-color: ${({ theme }: { theme?: ITheme }) =>
-      isDark(theme) ? 'rgba(255, 255, 255, 0.22)' : '#aeb8c8'};
-    background: ${({ theme }: { theme?: ITheme }) =>
-      isDark(theme) ? 'rgba(255, 255, 255, 0.1)' : '#fff'};
+    color: ${({ theme }: ThemeProps) => muted(theme)};
   }
 `;
 
@@ -182,9 +205,61 @@ export const PathText = styled.span`
   white-space: nowrap;
 `;
 
+export const ChangeButton = styled.button`
+  flex-shrink: 0;
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  color: ${({ theme }: ThemeProps) => accent(theme)};
+  background: ${({ theme }: ThemeProps) =>
+    isDark(theme) ? 'rgba(91, 156, 240, 0.14)' : 'rgba(47, 116, 208, 0.09)'};
+  transition: background-color 0.15s ease;
+
+  &:hover {
+    background: ${({ theme }: ThemeProps) =>
+      isDark(theme) ? 'rgba(91, 156, 240, 0.22)' : 'rgba(47, 116, 208, 0.15)'};
+  }
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px ${({ theme }: ThemeProps) => accent(theme)};
+  }
+`;
+
+export const SelectControl = styled.div`
+  position: relative;
+
+  > svg {
+    position: absolute;
+    top: 50%;
+    right: 12px;
+    transform: translateY(-50%);
+    color: ${({ theme }: ThemeProps) => muted(theme)};
+    pointer-events: none;
+  }
+`;
+
+export const Select = styled.select`
+  ${controlStyle}
+  appearance: none;
+  padding: 0 36px 0 12px;
+  cursor: pointer;
+
+  option {
+    color: ${({ theme }: ThemeProps) => foreground(theme)};
+    background: ${({ theme }: ThemeProps) =>
+      isDark(theme) ? '#2b2d33' : '#fff'};
+  }
+`;
+
 export const Actions = styled.div`
   min-height: 36px;
-  margin-top: 14px;
+  margin-top: 18px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -192,8 +267,8 @@ export const Actions = styled.div`
 
 export const ErrorText = styled.div`
   flex: 1;
-  color: ${({ theme }: { theme?: ITheme }) =>
-    isDark(theme) ? '#ff8f89' : '#d93025'};
+  min-width: 0;
+  color: ${({ theme }: ThemeProps) => (isDark(theme) ? '#ff8f89' : '#d93025')};
   font-size: 12px;
   font-weight: 500;
   overflow: hidden;
@@ -208,67 +283,84 @@ export const OpenOption = styled.label`
   align-items: center;
   gap: 7px;
   font-size: 12px;
-  font-weight: 400;
-  color: ${({ theme }: { theme?: ITheme }) => muted(theme)};
+  color: ${({ theme }: ThemeProps) => muted(theme)};
   user-select: none;
+  cursor: pointer;
 
   input {
     width: 15px;
     height: 15px;
     margin: 0;
-    accent-color: ${({ theme }: { theme?: ITheme }) =>
-      isDark(theme) ? '#5596e2' : '#397ed0'};
+    cursor: pointer;
+    accent-color: ${({ theme }: ThemeProps) => accent(theme)};
   }
 
   &:has(input:disabled) {
     opacity: 0.45;
+    cursor: default;
   }
 `;
 
 const buttonStyle = css`
-  min-width: 72px;
-  height: 36px;
-  padding: 0 15px;
+  min-width: 76px;
+  height: 34px;
+  padding: 0 16px;
   border-radius: 9px;
-  border: 0;
   font: inherit;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  transition: background-color 0.15s ease, opacity 0.15s ease;
+  transition: background-color 0.15s ease, border-color 0.15s ease,
+    opacity 0.15s ease;
 
   &:disabled {
     cursor: default;
     opacity: 0.55;
   }
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px ${({ theme }: ThemeProps) => focusRing(theme)};
+  }
 `;
 
 export const CancelButton = styled.button`
   ${buttonStyle}
-  min-width: auto;
-  color: ${({ theme }: { theme?: ITheme }) => foreground(theme)};
+  color: ${({ theme }: ThemeProps) => foreground(theme)};
   background: transparent;
+  border: 1px solid ${({ theme }: ThemeProps) => border(theme)};
 
   &:hover:not(:disabled) {
-    background: ${({ theme }: { theme?: ITheme }) =>
-      isDark(theme) ? 'rgba(255, 255, 255, 0.08)' : 'rgba(31, 44, 68, 0.06)'};
+    background: ${({ theme }: ThemeProps) =>
+      isDark(theme) ? 'rgba(255, 255, 255, 0.06)' : 'rgba(31, 44, 68, 0.04)'};
   }
 `;
 
 export const PrimaryButton = styled.button`
   ${buttonStyle}
+  border: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   color: #fff;
-  background: ${({ theme }: { theme?: ITheme }) =>
-    isDark(theme) ? '#4387d5' : '#397ed0'};
-  box-shadow: 0 6px 16px rgba(57, 126, 208, 0.22);
+  background: ${({ theme }: ThemeProps) => accent(theme)};
 
   &:hover:not(:disabled) {
-    background: ${({ theme }: { theme?: ITheme }) =>
-      isDark(theme) ? '#5193df' : '#2f70c0'};
+    background: ${({ theme }: ThemeProps) =>
+      isDark(theme) ? '#6aa7f3' : '#2766bb'};
   }
 
   &:active:not(:disabled) {
-    background: ${({ theme }: { theme?: ITheme }) =>
-      isDark(theme) ? '#3978c2' : '#2864ad'};
+    background: ${({ theme }: ThemeProps) =>
+      isDark(theme) ? '#4d8de0' : '#2259a5'};
   }
 `;
+
+export const badgeColors = (
+  colors: { fg: string; bg: string; darkFg: string; darkBg: string },
+  theme?: ITheme,
+) =>
+  isDark(theme)
+    ? { color: colors.darkFg, background: colors.darkBg }
+    : { color: colors.fg, background: colors.bg };

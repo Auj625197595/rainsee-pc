@@ -5,15 +5,14 @@ import { ipcRenderer } from 'electron';
 
 import { StyledApp } from './style';
 import {
-  TopGlow,
   Content,
   Header,
-  Badge,
+  HeaderText,
   Heading,
   Subtitle,
   HeaderActions,
-  MoreButton,
-  CloseButton,
+  TextButton,
+  IconButton,
   ListCard,
   Empty,
 } from './panel';
@@ -23,9 +22,8 @@ import { UIStyle } from '~/renderer/mixins/default-styles';
 import { getWebUIURL } from '~/common/webui';
 import { useI18n } from '~/renderer/components/I18n';
 
-const dialogClicked = (e: React.MouseEvent<HTMLDivElement>) => {
-  store.closeAllDownloadMenu();
-};
+// DialogBaseStyle 的上(3) + 下(16) 外边距,不计入 offsetHeight,上报时需补上。
+const DIALOG_VERTICAL_MARGIN = 19;
 
 const onClose = (e: React.MouseEvent) => {
   e.stopPropagation();
@@ -41,33 +39,45 @@ const openAll = (e: React.MouseEvent) => {
   store.hide();
 };
 
+const clearFinished = (e: React.MouseEvent) => {
+  e.stopPropagation();
+  store.clearFinished();
+};
+
 export const App = observer(() => {
   const ref = React.useRef<HTMLDivElement>(null);
+  const t = useI18n();
+  const [scrolled, setScrolled] = React.useState(false);
+  const onListScroll = (e: React.UIEvent<HTMLDivElement>) =>
+    setScrolled(e.currentTarget.scrollTop > 0);
 
   const items = store.downloads.slice().reverse();
   const active = store.downloads.filter(
-    (x) => !x.completed && !x.canceled,
+    (x) => !x.completed && !x.canceled && !x.failed,
   ).length;
-  const menuOpen = store.downloads.some((x) => x.menuIsOpen);
+  const hasFinished = store.downloads.some(
+    (x) => x.completed || x.canceled || x.failed,
+  );
 
+  // 只挂一次观察器:内容尺寸变化(增删任务、进度行出现/消失)即上报实际高度。
   React.useEffect(() => {
     const el = ref.current;
     if (!el) return undefined;
 
+    let last = -1;
     const report = () => {
-      // 19px = DialogBaseStyle 的上(3) + 下(16) 外边距
-      // 菜单展开时额外预留高度，避免被窗口边界裁切
-      const extra = menuOpen ? 240 : 0;
-      ipcRenderer.send(`height-${store.id}`, el.offsetHeight + 19 + extra);
+      const h = Math.ceil(el.getBoundingClientRect().height) + DIALOG_VERTICAL_MARGIN;
+      if (h === last) return;
+      last = h;
+      ipcRenderer.send(`height-${store.id}`, h);
     };
 
     report();
     const observer = new ResizeObserver(report);
     observer.observe(el);
     return () => observer.disconnect();
-  });
+  }, []);
 
-  const t = useI18n();
   const subtitle =
     items.length === 0
       ? t('dldNoTasks')
@@ -76,49 +86,90 @@ export const App = observer(() => {
           active: active > 0 ? t('dldActiveSuffix', { count: active }) : '',
         });
 
+  const maxHeight =
+    store.maxHeight > DIALOG_VERTICAL_MARGIN
+      ? store.maxHeight - DIALOG_VERTICAL_MARGIN
+      : undefined;
+
   return (
     <ThemeProvider
       theme={{ ...store.theme, dark: store.theme['dialog.lightForeground'] }}
     >
       <StyledApp
         ref={ref}
-        style={store.maxHeight ? { maxHeight: store.maxHeight } : undefined}
+        style={maxHeight ? { maxHeight } : undefined}
         visible={store.visible}
-        menuOpen={menuOpen}
-        onClick={dialogClicked}
       >
         <UIStyle />
-        <TopGlow />
         <Content>
-          <Header>
-            <div>
-              <Badge>Downloads</Badge>
+          <Header scrolled={scrolled}>
+            <HeaderText>
               <Heading>{t('dldTitle')}</Heading>
               <Subtitle>{subtitle}</Subtitle>
-            </div>
+            </HeaderText>
             <HeaderActions>
-              <MoreButton onClick={openAll}>{t('dldMore')}</MoreButton>
-              <CloseButton aria-label={t('dldCloseAria')} onClick={onClose}>
+              <IconButton
+                type="button"
+                aria-label={t('dldClear')}
+                title={t('dldClear')}
+                disabled={!hasFinished}
+                onClick={clearFinished}
+              >
                 <svg
                   viewBox="0 0 24 24"
                   fill="none"
                   stroke="currentColor"
-                  strokeWidth="2.5"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M3 6h18" />
+                  <path d="M8 6V4h8v2" />
+                  <path d="M19 6l-1 14H6L5 6" />
+                </svg>
+              </IconButton>
+              <TextButton type="button" onClick={openAll}>
+                {t('dldMore')}
+              </TextButton>
+              <IconButton
+                type="button"
+                aria-label={t('dldCloseAria')}
+                title={t('dldCloseAria')}
+                onClick={onClose}
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
                   strokeLinecap="round"
                 >
                   <path d="M18 6L6 18M6 6l12 12" />
                 </svg>
-              </CloseButton>
+              </IconButton>
             </HeaderActions>
           </Header>
 
-          <ListCard menuOpen={menuOpen}>
+          <ListCard onScroll={onListScroll}>
             {items.length === 0 ? (
-              <Empty>{t('dldEmpty')}</Empty>
+              <Empty>
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M12 3v12" />
+                  <path d="M7 10l5 5 5-5" />
+                  <path d="M5 21h14" />
+                </svg>
+                {t('dldEmpty')}
+              </Empty>
             ) : (
-              items.map((item) => (
-                <DownloadItem item={item} key={item.id}></DownloadItem>
-              ))
+              items.map((item) => <DownloadItem item={item} key={item.id} />)
             )}
           </ListCard>
         </Content>

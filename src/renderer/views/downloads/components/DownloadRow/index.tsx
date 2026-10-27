@@ -8,8 +8,8 @@ import {
   formatSpeed,
   getProgress,
   getFileCategory,
-  FileCategory,
 } from '../../utils';
+import { FileTypeIcon } from '~/renderer/components/FileTypeIcon';
 import {
   Row,
   IconBox,
@@ -24,60 +24,6 @@ import {
   ActionBtn,
 } from './style';
 import { useI18n } from '~/renderer/components/I18n';
-
-// ===== 文件类型图标(内联 SVG，跟随 currentColor)=====
-
-const FILE_ICONS: Record<FileCategory, JSX.Element> = {
-  image: (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="3" width="18" height="18" rx="2"></rect>
-      <circle cx="8.5" cy="8.5" r="1.5"></circle>
-      <path d="M21 15l-5-5L5 21"></path>
-    </svg>
-  ),
-  video: (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="2" y="4" width="20" height="16" rx="2"></rect>
-      <path d="M10 9l5 3-5 3z"></path>
-    </svg>
-  ),
-  audio: (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M9 18V5l12-2v13"></path>
-      <circle cx="6" cy="18" r="3"></circle>
-      <circle cx="18" cy="16" r="3"></circle>
-    </svg>
-  ),
-  archive: (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21 8v13H3V8"></path>
-      <path d="M1 3h22v5H1z"></path>
-      <path d="M10 12h4"></path>
-    </svg>
-  ),
-  doc: (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-      <path d="M14 2v6h6"></path>
-      <path d="M8 13h8"></path>
-      <path d="M8 17h8"></path>
-    </svg>
-  ),
-  app: (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="3" width="7" height="7" rx="1"></rect>
-      <rect x="14" y="3" width="7" height="7" rx="1"></rect>
-      <rect x="14" y="14" width="7" height="7" rx="1"></rect>
-      <rect x="3" y="14" width="7" height="7" rx="1"></rect>
-    </svg>
-  ),
-  file: (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
-      <path d="M13 2v7h7"></path>
-    </svg>
-  ),
-};
 
 // ===== 操作图标 =====
 
@@ -121,15 +67,18 @@ export const DownloadRow = observer(({ data }: { data: IDownloadItem }) => {
   const status = store.statusOf(data);
   const completed = status === 'completed';
   const canceled = status === 'canceled';
+  const failed = status === 'failed';
   const active = status === 'active';
+  // 已完成但文件已被删除/移走(主进程子线程校验)。
+  const missing = completed && !!data.fileMissing;
 
   const onRowClick = () => {
-    if (completed) void store.open(data).catch(() => undefined);
+    if (completed && !missing) void store.open(data).catch(() => undefined);
   };
 
   const onPauseResume = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (data.paused && !data.retrying) store.resume(data);
+    if (data.failed || (data.paused && !data.retrying)) store.resume(data);
     else store.pause(data);
   };
 
@@ -150,14 +99,22 @@ export const DownloadRow = observer(({ data }: { data: IDownloadItem }) => {
 
   const percent = getProgress(data.receivedBytes, data.totalBytes);
 
+  // 失败归因文案(与下载面板共用 dldFail* 文案)。
+  const failText =
+    data.failReason === 'file-locked'
+      ? t('dldFailFileLocked')
+      : data.failReason === 'dir-unwritable'
+        ? t('dldFailDirUnwritable')
+        : t('dldFailUnknown');
+
   return (
-    <Row clickable={completed} onClick={onRowClick}>
-      <IconBox danger={canceled}>
-        {FILE_ICONS[getFileCategory(data.fileName)]}
+    <Row clickable={completed && !missing} onClick={onRowClick}>
+      <IconBox danger={canceled || failed || missing}>
+        <FileTypeIcon category={getFileCategory(data.fileName)} />
       </IconBox>
 
       <RowText>
-        <Title>{data.fileName}</Title>
+        <Title missing={missing}>{data.fileName}</Title>
 
         {active && (
           <>
@@ -195,7 +152,15 @@ export const DownloadRow = observer(({ data }: { data: IDownloadItem }) => {
           </>
         )}
 
-        {completed && (
+        {missing && (
+          <SubLine>
+            <SubText tone="danger">{t('dlvFileMissing')}</SubText>
+            <Dot />
+            <SubText title={data.savePath}>{data.savePath}</SubText>
+          </SubLine>
+        )}
+
+        {completed && !missing && (
           <SubLine>
             <SubText>{formatBytes(data.totalBytes)}</SubText>
             <Dot />
@@ -206,6 +171,14 @@ export const DownloadRow = observer(({ data }: { data: IDownloadItem }) => {
         {canceled && (
           <SubLine>
             <SubText tone="danger">{t('dlvCanceled')}</SubText>
+          </SubLine>
+        )}
+
+        {failed && (
+          <SubLine>
+            <SubText tone="danger" title={failText}>
+              {failText}
+            </SubText>
           </SubLine>
         )}
       </RowText>
@@ -231,8 +204,21 @@ export const DownloadRow = observer(({ data }: { data: IDownloadItem }) => {
 
         {completed && (
           <>
-            <ActionBtn onClick={onShowInFolder} title={t('dlvShowInFolder')}>
-              <IconFolder />
+            {!missing && (
+              <ActionBtn onClick={onShowInFolder} title={t('dlvShowInFolder')}>
+                <IconFolder />
+              </ActionBtn>
+            )}
+            <ActionBtn danger onClick={onRemove} title={t('dlvRemoveTitle')}>
+              <IconTrash />
+            </ActionBtn>
+          </>
+        )}
+
+        {failed && (
+          <>
+            <ActionBtn onClick={onPauseResume} title={t('dlvResumeTitle')}>
+              <IconResume />
             </ActionBtn>
             <ActionBtn danger onClick={onRemove} title={t('dlvRemoveTitle')}>
               <IconTrash />

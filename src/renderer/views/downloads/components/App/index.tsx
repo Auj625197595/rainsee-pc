@@ -205,6 +205,9 @@ export default observer(() => {
             <FilterItem icon={<IconCanceled />} filter="canceled">
               {t('dlvCanceled')}
             </FilterItem>
+            <FilterItem icon={<IconCanceled />} filter="failed">
+              {t('dlvFailed')}
+            </FilterItem>
           </FilterNav>
 
           <BottomActions>

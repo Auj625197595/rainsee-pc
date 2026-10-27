@@ -92,8 +92,13 @@ export const Title = styled.div`
   overflow: hidden;
   text-overflow: ellipsis;
 
-  ${({ theme }: { theme?: ITheme }) => css`
+  ${({ theme, missing }: { theme?: ITheme; missing?: boolean }) => css`
     color: ${getPalette(theme).textMain};
+    ${missing &&
+    css`
+      text-decoration: line-through;
+      opacity: 0.55;
+    `}
   `}
 `;
 
