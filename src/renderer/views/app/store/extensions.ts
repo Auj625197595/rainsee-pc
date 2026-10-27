@@ -8,6 +8,16 @@ import {promises} from 'fs';
 import {ipcRenderer} from 'electron';
 import store from '.';
 import {extensionMainChannel} from '~/common/rpc/extensions';
+import {
+  moveInExtensionOrder,
+  sortByExtensionOrder,
+} from '~/common/extension-order';
+
+const logExtensionActions = (...args: any[]) => {
+  if (process.env.DEBUG_IMMERSIVE_HEADER === '1') {
+    console.log('[immersive-extensions]', ...args);
+  }
+};
 
 export class ExtensionsStore {
   public browserActions: IBrowserAction[] = [];
@@ -25,6 +35,7 @@ export class ExtensionsStore {
       visibleExtensionIds: computed,
       uninstallExtension: action,
       togglePin: action,
+      moveExtension: action,
     });
 
     this.load();
@@ -41,6 +52,41 @@ export class ExtensionsStore {
   }
 
   public addBrowserActionToTab(tabId: number, browserAction: IBrowserAction) {
+    const matches = this.browserActions.filter(
+      (item) => item.tabId === tabId && item.extensionId === browserAction.extensionId,
+    );
+    if (matches.length > 0) {
+      logExtensionActions('duplicate action add', {
+        tabId,
+        extensionId: browserAction.extensionId,
+        duplicateCount: matches.length,
+        total: this.browserActions.length,
+      });
+
+      // Per-tab actions are keyed by extension + tab. Reuse the existing
+      // observable entry and remove stale duplicates instead of appending a
+      // second toolbar item on every tab/view reconciliation.
+      const existing = matches[0];
+      existing.icon = browserAction.icon;
+      existing.title = browserAction.title;
+      existing.popup = browserAction.popup;
+      existing.badgeBackgroundColor = browserAction.badgeBackgroundColor;
+      existing.badgeTextColor = browserAction.badgeTextColor;
+      existing.badgeText = browserAction.badgeText;
+      existing.wasOpened = browserAction.wasOpened;
+      for (let i = this.browserActions.length - 1; i >= 0; i--) {
+        const item = this.browserActions[i];
+        if (
+          item !== existing &&
+          item.tabId === tabId &&
+          item.extensionId === browserAction.extensionId
+        ) {
+          this.browserActions.splice(i, 1);
+        }
+      }
+      return;
+    }
+
     // Build the per-tab entry via the real constructor so makeObservable() runs
     // on it. A shallow Object.create/Object.assign clone copies the field values
     // but never invokes the constructor, leaving `icon`/`title`/`badgeText`
@@ -59,6 +105,11 @@ export class ExtensionsStore {
     tabBrowserAction.wasOpened = browserAction.wasOpened;
     tabBrowserAction.tabId = tabId;
     this.browserActions.push(tabBrowserAction);
+    logExtensionActions('action add', {
+      tabId,
+      extensionId: browserAction.extensionId,
+      total: this.browserActions.length,
+    });
   }
 
   private findDefaultIcon(extension: Electron.Extension): string {
@@ -193,11 +244,31 @@ export class ExtensionsStore {
       store.settings.object.incognitoAllowedExtensions || [],
     );
 
-    return this.pinnedExtensions.filter(
+    const ids = this.pinnedExtensions.filter(
       (id) =>
         this.defaultBrowserActions.some((x) => x.extensionId === id) &&
         (!store.isIncognito || incognitoAllowed.has(id)),
     );
+    // 与「全部扩展」列表共用 extensionOrder;未入序的按钉住先后排在末尾。
+    return sortByExtensionOrder(
+      ids,
+      store.settings.object.extensionOrder,
+      (id) => id,
+    );
+  }
+
+  // 地址栏图标拖动排序:改写完整顺序,全部扩展列表随之变化。
+  public moveExtension(fromId: string, toId: string, after: boolean) {
+    const object = store.settings.object;
+    const next = moveInExtensionOrder(
+      object.extensionOrder,
+      this.visibleExtensionIds,
+      fromId,
+      toId,
+      after,
+    );
+    store.settings.object = { ...object, extensionOrder: next };
+    store.settings.save();
   }
 
   public isPinned(id: string): boolean {

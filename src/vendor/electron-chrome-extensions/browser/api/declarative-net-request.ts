@@ -489,9 +489,24 @@ export class DeclarativeNetRequestAPI {
       try {
         const raw = readFileSync(filePath, 'utf8')
         const rules: DNRRule[] = JSON.parse(raw)
-        const compiled = (Array.isArray(rules) ? rules : [])
-          .map((r) => this.compile(extension.id, r, { source: 'static', rulesetId }))
-          .filter((r): r is CompiledRule => !!r)
+        // Chrome skips an invalid static rule (install-time warning) and keeps
+        // the rest of the ruleset; one bad rule used to discard the whole file.
+        const compiled: CompiledRule[] = []
+        let skipped = 0
+        for (const r of Array.isArray(rules) ? rules : []) {
+          try {
+            const c = this.compile(extension.id, r, { source: 'static', rulesetId })
+            if (c) compiled.push(c)
+          } catch (err) {
+            skipped++
+            if (skipped <= 3) d('skip invalid static rule in %s for %s: %s', rulesetId, extension.id, err)
+          }
+        }
+        if (skipped) {
+          console.warn(
+            `[crx-dnr] ruleset ${rulesetId} of ${extension.id}: skipped ${skipped} invalid rule(s)`,
+          )
+        }
         byRuleset.set(rulesetId, compiled)
         d('loaded static ruleset %s (%d rules) for %s', rulesetId, compiled.length, extension.id)
       } catch (err) {

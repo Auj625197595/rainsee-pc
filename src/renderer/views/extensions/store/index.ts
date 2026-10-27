@@ -4,6 +4,7 @@ import {
   ISettings,
   ITheme,
   IExtItem,
+  ExtensionNotificationMode,
   IExtensionGroup,
   IExtInspectView,
   IBrowserExtensionImportItem,
@@ -39,7 +40,7 @@ const writeDevMode = (v: boolean) => {
 
 export type ExtFilter = 'all' | 'enabled' | 'disabled';
 
-// 拓展商店项(开源版:由主进程内置精选清单生成)。
+// 拓展商店项(来自 https://admin.yujianpay.com/api/crx/getAll)。
 export interface IStoreExt {
   id: number;
   name: string;
@@ -102,6 +103,13 @@ export class Store {
   // 「检查更新」进行中标记。
   @observable
   public checking = false;
+
+  // 单个扩展的检查状态，允许列表中的多个扩展独立反馈进度。
+  @observable
+  public extensionCheckingIds: string[] = [];
+
+  @observable
+  public extensionUpdateStatuses: Record<string, string> = {};
 
   // 更新结果提示文案(null 为不显示)。
   @observable
@@ -344,6 +352,11 @@ export class Store {
       item.id,
       allowed,
     );
+    await this.load();
+  }
+
+  public async setNotificationMode(item: IExtItem, mode: ExtensionNotificationMode) {
+    await ipcRenderer.invoke('extension-set-notification-mode', item.id, mode);
     await this.load();
   }
 
@@ -818,6 +831,71 @@ export class Store {
       this.checking = false;
       // 数秒后自动清除提示(用令牌避免旧定时器清掉后续新提示)。
       this.setStatus(this.updateStatus, 6000);
+    }
+  }
+
+  public isExtensionChecking(id: string): boolean {
+    return this.extensionCheckingIds.includes(id);
+  }
+
+  public extensionUpdateStatus(id: string): string | null {
+    return this.extensionUpdateStatuses[id] || null;
+  }
+
+  private extensionStatusTokens: Record<string, number> = {};
+
+  @action
+  private setExtensionUpdateStatus(id: string, message: string | null) {
+    if (message) {
+      this.extensionUpdateStatuses = {
+        ...this.extensionUpdateStatuses,
+        [id]: message,
+      };
+    } else {
+      const next = { ...this.extensionUpdateStatuses };
+      delete next[id];
+      this.extensionUpdateStatuses = next;
+    }
+    const token = (this.extensionStatusTokens[id] || 0) + 1;
+    this.extensionStatusTokens[id] = token;
+    if (message) {
+      setTimeout(() => {
+        if (this.extensionStatusTokens[id] === token) {
+          this.setExtensionUpdateStatus(id, null);
+        }
+      }, 6000);
+    }
+  }
+
+  /** 检查并更新单个扩展，结果只回显在该扩展卡片/详情页。 */
+  @action
+  public async checkUpdate(item: IExtItem) {
+    if (!item || this.isExtensionChecking(item.id) || this.checking) return;
+    this.extensionCheckingIds = [...this.extensionCheckingIds, item.id];
+    const t = createLocaleTranslator(this.settings.language);
+    this.setExtensionUpdateStatus(item.id, t('extUpdateChecking'));
+    try {
+      const res = await ipcRenderer.invoke('extension-check-update', item.id);
+      const updated = (res && res.updated) || [];
+      const failed = (res && res.failed) || [];
+      if (updated.length > 0) {
+        this.setExtensionUpdateStatus(
+          item.id,
+          t('extUpdatedOne', { version: updated[0].toVersion }),
+        );
+        await this.load();
+        await this.loadStore();
+      } else if (failed.length > 0 || !res || res.checked !== 1) {
+        this.setExtensionUpdateStatus(item.id, t('extUpdateFailedGeneric'));
+      } else {
+        this.setExtensionUpdateStatus(item.id, t('extUpdateOneLatest'));
+      }
+    } catch {
+      this.setExtensionUpdateStatus(item.id, t('extUpdateFailedGeneric'));
+    } finally {
+      this.extensionCheckingIds = this.extensionCheckingIds.filter(
+        (id) => id !== item.id,
+      );
     }
   }
 }

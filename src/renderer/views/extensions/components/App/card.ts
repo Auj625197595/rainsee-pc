@@ -460,6 +460,13 @@ export const DetailButton = styled.button`
   cursor: pointer;
   transition: background-color 0.16s ease;
 
+  svg {
+    width: 15px;
+    height: 15px;
+    vertical-align: -3px;
+    margin-right: 5px;
+  }
+
   &:disabled {
     cursor: default;
     opacity: 0.45;
@@ -481,6 +488,15 @@ export const DetailButton = styled.button`
       }
     `;
   }}
+`;
+
+export const DetailUpdateFeedback = styled.span`
+  font-size: 12px;
+  line-height: 1.4;
+
+  ${({ theme }: { theme?: ITheme }) => css`
+    color: ${getPalette(theme).textSub};
+  `}
 `;
 
 export const DetailLink = styled.button`
@@ -534,6 +550,47 @@ export const DetailInspectFeedback = styled.div`
     const p = getPalette(theme);
     return css`
       color: ${error ? p.danger : p.textSub};
+    `;
+  }}
+`;
+
+export const DetailSelect = styled.select`
+  flex-shrink: 0;
+  min-width: 168px;
+  height: 36px;
+  padding: 0 32px 0 12px;
+  border-radius: 9px;
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+  appearance: none;
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px;
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.45;
+  }
+
+  ${({ theme }: { theme?: ITheme }) => {
+    const p = getPalette(theme);
+    const arrow = encodeURIComponent(p.textSub);
+    return css`
+      color: ${p.textMain};
+      background-color: ${p.surface};
+      border: 1px solid ${p.line};
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='${arrow}' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+
+      &:focus-visible {
+        border-color: ${p.primary};
+      }
+
+      option {
+        color: ${p.textMain};
+        background-color: ${p.surface};
+      }
     `;
   }}
 `;

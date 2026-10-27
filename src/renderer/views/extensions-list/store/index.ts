@@ -5,6 +5,10 @@ import {DialogStore} from '~/models/dialog-store';
 import {IExtItem} from '~/interfaces';
 import {getWebUIURL} from '~/common/webui';
 import {extensionMainChannel} from '~/common/rpc/extensions';
+import {
+  moveInExtensionOrder,
+  sortByExtensionOrder,
+} from '~/common/extension-order';
 
 export class Store extends DialogStore {
   // 全部已安装且启用的扩展(含 popup/icon)。
@@ -25,7 +29,9 @@ export class Store extends DialogStore {
       anchor: observable,
       incognito: observable,
       pinned: computed,
+      sortedExtensions: computed,
       load: action,
+      moveExtension: action,
     });
 
     this.load();
@@ -50,6 +56,37 @@ export class Store extends DialogStore {
     this.extensions = list.filter(
       (x) => x.enabled && (!this.incognito || x.incognitoAllowed),
     );
+  }
+
+  // 按统一顺序(extensionOrder,与地址栏图标共用)展示。未入序的扩展:
+  // 已钉住的按钉住先后在前,其余按安装列表顺序在后;首次拖动时整表顺序被固化。
+  public get sortedExtensions(): IExtItem[] {
+    const pinned = this.pinned;
+    const initial = [
+      ...pinned
+        .map((id) => this.extensions.find((x) => x.id === id))
+        .filter(Boolean),
+      ...this.extensions.filter((x) => !pinned.includes(x.id)),
+    ];
+    return sortByExtensionOrder(
+      initial,
+      this.settings.extensionOrder,
+      (x) => x.id,
+    );
+  }
+
+  public moveExtension(fromId: string, toId: string, after: boolean) {
+    const next = moveInExtensionOrder(
+      this.settings.extensionOrder,
+      this.sortedExtensions.map((x) => x.id),
+      fromId,
+      toId,
+      after,
+    );
+    this.settings = {...this.settings, extensionOrder: next};
+    ipcRenderer.send('save-settings', {
+      settings: JSON.stringify(this.settings),
+    });
   }
 
   public get pinned(): string[] {

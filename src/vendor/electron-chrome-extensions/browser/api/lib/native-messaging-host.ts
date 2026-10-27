@@ -8,7 +8,12 @@ import { ExtensionSender, IpcEvent } from '../../router'
 import { readRegistryKey } from './winreg'
 
 const d = debug('electron-chrome-extensions:nativeMessaging')
-const MAX_NATIVE_MESSAGE_BYTES = 64 * 1024 * 1024
+// Chrome's native-messaging limits are asymmetric: host -> browser is 1 MiB,
+// while browser -> host is much larger. Keep the receive side strict and use
+// the historical 64 MiB implementation ceiling for outbound frames so large
+// signing/download payloads remain compatible without unbounded allocations.
+const MAX_NATIVE_RECEIVE_BYTES = 1 * 1024 * 1024
+const MAX_NATIVE_SEND_BYTES = 64 * 1024 * 1024
 
 interface NativeConfig {
   name: string
@@ -26,7 +31,8 @@ function isValidConfig(config: any): config is NativeConfig {
     typeof config.description === 'string' &&
     typeof config.path === 'string' &&
     config.type === 'stdio' &&
-    Array.isArray(config.allowed_origins)
+    Array.isArray(config.allowed_origins) &&
+    config.allowed_origins.every((origin: any) => typeof origin === 'string')
   )
 }
 
@@ -165,7 +171,7 @@ async function readNativeMessagingHostConfig(
     try {
       const data = await fs.readFile(filePath)
       const config = JSON.parse(stripJsonComments(data.toString()))
-      if (isValidConfig(config)) {
+      if (isValidConfig(config) && config.name === application) {
         // Chrome 规范(Windows):manifest 的 path 可以是相对路径,相对于 manifest 文件
         // 所在目录解析。IDM 的 IDMMsgHost.json 里 path 就是 "IDMMsgHost.exe"(相对),
         // 原代码直接 fs.stat(config.path) 会按 CWD 解析→ENOENT→destroy()→connectNative
@@ -212,6 +218,8 @@ export class NativeMessagingHost {
     reject: (error: Error) => void
   }
   private receiveBuffer = Buffer.alloc(0)
+  private onDestroyed?: () => void
+  private senderDestroyedListener?: () => void
 
   ready?: Promise<void>
 
@@ -221,9 +229,19 @@ export class NativeMessagingHost {
     connectionId: string,
     application: string,
     keepAlive: boolean = true,
+    onDestroyed?: () => void,
   ) {
+    this.onDestroyed = onDestroyed
     this.keepAlive = keepAlive
     this.sender = sender
+    // A renderer/service-worker teardown is the browser side of a native Port
+    // disconnect. Close the child immediately instead of keeping an orphaned
+    // native process alive until its next write fails.
+    const senderWithLifecycle = sender as any
+    if (typeof senderWithLifecycle.once === 'function') {
+      this.senderDestroyedListener = () => this.destroy(new Error('Extension context destroyed'))
+      senderWithLifecycle.once('destroyed', this.senderDestroyedListener)
+    }
     if (keepAlive) {
       this.sender.ipc.on(`crx-native-msg-${connectionId}`, this.receiveExtensionMessage)
 
@@ -259,8 +277,21 @@ export class NativeMessagingHost {
     }
     if (this.keepAlive && this.sender) {
       this.sender.ipc.off(`crx-native-msg-${this.connectionId}`, this.receiveExtensionMessage)
-      this.sender.send(`crx-native-msg-${this.connectionId}-disconnect`)
+      try {
+        this.sender.send(`crx-native-msg-${this.connectionId}-disconnect`)
+      } catch {
+        /* extension renderer/service worker already gone */
+      }
     }
+    if (this.sender && this.senderDestroyedListener) {
+      try {
+        ;(this.sender as any).off?.('destroyed', this.senderDestroyedListener)
+        ;(this.sender as any).removeListener?.('destroyed', this.senderDestroyedListener)
+      } catch {
+        /* renderer may already be gone */
+      }
+    }
+    this.senderDestroyedListener = undefined
     this.sender = undefined
     if (this.endServiceWorkerTask) {
       try {
@@ -270,6 +301,9 @@ export class NativeMessagingHost {
       }
       this.endServiceWorkerTask = undefined
     }
+    const onDestroyed = this.onDestroyed
+    this.onDestroyed = undefined
+    onDestroyed?.()
   }
 
   private async launch(application: string, extensionId: string) {
@@ -337,7 +371,11 @@ export class NativeMessagingHost {
   }
 
   private receiveExtensionMessage = (_event: IpcEvent, message: any) => {
-    this.send(message)
+    try {
+      this.send(message)
+    } catch (error) {
+      this.destroy(error instanceof Error ? error : new Error(String(error)))
+    }
   }
 
   private send(json: any) {
@@ -350,7 +388,14 @@ export class NativeMessagingHost {
       return
     }
 
-    const payload = Buffer.from(JSON.stringify(json), 'utf8')
+    const serialized = JSON.stringify(json)
+    if (serialized === undefined) {
+      throw new TypeError('Native messaging payload must be JSON serializable')
+    }
+    const payload = Buffer.from(serialized, 'utf8')
+    if (payload.length > MAX_NATIVE_SEND_BYTES) {
+      throw new Error(`Native messaging payload exceeds ${MAX_NATIVE_SEND_BYTES} bytes`)
+    }
     const buffer = Buffer.allocUnsafe(4 + payload.length)
     buffer.writeUInt32LE(payload.length, 0)
     payload.copy(buffer, 4)
@@ -365,7 +410,7 @@ export class NativeMessagingHost {
 
     while (this.receiveBuffer.length >= 4) {
       const length = this.receiveBuffer.readUInt32LE(0)
-      if (length > MAX_NATIVE_MESSAGE_BYTES) {
+      if (length > MAX_NATIVE_RECEIVE_BYTES) {
         d('receive: invalid oversized frame %d', length)
         this.destroy(new Error(`Native messaging host sent an oversized frame (${length} bytes)`))
         return

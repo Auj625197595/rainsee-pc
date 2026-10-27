@@ -431,20 +431,13 @@ export default observer(() => {
             {t('extInstallUnpacked')}
           </InstallButton>
           <InstallButton
-            onClick={() =>
-              store.installFromWeb(
-                'https://microsoftedge.microsoft.com/addons/Microsoft-Edge-Extensions-Home?hl=zh-CN',
-              )
-            }
+            as="a"
+            href="https://microsoftedge.microsoft.com/addons/Microsoft-Edge-Extensions-Home?hl=zh-CN"
           >
             <IconStore />
             {t('extEdgeStore')}
           </InstallButton>
-          <InstallButton
-            onClick={() =>
-              store.installFromWeb('https://chromewebstore.google.com/')
-            }
-          >
+          <InstallButton as="a" href="https://chromewebstore.google.com/">
             <IconStore />
             {t('extChromeStore')}
           </InstallButton>

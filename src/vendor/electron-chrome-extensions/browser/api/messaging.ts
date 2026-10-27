@@ -1,11 +1,24 @@
 import { BrowserWindow, ipcMain, webContents } from 'electron'
 import debug from 'debug'
+import { createHash } from 'crypto'
 
 import { ExtensionContext } from '../context'
 import { sendToLiveFrame, sendToLiveMainFrame } from '../safe-send'
 import { matchesPattern } from './common'
 
 const d = debug('electron-chrome-extensions:messaging')
+
+/** Chrome's exact text; extensions string-match it to decide whether to inject. */
+export const NO_RECEIVER_ERROR = 'Could not establish connection. Receiving end does not exist.'
+
+/**
+ * API-error sentinel returned (not thrown) from a crx-msg handler. A rejected
+ * ipcMain.handle is logged by Electron as "Error occurred in handler for
+ * 'crx-msg'" on every call, and no-receiver probes are routine (uBlacklist and
+ * friends probe the active tab on every popup open). The renderer's
+ * invokeExtensionRaw turns this back into a rejection carrying `message`.
+ */
+export const apiError = (message: string) => ({ __crxApiError: message })
 
 // Per-message/-port diagnostic logging is very hot (every runtime/tabs message
 // and every port frame passes through it) and mirror-logs synchronously to the
@@ -167,11 +180,31 @@ export const resolveFramePath = (
  */
 const KEEPALIVE_IDLE_MS = 30_000
 const WORKER_READY_TIMEOUT_MS = 30_000
+// The SW preload polls for its hosted API surface for ~15s before giving up.
+// A worker still running without a bridge handshake after this window was
+// started in a renderer whose session preloads were dropped (Electron 43
+// binding.startupData === null after a co-sited extension page crashed); it
+// will never become usable on its own.
+const WORKER_BRIDGE_STALL_MS = 20_000
+// A private fetch envelope is consumed by the popup/content-script bridge and
+// must not wait for the full MV3 worker watchdog when the worker is unavailable.
+// Ordinary runtime.sendMessage calls keep the normal Chrome-compatible timeout.
+const FETCH_WORKER_READY_TIMEOUT_MS = 5_000
 const PORT_ACCEPT_TIMEOUT_MS = 3_000
 const WORKER_PULL_IDLE_TIMEOUT_MS = 2_000
 const WORKER_PULL_PORT_TIMEOUT_MS = 30_000
 const WORKER_INBOUND_PROTOCOL = 3
 const WEB_REQUEST_WORKER_GRACE_MS = 8000
+// Keep a successfully bridged worker alive for a short sliding lease. This
+// covers Electron renderer reuse between events without defeating MV3 idle
+// suspension once the extension has been quiet.
+const BRIDGE_LIFETIME_LEASE_MS = 30_000
+// Chrome keeps a runtime.sendMessage channel open while an onMessage listener
+// returns true or resolves its asynchronous sendResponse. A short five-second
+// transport timeout turns normal network-backed extension requests into an
+// undefined response (the popup then renders an empty list). Keep a bounded
+// safety timeout, but match the worker/port lifecycle used elsewhere.
+const RUNTIME_MESSAGE_RESPONSE_TIMEOUT_MS = 30_000
 const webRequestGrace = new WeakMap<any, { task: any; timer: ReturnType<typeof setTimeout> }>()
 const isMediaWebRequestChannel = (channel: string, args: any[]) =>
   channel.startsWith('crx-webRequest.') &&
@@ -312,6 +345,8 @@ interface WorkerReadiness {
   worker: any
   running: boolean
   bridgeReady: boolean
+  /** When this generation reached `running` (bridge-stall detection). */
+  runningSince?: number
   details?: any
   inboundProtocol?: number
   inboundQueue?: Array<{channel: string; args: any[]}>
@@ -354,10 +389,15 @@ let messagingIpcInstalled = false
 
 export class MessagingAPI {
   private ports = new Map<string, PortEntry>()
+  /** frame-identity key -> documentId, and documentId -> frame (see documentIdOf). */
+  private documentIds = new Map<string, string>()
+  private documentIdKeys = new Map<string, Electron.WebFrameMain>()
+  /** frame -> extensionId -> navigation token of a native executeScript injection. */
+  private injectedReceivers = new WeakMap<Electron.WebFrameMain, Map<string, number>>()
   private portCounter = 0
   private msgCounter = 0
   /** Pending tabs.sendMessage responses keyed by messageId. */
-  private csResponses = new Map<string, (response: any) => void>()
+  private csResponses = new Map<string, (response: any, error?: string) => void>()
   /** The readiness object whose private IPC channels are bound for each SW generation. */
   private workerHandlerGenerations = new Map<string, WorkerReadiness>()
 
@@ -367,10 +407,17 @@ export class MessagingAPI {
   private swVersionToExt = new Map<number, string>()
   /** Keep-alive tasks holding extensions' SWs awake during active messaging. */
   private keepAlive = new Map<string, KeepAliveEntry>()
+  /** One bounded lease per bridged MV3 worker generation. */
+  private bridgeLifetimeTasks = new Map<
+    string,
+    {versionId: number; worker: any; task: {end: () => void}; timer: ReturnType<typeof setTimeout>}
+  >()
   /** Hosted API readiness is scoped to a concrete worker generation. */
   private workerReadiness = new Map<string, WorkerReadiness>()
   /** Coalesce concurrent events onto one MV3 cold-start/readiness operation. */
   private workerStartup = new Map<string, Promise<any>>()
+  /** Per-extension timer that flags a running worker whose preload never handshook. */
+  private bridgeStallTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private messagePerfStartedAt = Date.now()
   private messagePerf = new Map<string, MessagePerfEntry>()
 
@@ -469,8 +516,8 @@ export class MessagingAPI {
       ipcMain.handle('crx-port-connect-external', (event, extensionId, info) =>
         apiFor(event)?.onPortConnectExternal(event, extensionId, info),
       )
-      ipcMain.on('crx-cs-message-response', (event, messageId, response) =>
-        apiFor(event)?.onCsMessageResponse(event, messageId, response),
+      ipcMain.on('crx-cs-message-response', (event, messageId, response, error) =>
+        apiFor(event)?.onCsMessageResponse(event, messageId, response, error),
       )
       // Relay native storage.onChanged to frames in the sender's session.
       ipcMain.on('crx-storage-changed', (event, extensionId, area, changes) =>
@@ -508,6 +555,7 @@ export class MessagingAPI {
         keepAlive?.task.end()
       } catch {}
       this.keepAlive.delete(extensionId)
+      this.releaseBridgeLifetimeTask(extensionId)
       for (const [portId, entry] of Array.from(this.ports)) {
         if (entry.extensionId === extensionId) this.teardownPort(portId, 'sw')
       }
@@ -655,6 +703,7 @@ export class MessagingAPI {
         this.beginWorkerGeneration(versionId, true)
         attach(versionId)
         this.cacheWorker(versionId)
+        this.armBridgeStallWatchdog(versionId)
       } else if (runningStatus === 'stopping' || runningStatus === 'stopped') {
         this.evictWorker(versionId)
       }
@@ -704,18 +753,22 @@ export class MessagingAPI {
     // generation even when the numeric version is unchanged.
     if (!current || current.versionId !== versionId || !running) {
       this.resolveInboundPull(current)
+      this.releaseBridgeLifetimeTask(extId)
       this.workerReadiness.set(extId, {
         versionId,
         worker: sw,
         running,
         bridgeReady: false,
+        runningSince: running ? Date.now() : undefined,
         inboundQueue: [],
       })
       return
     }
     current.running = true
+    current.runningSince ||= Date.now()
     this.swByExt.set(extId, current.worker)
     this.swVersionToExt.set(versionId, extId)
+    this.pinBridgeLifetime(extId)
   }
 
   public markServiceWorkerReady(
@@ -755,8 +808,13 @@ export class MessagingAPI {
       current.worker = serviceWorker
       current.running = current.running || !!liveInfo
       current.bridgeReady = true
-      current.details = details
-      current.inboundProtocol = Number(details?.protocol) || 0
+      // A worker can announce bridge readiness and later announce lifecycle
+      // state (for example script tracking) without repeating the protocol.
+      // Keep the negotiated transport instead of downgrading the generation
+      // to native-send mode on the second beacon.
+      current.details = {...(current.details || {}), ...(details || {})}
+      current.inboundProtocol =
+        Number(details?.protocol) || current.inboundProtocol || 0
       current.inboundQueue ||= []
     } else {
       this.workerReadiness.set(extId, {
@@ -771,15 +829,116 @@ export class MessagingAPI {
     }
     this.swByExt.set(extId, serviceWorker)
     this.swVersionToExt.set(versionId, extId)
+    this.pinBridgeLifetime(extId)
     d('worker bridge ready ext=%s versionId=%d', extId, versionId)
+  }
+
+  private pinBridgeLifetime(extensionId: string) {
+    const readiness = this.workerReadiness.get(extensionId)
+    if (!readiness?.running || !readiness.bridgeReady) return
+    const worker = readiness.worker
+    if (!worker || typeof worker.startTask !== 'function') return
+    const current = this.bridgeLifetimeTasks.get(extensionId)
+    if (
+      current &&
+      current.versionId === readiness.versionId &&
+      this.isSameWorkerRegistration(current.worker, worker)
+    ) {
+      clearTimeout(current.timer)
+      current.timer = setTimeout(
+        () => this.releaseBridgeLifetimeTask(extensionId),
+        BRIDGE_LIFETIME_LEASE_MS,
+      )
+      current.timer.unref?.()
+      return
+    }
+    this.releaseBridgeLifetimeTask(extensionId)
+    try {
+      const task = worker.startTask()
+      const timer = setTimeout(
+        () => this.releaseBridgeLifetimeTask(extensionId),
+        BRIDGE_LIFETIME_LEASE_MS,
+      )
+      timer.unref?.()
+      this.bridgeLifetimeTasks.set(extensionId, {
+        versionId: readiness.versionId,
+        worker,
+        task,
+        timer,
+      })
+      d('pinned hosted worker bridge for %s', extensionId)
+    } catch (error) {
+      d('failed to pin hosted worker bridge for %s: %o', extensionId, error)
+    }
+  }
+
+  private releaseBridgeLifetimeTask(extensionId: string) {
+    const entry = this.bridgeLifetimeTasks.get(extensionId)
+    if (!entry) return
+    this.bridgeLifetimeTasks.delete(extensionId)
+    clearTimeout(entry.timer)
+    try {
+      entry.task.end()
+    } catch {}
+  }
+
+  /**
+   * A worker that reaches `running` but never sends `crx-worker-ready` has no
+   * hosted chrome.* bridge: every extension API call fails with "transport
+   * unavailable" and popups time out (Tampermonkey stays on its grey default
+   * icon). Hand it to host recovery instead of waiting for a user click.
+   */
+  private armBridgeStallWatchdog(versionId: number) {
+    const sw = this.swApi?.getWorkerFromVersionID?.(versionId)
+    const extId = this.extIdFromScope(sw?.scope)
+    if (!extId) return
+    const generation = this.workerReadiness.get(extId)
+    if (!generation || generation.versionId !== versionId || generation.bridgeReady) return
+    const existing = this.bridgeStallTimers.get(extId)
+    if (existing) clearTimeout(existing)
+    const timer = setTimeout(() => {
+      if (this.bridgeStallTimers.get(extId) === timer) this.bridgeStallTimers.delete(extId)
+      const current = this.workerReadiness.get(extId)
+      if (current !== generation || !current.running || current.bridgeReady) return
+      console.warn(
+        `[crx-messaging] worker bridge stalled ext=${extId} version=${versionId} runningMs=${
+          Date.now() - (current.runningSince || Date.now())
+        }; recovering`,
+      )
+      void this.ctx
+        .recoverServiceWorker?.(extId, WORKER_READY_TIMEOUT_MS, true)
+        .then((release) => release?.())
+        .catch((error) =>
+          console.warn(
+            `[crx-messaging] stalled worker recovery failed ext=${extId}: ${error?.message || error}`,
+          ),
+        )
+    }, WORKER_BRIDGE_STALL_MS)
+    timer.unref?.()
+    this.bridgeStallTimers.set(extId, timer)
+  }
+
+  /** True when the extension's worker has been running for at least `minMs`
+   *  without completing the preload bridge handshake. */
+  public isWorkerBridgeStalled(extensionId: string, minMs = WORKER_BRIDGE_STALL_MS): boolean {
+    const current = this.workerReadiness.get(extensionId)
+    if (!current?.running || current.bridgeReady || !current.runningSince) return false
+    if (!this.liveWorker(extensionId)) return false
+    return Date.now() - current.runningSince >= minMs
   }
 
   private evictWorker(versionId: number) {
     const extId = this.swVersionToExt.get(versionId)
     this.swVersionToExt.delete(versionId)
     if (!extId) return
+    const stallTimer = this.bridgeStallTimers.get(extId)
+    if (stallTimer) {
+      clearTimeout(stallTimer)
+      this.bridgeStallTimers.delete(extId)
+    }
     const readiness = this.workerReadiness.get(extId)
     this.resolveInboundPull(readiness)
+    this.releaseBridgeLifetimeTask(extId)
     this.workerHandlerGenerations.delete(extId)
     if (readiness?.versionId === versionId) this.workerReadiness.delete(extId)
     const cached = this.swByExt.get(extId)
@@ -853,6 +1012,7 @@ export class MessagingAPI {
   }
 
   private sendToWorker(extensionId: string, worker: any, channel: string, ...args: any[]) {
+    this.pinBridgeLifetime(extensionId)
     // webRequest listeners commonly start a follow-up async API call
     // (Cat Catch calls tabs.get before writing its media cache). The pull
     // protocol ends its transport task as soon as the packet is read, which
@@ -925,6 +1085,7 @@ export class MessagingAPI {
 
   private forgetWorkerIfCached(extensionId: string, worker: any) {
     if (this.swByExt.get(extensionId) !== worker) return
+    this.releaseBridgeLifetimeTask(extensionId)
     this.swByExt.delete(extensionId)
     const versionId = Number(worker?.versionId)
     if (Number.isFinite(versionId)) this.swVersionToExt.delete(versionId)
@@ -1028,6 +1189,60 @@ export class MessagingAPI {
     }
     startup.then(clear, clear)
     return startup
+  }
+
+  private ensureWorkerForMessage(extensionId: string, isFetchMessage: boolean): Promise<any> {
+    const startup = this.ensureWorker(extensionId)
+    if (!isFetchMessage) return startup
+
+    // The underlying startup promise may settle after the caller-side deadline.
+    // Keep a rejection handler attached so a late startup failure cannot become
+    // an unhandled main-process rejection.
+    startup.catch(() => {})
+    let timer: ReturnType<typeof setTimeout> | undefined
+    return Promise.race([
+      startup,
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(`Timed out waiting for extension service worker: ${extensionId}`),
+            ),
+          FETCH_WORKER_READY_TIMEOUT_MS,
+        )
+      }),
+    ]).finally(() => {
+      if (timer) clearTimeout(timer)
+    })
+  }
+
+  /**
+   * The hosted fetch protocol uses an envelope rather than Chrome's ordinary
+   * undefined response. A cold worker can receive the transport packet before
+   * its entry script registers onMessage; retry that private sentinel briefly,
+   * then return a stable envelope to the popup.
+   */
+  private requestFetchResponseWithRetry(
+    sw: any,
+    extensionId: string,
+    message: any,
+    sender: any,
+  ): Promise<any> {
+    const run = async () => {
+      let response = await this.requestResponse(sw, extensionId, message, sender)
+      for (let attempt = 0; response?.__crxNoReceiver === true && attempt < 2; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 25 : 100))
+        response = await this.requestResponse(sw, extensionId, message, sender)
+      }
+      if (response?.__crxNoReceiver === true || response == null) {
+        return {
+          data: undefined,
+          error: 'Background request returned no response',
+        }
+      }
+      return response
+    }
+    return run()
   }
 
   private async startAndWaitWorker(extensionId: string): Promise<any> {
@@ -1355,6 +1570,23 @@ export class MessagingAPI {
         sender.frameId = isMainFrame ? 0 : frame.frameTreeNodeId
       } catch {}
       sender.frameType = isMainFrame ? 'outermost_frame' : 'sub_frame'
+      // Chrome 150 MessageSender also carries origin / documentId /
+      // documentLifecycle. Extensions use `sender.origin` for trust checks
+      // (it survives about:blank / srcdoc frames where url is uninformative)
+      // and echo `documentId` back via tabs.sendMessage({documentId}).
+      let origin = ''
+      try {
+        origin = (frame as any).origin || ''
+      } catch {}
+      if (!origin && url) {
+        try {
+          origin = new URL(url).origin
+        } catch {}
+      }
+      if (origin) sender.origin = origin
+      const documentId = this.documentIdOf(frame, url)
+      if (documentId) sender.documentId = documentId
+      sender.documentLifecycle = 'active'
       // Resolve the tab id from the owning WebContents.
       const owner = this.findTabForFrame(frame)
       if (owner) {
@@ -1371,6 +1603,47 @@ export class MessagingAPI {
       }
     }
     return sender
+  }
+
+  /** Chrome-shaped documentId (32 upper-case hex chars), stable for one
+   *  document in one frame and different after a cross-document navigation.
+   *  Derived from the frame's process/routing identity plus its URL without
+   *  the fragment (same-document navigations keep the id, as in Chrome). */
+  private documentIdOf(frame: Electron.WebFrameMain, url: string): string | undefined {
+    try {
+      const noHash = url.split('#')[0]
+      const key = `${frame.processId}:${frame.routingId}:${frame.frameTreeNodeId}:${noHash}`
+      let id = this.documentIds.get(key)
+      if (!id) {
+        id = createHash('md5').update(key).digest('hex').toUpperCase()
+        this.documentIds.set(key, id)
+        this.documentIdKeys.set(id, frame)
+        if (this.documentIds.size > 2000) {
+          const first = this.documentIds.keys().next().value
+          if (first !== undefined) {
+            const oldId = this.documentIds.get(first)
+            this.documentIds.delete(first)
+            if (oldId) this.documentIdKeys.delete(oldId)
+          }
+        }
+      }
+      return id
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Resolve a documentId (from a previous MessageSender) back to its frame,
+   *  only while that frame is still showing the same document. */
+  private frameForDocumentId(documentId: string): Electron.WebFrameMain | undefined {
+    const frame = this.documentIdKeys.get(String(documentId).toUpperCase())
+    if (!frame) return undefined
+    try {
+      if (frame.isDestroyed?.()) return undefined
+      return this.documentIdOf(frame, frame.url) === String(documentId).toUpperCase() ? frame : undefined
+    } catch {
+      return undefined
+    }
   }
 
   private findTabForFrame(frame: Electron.WebFrameMain): Electron.WebContents | undefined {
@@ -1457,6 +1730,74 @@ export class MessagingAPI {
     })
   }
 
+  private contentScriptMessageChannel(
+    extension: Electron.Extension | undefined,
+    extensionId: string,
+    frame: Electron.WebFrameMain,
+  ): 'crx-cs-message' | 'crx-dynamic-cs-message' | undefined {
+    if (this.ctx.dynamicContentScripts.has(extensionId, frame)) {
+      return 'crx-dynamic-cs-message'
+    }
+    if (this.frameMatchesManifestContentScript(extension, frame) || this.hasInjectedReceiver(extensionId, frame)) {
+      return 'crx-cs-message'
+    }
+    return undefined
+  }
+
+  /** Chrome frame id: 0 for the outermost frame, frameTreeNodeId otherwise. */
+  private chromeFrameIdOf(frame: Electron.WebFrameMain): number {
+    try {
+      return frame.parent === null ? 0 : frame.frameTreeNodeId
+    } catch {
+      return -1
+    }
+  }
+
+  private hasInjectedReceiver(extensionId: string, frame: Electron.WebFrameMain) {
+    const token = this.injectedReceivers.get(frame)?.get(extensionId)
+    return token !== undefined && token === this.ctx.dynamicContentScripts.token(frame)
+  }
+
+  /**
+   * Registered as the private 'scripting.markInjected' handler. Native
+   * scripting.executeScript / MV2 tabs.executeScript run extension files in the
+   * content-script isolated world (with SHIM_BODY's receive bridge prepended),
+   * but the main process never sees those calls. The renderer wrappers report
+   * the target here after the native injection resolves — before the caller
+   * observes completion — so a following tabs.sendMessage finds the receiver
+   * instead of failing with "Receiving end does not exist". Cleared on
+   * navigation through the dynamicContentScripts frame token.
+   */
+  markContentScriptInjected = (
+    event: any,
+    target: { tabId?: number; frameIds?: number[]; allFrames?: boolean; frameId?: number } = {},
+  ) => {
+    const extensionId = event?.extension?.id
+    if (!extensionId || typeof target?.tabId !== 'number') return
+    const tab = this.ctx.store.getTabById(target.tabId)
+    if (!tab || tab.isDestroyed()) return
+    let frames: Electron.WebFrameMain[]
+    if (Array.isArray(target.frameIds)) {
+      const ids = new Set(target.frameIds)
+      frames = this.framesForTab(tab).filter((frame) => ids.has(this.chromeFrameIdOf(frame)))
+    } else if (typeof target.frameId === 'number') {
+      frames = this.framesForTab(tab, target.frameId)
+    } else if (target.allFrames) {
+      frames = this.framesForTab(tab)
+    } else {
+      frames = [tab.mainFrame]
+    }
+    for (const frame of frames) {
+      if (!frame) continue
+      let map = this.injectedReceivers.get(frame)
+      if (!map) {
+        map = new Map()
+        this.injectedReceivers.set(frame, map)
+      }
+      map.set(extensionId, this.ctx.dynamicContentScripts.token(frame))
+    }
+  }
+
   private sendMessageToFrame(
     frame: Electron.WebFrameMain,
     channel: 'crx-cs-message' | 'crx-dynamic-cs-message',
@@ -1476,10 +1817,10 @@ export class MessagingAPI {
         `send ${messageId} channel=${channel} ext=${sender && sender.id} ${frameBrief(frame)} msg=${msgBrief(message)}`,
       )
     }
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       let settled = false
       let timer: ReturnType<typeof setTimeout> | undefined
-      const finish = (r: any) => {
+      const finish = (r: any, error?: string) => {
         if (settled) return
         settled = true
         if (timer) clearTimeout(timer)
@@ -1493,13 +1834,14 @@ export class MessagingAPI {
               `command=${message.command} response=${r === undefined ? 'undefined' : r === null ? 'null' : typeof r}`,
           )
         }
-        resolve(r)
+        if (error !== undefined) reject(new Error(error))
+        else resolve(r)
       }
       this.csResponses.set(messageId, finish)
       timer = setTimeout(() => {
         if (CRX_VERBOSE) diag(`timeout ${messageId} channel=${channel} ms=${Date.now() - started}`)
         finish(undefined)
-      }, 5000)
+      }, RUNTIME_MESSAGE_RESPONSE_TIMEOUT_MS)
       try {
         if (!this.sendToFrameWithSubframeRelay(frame, channel, messageId, message, sender)) {
           finish(undefined)
@@ -2067,10 +2409,17 @@ export class MessagingAPI {
       }
     }
     if (!sw) {
+      const isFetchMessage = message?.type === 'fetch'
       try {
-        sw = await this.ensureWorker(extensionId)
+        sw = await this.ensureWorkerForMessage(extensionId, isFetchMessage)
       } catch (err) {
         d(`onRuntimeMessage: failed to resolve worker for ${extensionId}: ${err}`)
+        if (isFetchMessage) {
+          return {
+            data: undefined,
+            error: 'Background request returned no response',
+          }
+        }
         return undefined
       }
     }
@@ -2084,7 +2433,11 @@ export class MessagingAPI {
       // previous implementation only queried the service worker, so a popup
       // collecting page details never received collectPageDetailsResponse and
       // consequently reported that the selected item could not be autofilled.
-      const attempts: Array<Promise<any>> = [this.requestResponse(sw, extensionId, message, sender)]
+      const attempts: Array<Promise<any>> = [
+        message?.type === 'fetch'
+          ? this.requestFetchResponseWithRetry(sw, extensionId, message, sender)
+          : this.requestResponse(sw, extensionId, message, sender),
+      ]
       const hosts = this.runtimeMessageHostsFor(extensionId, event?.sender).filter((host) => host !== sw)
       if (isAutofillDiagnosticMessage(message)) {
         autofillDiag(
@@ -2116,19 +2469,20 @@ export class MessagingAPI {
     extensionId: string,
     message: any,
     sender: any,
-    timeoutMs = 5000,
+    timeoutMs = RUNTIME_MESSAGE_RESPONSE_TIMEOUT_MS,
     eventName = 'runtime.onMessage',
   ): Promise<any> {
     const messageId = `m${++this.msgCounter}`
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       let settled = false
       let timer: ReturnType<typeof setTimeout> | undefined
-      const finish = (r: any) => {
+      const finish = (r: any, error?: string) => {
         if (settled) return
         settled = true
         if (timer) clearTimeout(timer)
         this.csResponses.delete(messageId)
-        resolve(r)
+        if (error !== undefined) reject(new Error(error))
+        else resolve(r)
       }
       this.csResponses.set(messageId, finish)
       // Timeout so a missing listener doesn't hang the invoke.
@@ -2151,7 +2505,6 @@ export class MessagingAPI {
     message: any,
     sender: any,
   ): Promise<any> {
-    const extension = event?.extension
     const attempts: Array<Promise<any>> = []
 
     // Electron's native chrome.offscreen surface can reappear after the preload
@@ -2166,8 +2519,13 @@ export class MessagingAPI {
       // but other open extension pages may be hosts too, so target only the
       // conventional offscreen document instead of broadcasting this private
       // request to every popup/options page.
+      // The document can live at any extension path (createDocument({url})),
+      // e.g. Awesome Screenshot's record.html — match the real document, and
+      // only fall back to the conventional path when none was created.
+      const offscreenDoc = this.ctx.offscreen?.getDocument(extensionId)
       const offscreenHosts = this.runtimeMessageHostsFor(extensionId).filter((host) => {
         try {
+          if (offscreenDoc) return host === offscreenDoc.webContents || host.id === offscreenDoc.webContents.id
           return new URL(host.getURL?.() || '').pathname === '/offscreen.html'
         } catch {
           return false
@@ -2185,21 +2543,21 @@ export class MessagingAPI {
       return this.requestResponse(
         event.serviceWorker || this.readyWorker(extensionId),
         extensionId,
-        { __crxOffscreenRelay: true, message, sender },
+        { __crxOffscreenRelay: true, message, sender, documentUrl: offscreenDoc?.url },
         sender,
         30000,
       )
     }
 
+    // Chrome delivers a background runtime.sendMessage to the extension's own
+    // frames (popup/options/offscreen/tab-hosted pages) only — never to content
+    // scripts, which are reachable solely through tabs.sendMessage. Fanning out
+    // to content scripts made listeners shared between both directions fire for
+    // messages Chrome never delivers to them.
     const hosts = this.runtimeMessageHostsFor(extensionId)
-    const deliveries = this.runtimeContentScriptDeliveries(extension, extensionId)
 
     for (const host of hosts) {
       attempts.push(this.sendRuntimeMessageToHost(host, message, sender))
-    }
-
-    for (const delivery of deliveries) {
-      attempts.push(this.sendMessageToFrame(delivery.frame, delivery.channel, message, sender))
     }
 
     // Sandboxed extension pages (popup/options co-sited with the running MV3 SW)
@@ -2255,42 +2613,6 @@ export class MessagingAPI {
     return hosts
   }
 
-  private runtimeContentScriptDeliveries(
-    extension: Electron.Extension | undefined,
-    extensionId: string,
-  ): Array<{
-    frame: Electron.WebFrameMain
-    channel: 'crx-cs-message' | 'crx-dynamic-cs-message'
-  }> {
-    const deliveries: Array<{
-      frame: Electron.WebFrameMain
-      channel: 'crx-cs-message' | 'crx-dynamic-cs-message'
-    }> = []
-    const seen = new Set<string>()
-
-    for (const tab of this.ctx.store.tabs) {
-      if (tab.isDestroyed()) continue
-      for (const frame of this.framesForTab(tab)) {
-        const hasDynamicReceiver = this.ctx.dynamicContentScripts.has(extensionId, frame)
-        const hasManifestReceiver = this.frameMatchesManifestContentScript(extension, frame)
-        const routes: Array<'crx-cs-message' | 'crx-dynamic-cs-message'> = []
-        if (hasDynamicReceiver) routes.push('crx-dynamic-cs-message')
-        if (hasManifestReceiver) routes.push('crx-cs-message')
-        for (const channel of routes) {
-          let key = channel
-          try {
-            key = `${channel}:${tab.id}:${frame === tab.mainFrame ? 0 : (frame as any).frameTreeNodeId}`
-          } catch {}
-          if (seen.has(key)) continue
-          seen.add(key)
-          deliveries.push({ frame, channel })
-        }
-      }
-    }
-
-    return deliveries
-  }
-
   private sendRuntimeMessageToHost(host: Electron.WebContents, message: any, sender: any): Promise<any> {
     const messageId = `m${++this.msgCounter}`
     const started = Date.now()
@@ -2306,10 +2628,10 @@ export class MessagingAPI {
         )} msg=${msgBrief(message)}`,
       )
     }
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       let settled = false
       let timer: ReturnType<typeof setTimeout> | undefined
-      const finish = (r: any) => {
+      const finish = (r: any, error?: string) => {
         if (settled) return
         settled = true
         if (timer) clearTimeout(timer)
@@ -2317,7 +2639,8 @@ export class MessagingAPI {
         if (CRX_VERBOSE) {
           diag(`finish ${messageId} channel=crx-runtime.onMessage ms=${Date.now() - started} response=${respBrief(r)}`)
         }
-        resolve(r)
+        if (error !== undefined) reject(new Error(error))
+        else resolve(r)
       }
       this.csResponses.set(messageId, finish)
       timer = setTimeout(() => {
@@ -2325,7 +2648,7 @@ export class MessagingAPI {
           diag(`timeout ${messageId} channel=crx-runtime.onMessage ms=${Date.now() - started}`)
         }
         finish(undefined)
-      }, 5000)
+      }, RUNTIME_MESSAGE_RESPONSE_TIMEOUT_MS)
       try {
         if (
           !sendToLiveMainFrame(host, 'crx-runtime.onMessage', {
@@ -2346,9 +2669,10 @@ export class MessagingAPI {
   }
 
   private resolveFirstDefined(attempts: Array<Promise<any>>): Promise<any> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       let settled = false
       let pending = attempts.length
+      let firstError: any
       const finish = (r: any) => {
         if (settled) return
         pending--
@@ -2357,14 +2681,25 @@ export class MessagingAPI {
           resolve(r)
         } else if (pending <= 0) {
           settled = true
-          resolve(undefined)
+          if (firstError) reject(firstError)
+          else resolve(undefined)
         }
       }
-      attempts.forEach((attempt) => attempt.then(finish, () => finish(undefined)))
+      attempts.forEach((attempt) =>
+        attempt.then(finish, (error) => {
+          if (!firstError) firstError = error
+          finish(undefined)
+        }),
+      )
     })
   }
 
-  private onCsMessageResponse = (_event: any, messageId: string, response: any) => {
+  private onCsMessageResponse = (
+    _event: any,
+    messageId: string,
+    response: any,
+    error?: string,
+  ) => {
     const cb = this.csResponses.get(messageId)
     if (CRX_VERBOSE) {
       diag(`response ipc ${messageId} found=${!!cb} response=${respBrief(response)}`)
@@ -2374,7 +2709,7 @@ export class MessagingAPI {
         }`,
       )
     }
-    if (cb) cb(response)
+    if (cb) cb(response, error)
   }
 
   // ---- tabs.sendMessage: background/popup -> content script ---------------
@@ -2411,17 +2746,30 @@ export class MessagingAPI {
           } senderWc=${event?.sender?.id ?? 'n/a'} senderUrl=${this.senderUrlOf(event).slice(0, 160)}`,
         )
       }
-      return Promise.resolve(undefined)
+      return Promise.resolve(apiError(NO_RECEIVER_ERROR))
     }
     if (!extensionId) {
       diag(`tabs.sendMessage no extension id tab=${tab.id}`)
       return Promise.resolve(undefined)
     }
 
-    const targetFrames = this.framesForTab(tab, options?.frameId)
+    let targetFrames: Electron.WebFrameMain[]
+    if (typeof (options as any)?.documentId === 'string') {
+      // Chrome 106+: target one document; it must still be live in this tab.
+      const docFrame = this.frameForDocumentId((options as any).documentId)
+      const owner = docFrame ? this.findTabForFrame(docFrame) : undefined
+      targetFrames =
+        docFrame &&
+        owner === tab &&
+        (typeof options?.frameId !== 'number' || this.chromeFrameIdOf(docFrame) === options.frameId)
+          ? [docFrame]
+          : []
+    } else {
+      targetFrames = this.framesForTab(tab, options?.frameId)
+    }
     if (targetFrames.length === 0) {
       diag(`tabs.sendMessage no frame ext=${extensionId} tab=${tab.id} frameId=${options?.frameId}`)
-      return Promise.resolve(undefined)
+      return Promise.resolve(apiError(NO_RECEIVER_ERROR))
     }
 
     const deliveries: Array<{
@@ -2431,17 +2779,15 @@ export class MessagingAPI {
     for (const frame of targetFrames) {
       const hasDynamicReceiver = this.ctx.dynamicContentScripts.has(extensionId, frame)
       const hasManifestReceiver = this.frameMatchesManifestContentScript(event?.extension, frame)
-      const routes: Array<'crx-cs-message' | 'crx-dynamic-cs-message'> = []
-      if (hasDynamicReceiver) routes.push('crx-dynamic-cs-message')
-      if (hasManifestReceiver) routes.push('crx-cs-message')
+      const channel = this.contentScriptMessageChannel(event?.extension, extensionId, frame)
       if (CRX_VERBOSE) {
         diag(
           `tabs.sendMessage candidate ext=${extensionId} tab=${tab.id} target=${frameBrief(
             frame,
-          )} dynamic=${hasDynamicReceiver} manifest=${hasManifestReceiver} routes=${routes.join(',') || 'none'}`,
+          )} dynamic=${hasDynamicReceiver} manifest=${hasManifestReceiver} route=${channel || 'none'}`,
         )
       }
-      for (const channel of routes) deliveries.push({ frame, channel })
+      if (channel) deliveries.push({ frame, channel })
     }
 
     // Chrome rejects tabs.sendMessage immediately when the target document has
@@ -2456,7 +2802,7 @@ export class MessagingAPI {
       if (CRX_VERBOSE) {
         diag(`tabs.sendMessage no receiver ext=${extensionId} tab=${tab.id}`)
       }
-      return Promise.resolve(undefined)
+      return Promise.resolve(apiError(NO_RECEIVER_ERROR))
     }
 
     const sender = this.buildSender(extensionId, this.senderFrameOf(event))

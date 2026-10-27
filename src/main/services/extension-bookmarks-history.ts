@@ -17,6 +17,26 @@ import {
 // Synthetic root id for the bookmark tree (Chrome uses "0").
 const ROOT_ID = '0';
 
+// Chrome's permanent folders have fixed, well-known ids that extensions
+// hardcode (e.g. `chrome.bookmarks.get('1')` for the bookmarks bar). The app's
+// static folders carry random NeDB ids, so alias them at this boundary.
+const STATIC_EXT_IDS: Record<string, string> = {main: '1', other: '2', mobile: '3'};
+const EXT_ID_STATICS: Record<string, string> = {'1': 'main', '2': 'other', '3': 'mobile'};
+
+/** Internal bookmark id -> id exposed to extensions. */
+export function toExtBookmarkId(storage: StorageService, id: string | undefined): string {
+  if (!id) return ROOT_ID;
+  const b = storage.bookmarks.find((x) => x._id === id);
+  return (b?.static && STATIC_EXT_IDS[b.static]) || id;
+}
+
+/** Id received from an extension -> internal bookmark id. */
+export function fromExtBookmarkId(storage: StorageService, id: string): string {
+  const stat = EXT_ID_STATICS[id];
+  if (!stat) return id;
+  return storage.bookmarks.find((x) => x.isFolder && x.static === stat)?._id || id;
+}
+
 // ---- chrome.bookmarks ----
 
 const isVisibleFolder = (b: IBookmark) =>
@@ -44,6 +64,15 @@ function childrenOf(storage: StorageService, id: string): IBookmark[] {
     id === ROOT_ID
       ? storage.bookmarks.filter((x) => isVisibleFolder(x))
       : storage.bookmarks.filter((x) => x.parent === id);
+  if (id === ROOT_ID) {
+    // Chrome exposes its permanent roots in this order. Extensions commonly
+    // use the first root as the bookmarks bar. The app's static folders can all
+    // have the same persisted `order`, so sorting by `order` alone is not enough.
+    const rootOrder: Record<string, number> = {main: 0, other: 1, mobile: 2};
+    return list.slice().sort((a, b) =>
+      (rootOrder[a.static || ''] ?? 3) - (rootOrder[b.static || ''] ?? 3),
+    );
+  }
   return list.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 }
 
@@ -58,27 +87,30 @@ function toNode(
   recursive: boolean,
 ): chrome.bookmarks.BookmarkTreeNode {
   const node: chrome.bookmarks.BookmarkTreeNode = {
-    id: b._id!,
-    parentId: b.parent || ROOT_ID,
+    id: toExtBookmarkId(storage, b._id),
+    parentId: toExtBookmarkId(storage, b.parent),
     title: bookmarkTitle(b),
     index: indexOf(storage, b),
   };
   if (!b.isFolder && b.url) {
     node.url = b.url;
   }
-  if (b.isFolder) {
+  if (b.isFolder && recursive) {
     const kids = childrenOf(storage, b._id!);
-    node.children = kids.map((k) => toNode(storage, k, recursive));
+    node.children = kids.map((k) => toNode(storage, k, true));
   }
   return node;
 }
 
 function rootNode(storage: StorageService, recursive: boolean): chrome.bookmarks.BookmarkTreeNode {
-  return {
+  const node: chrome.bookmarks.BookmarkTreeNode = {
     id: ROOT_ID,
     title: '',
-    children: childrenOf(storage, ROOT_ID).map((c) => toNode(storage, c, recursive)),
   };
+  if (recursive) {
+    node.children = childrenOf(storage, ROOT_ID).map((c) => toNode(storage, c, true));
+  }
+  return node;
 }
 
 /**
@@ -89,48 +121,62 @@ function rootNode(storage: StorageService, recursive: boolean): chrome.bookmarks
 export function bookmarkNodeById(
   storage: StorageService,
   id: string,
+  recursive = false,
 ): chrome.bookmarks.BookmarkTreeNode | null {
-  if (id === ROOT_ID) return rootNode(storage, false);
-  const b = storage.bookmarks.find((x) => x._id === id);
-  return b ? toNode(storage, b, false) : null;
+  if (id === ROOT_ID) return rootNode(storage, recursive);
+  const internalId = fromExtBookmarkId(storage, id);
+  const b = storage.bookmarks.find((x) => x._id === internalId);
+  return b ? toNode(storage, b, recursive) : null;
 }
 
 export function createBookmarksImpl(storage: StorageService): BookmarksImpl {
+  // Extension startup can overlap the deferred bookmark-cache load. Without
+  // this barrier getTree()/getChildren('0') can temporarily observe an empty
+  // tree and make extension startup race the local cache initialization.
+  const ready = () => storage.ensureBookmarksReady();
   const all = () => storage.bookmarks;
 
+  const toInternal = (id: string) => fromExtBookmarkId(storage, id);
   const byId = (id: string): IBookmark | undefined =>
-    id === ROOT_ID ? undefined : all().find((x) => x._id === id);
+    id === ROOT_ID ? undefined : all().find((x) => x._id === toInternal(id));
 
   // Default parent for create()/move() when none given: the "Other bookmarks"
   // folder, matching Chrome.
   const defaultParentId = (): string | undefined =>
     all().find((x) => x.static === 'other')?._id;
 
+  const requireNode = (id: string, recursive = false) => {
+    const node = bookmarkNodeById(storage, id, recursive);
+    if (!node) throw new Error(`Can't find bookmark for id ${id}`);
+    return node;
+  };
+
   return {
     async getTree() {
+      await ready();
       return [rootNode(storage, true)];
     },
 
     async get(idList: string[]) {
-      const nodes: chrome.bookmarks.BookmarkTreeNode[] = [];
-      for (const id of idList) {
-        const node = bookmarkNodeById(storage, id);
-        if (node) nodes.push(node);
-      }
-      return nodes;
+      await ready();
+      if (!idList.length) throw new Error('Bookmark id list must not be empty');
+      return idList.map((id) => requireNode(id));
     },
 
     async getChildren(id: string) {
-      return childrenOf(storage, id).map((c) => toNode(storage, c, false));
+      await ready();
+      requireNode(id);
+      return childrenOf(storage, id === ROOT_ID ? ROOT_ID : toInternal(id)).map((c) => toNode(storage, c, false));
     },
 
     async getSubTree(id: string) {
-      if (id === ROOT_ID) return [rootNode(storage, true)];
-      const b = byId(id);
-      return b ? [toNode(storage, b, true)] : [];
+      await ready();
+      return [requireNode(id, true)];
     },
 
     async getRecent(count: number) {
+      await ready();
+      if (count < 1) throw new Error('numberOfItems cannot be less than 1.');
       const items = all().filter((x) => !x.isFolder && x.url);
       // Newest first. The app appends on insert, so reverse insertion order is
       // the best available proxy for recency.
@@ -142,6 +188,7 @@ export function createBookmarksImpl(storage: StorageService): BookmarksImpl {
     },
 
     async search(query) {
+      await ready();
       const terms: string[] = [];
       let urlMatch: string | undefined;
       let titleMatch: string | undefined;
@@ -172,7 +219,8 @@ export function createBookmarksImpl(storage: StorageService): BookmarksImpl {
     },
 
     async create(bookmark) {
-      const parent = bookmark.parentId || defaultParentId();
+      await ready();
+      const parent = bookmark.parentId ? toInternal(bookmark.parentId) : defaultParentId();
       const created = await storage.addBookmark({
         title: bookmark.title || '',
         url: bookmark.url,
@@ -183,39 +231,47 @@ export function createBookmarksImpl(storage: StorageService): BookmarksImpl {
     },
 
     async move(id, destination) {
+      await ready();
+      if (storage.isProtectedBookmarkRoot(byId(id))) throw new Error("Can't modify the root bookmark folders.");
       const change: IBookmark = {};
-      if (destination.parentId !== undefined) change.parent = destination.parentId;
+      if (destination.parentId !== undefined) change.parent = toInternal(destination.parentId);
       if (destination.index !== undefined) change.order = destination.index;
-      await storage.updateBookmark(id, change);
+      await storage.updateBookmark(toInternal(id), change);
       const b = byId(id);
       if (!b) throw new Error(`Bookmark ${id} not found`);
       return toNode(storage, b, false);
     },
 
     async update(id, changes) {
+      await ready();
+      if (storage.isProtectedBookmarkRoot(byId(id))) throw new Error("Can't modify the root bookmark folders.");
       const change: IBookmark = {};
       if (changes.title !== undefined) change.title = changes.title;
       if (changes.url !== undefined) change.url = changes.url;
-      await storage.updateBookmark(id, change);
+      await storage.updateBookmark(toInternal(id), change);
       const b = byId(id);
       if (!b) throw new Error(`Bookmark ${id} not found`);
       return toNode(storage, b, false);
     },
 
     async remove(id) {
+      await ready();
       const b = byId(id);
       if (!b) throw new Error(`Bookmark ${id} not found`);
-      if (b.isFolder && all().some((x) => x.parent === id)) {
+      if (storage.isProtectedBookmarkRoot(b)) throw new Error("Can't modify the root bookmark folders.");
+      if (b.isFolder && all().some((x) => x.parent === b._id)) {
         throw new Error("Can't remove non-empty folder (use recursive to force)");
       }
-      await storage.removeBookmark(id);
+      await storage.removeBookmark(b._id!);
     },
 
     async removeTree(id) {
+      await ready();
       const b = byId(id);
       if (!b) throw new Error(`Bookmark ${id} not found`);
+      if (storage.isProtectedBookmarkRoot(b)) throw new Error("Can't modify the root bookmark folders.");
       // removeBookmark already recurses into folder contents.
-      await storage.removeBookmark(id);
+      await storage.removeBookmark(b._id!);
     },
   };
 }

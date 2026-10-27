@@ -13,6 +13,7 @@ import {
 import store from '../../store';
 import { getShellTranslator } from '../../utils/i18n';
 import {SiteButtons} from '../SiteButtons';
+import {useDragReorder} from '~/renderer/utils/use-drag-reorder';
 import {
   renderClusterButton,
   MenuButton,
@@ -144,21 +145,49 @@ export const RightButtons = observer(() => {
   );
   const extensionsEntryVisible = rightVisible.includes('extensions');
   const selectedTabId = store.tabs.selectedTabId;
+  const visibleIds = store.extensions.visibleExtensionIds;
+  // 按统一顺序(visibleExtensionIds 已排序)展示,而非 browserActions 的加载顺序。
   const extensionActions = selectedTabId
-    ? store.extensions.browserActions.filter(
-        (item) =>
-          item.tabId === selectedTabId &&
-          store.extensions.visibleExtensionIds.includes(item.extensionId),
-      )
+    ? visibleIds
+        .map((id) =>
+          store.extensions.browserActions.find(
+            (item) => item.tabId === selectedTabId && item.extensionId === id,
+          ),
+        )
+        .filter(Boolean)
     : [];
   const {containerRef, visibleCount} = useVisibleExtensionCount(
     extensionActions.length,
   );
+  const shownActions = extensionActions.slice(0, visibleCount);
+  // 按住图标左右拖动调整顺序,写回与全部扩展列表共用的 extensionOrder。
+  const reorder = useDragReorder<HTMLDivElement>({
+    axis: 'x',
+    ids: shownActions.map((item) => item.extensionId),
+    attr: 'data-rainsee-extension-id',
+    onMove: (from, to, after) =>
+      store.extensions.moveExtension(from, to, after),
+  });
+  const setContainerRef = React.useCallback(
+    (el: HTMLDivElement) => {
+      (containerRef as React.MutableRefObject<HTMLDivElement>).current = el;
+      (reorder.containerRef as React.MutableRefObject<HTMLDivElement>).current = el;
+    },
+    [containerRef, reorder.containerRef],
+  );
   const browserActions = (
-    <ExtensionActions ref={containerRef}>
-      {extensionActions.slice(0, visibleCount).map((item) => (
-        <BrowserAction data={item} key={item.extensionId}/>
-      ))}
+    <ExtensionActions ref={setContainerRef} onMouseDown={reorder.onMouseDown}>
+      {reorder.previewIds.map((id) => {
+        const item = shownActions.find((x) => x.extensionId === id);
+        if (!item) return null;
+        return (
+          <BrowserAction
+            data={item}
+            key={item.extensionId}
+            dragging={reorder.draggingId === id}
+          />
+        );
+      })}
     </ExtensionActions>
   );
 

@@ -43,8 +43,10 @@ export const Empty = styled.div`
   opacity: 0.5;
 `;
 
-export const Item = styled.div`
+export const Item = styled.div<{ dragging?: boolean }>`
   display: flex;
+  user-select: none;
+  opacity: ${({ dragging }) => (dragging ? 0.5 : 1)};
   align-items: center;
   height: 40px;
   padding: 0 6px 0 10px;

@@ -18,6 +18,7 @@ import {
   buildUserScriptMessagingBridge,
   clearContentScriptBridge,
 } from './content-bridge'
+import { DocumentIdleScheduler } from './document-idle'
 
 const d = debug('electron-chrome-extensions:userScripts')
 const log = (...args: any[]) => console.log('[crx-userScripts]', ...args)
@@ -82,13 +83,14 @@ interface UserScriptGroup {
  * - A page-side `chrome` bridge (see content-bridge.ts) is prepended so
  *   injected content scripts can reach their background service worker.
  *
- * Trade-off: `runAt` is best-effort — injection happens at `dom-ready` (main
- * frame) and `did-frame-finish-load` (child frames) regardless of requested
- * time. All scripts run in the page's main world.
+ * `document_end` is dispatched at frame dom-ready. `document_idle` prefers
+ * load and has a bounded post-DOM fallback, so a hanging resource cannot strand
+ * the script while normal pages still avoid injecting during bootstrap.
  */
 export class UserScriptsAPI {
   /** Map of extension id -> registered scripts. */
   private scriptsMap = new Map</* extensionId */ string, RegisteredUserScript[]>()
+  private readonly idleScheduler: DocumentIdleScheduler<Electron.WebFrameMain>
   /** Map of extension id -> world configurations keyed by worldId (''=default). */
   private worldsMap = new Map</* extensionId */ string, Map<string, WorldConfiguration>>()
   private readonly persistedFile = path.join(app.getPath('userData'), 'crx-user-scripts.json')
@@ -97,6 +99,9 @@ export class UserScriptsAPI {
     {}
 
   constructor(private ctx: ExtensionContext) {
+    this.idleScheduler = new DocumentIdleScheduler((frame) =>
+      this.ctx.dynamicContentScripts.token(frame),
+    )
     this.ctx.userScripts = this
     const handle = this.ctx.router.apiHandler()
     const opts = { permission: 'userScripts' as chrome.runtime.ManifestPermissions }
@@ -387,7 +392,35 @@ export class UserScriptsAPI {
     }
     const mainFrameHandler = () => {
       log('dom-ready', 'tab=', tab.id, 'url=', tab.getURL())
-      this.injectInto(tab.mainFrame, tab.getURL(), false, undefined, 'end')
+      const frame = tab.mainFrame
+      this.injectInto(frame, tab.getURL(), false, undefined, 'end')
+      this.idleScheduler.schedule(frame, () => {
+        if (!tab.isDestroyed()) {
+          this.injectInto(frame, frame.url, false, undefined, 'idle')
+        }
+      })
+    }
+    const mainFrameIdleHandler = () => {
+      log('did-finish-load', 'tab=', tab.id, 'url=', tab.getURL())
+      const frame = tab.mainFrame
+      this.idleScheduler.runNow(frame, () =>
+        this.injectInto(frame, tab.getURL(), false, undefined, 'idle'),
+      )
+    }
+    const frameCreatedHandler = (
+      _event: Electron.Event,
+      details: { frame: Electron.WebFrameMain },
+    ) => {
+      const frame = details?.frame
+      if (!frame?.parent) return
+      frame.on('dom-ready', () => {
+        this.injectInto(frame, frame.url, true, undefined, 'end')
+        this.idleScheduler.schedule(frame, () => {
+          if (!tab.isDestroyed()) {
+            this.injectInto(frame, frame.url, true, undefined, 'idle')
+          }
+        })
+      })
     }
 
     const childFrameHandler = (
@@ -400,17 +433,26 @@ export class UserScriptsAPI {
       const frame = webFrameMain.fromId(frameProcessId, frameRoutingId)
       if (frame) {
         log('child-frame-finish', 'tab=', tab.id, 'url=', frame.url)
-        this.injectInto(frame, frame.url, true, undefined, 'end')
+        this.idleScheduler.runNow(frame, () =>
+          this.injectInto(frame, frame.url, true, undefined, 'idle'),
+        )
       }
     }
 
     tab.on('did-frame-navigate', startFrameHandler)
     tab.on('dom-ready', mainFrameHandler)
+    tab.on('did-finish-load', mainFrameIdleHandler)
+    tab.on('frame-created', frameCreatedHandler)
     tab.on('did-frame-finish-load', childFrameHandler)
 
     tab.once('destroyed', () => {
+      try {
+        this.idleScheduler.cancel(tab.mainFrame)
+      } catch {}
       tab.off('did-frame-navigate', startFrameHandler)
       tab.off('dom-ready', mainFrameHandler)
+      tab.off('did-finish-load', mainFrameIdleHandler)
+      tab.off('frame-created', frameCreatedHandler)
       tab.off('did-frame-finish-load', childFrameHandler)
     })
   }
@@ -493,8 +535,8 @@ export class UserScriptsAPI {
       const groups = new Map<string, UserScriptGroup>()
       for (const script of scripts) {
         if (phase !== 'all') {
-          const isStart = (script.runAt || 'document_idle') === 'document_start'
-          if (phase === 'start' ? !isStart : isStart) continue
+          const runAt = script.runAt || 'document_idle'
+          if (runAt !== `document_${phase}`) continue
         }
         if (isChildFrame && !script.allFrames) {
           log('inject skip child-frame', extensionId, script.id)
@@ -688,4 +730,4 @@ export class UserScriptsAPI {
   }
 }
 
-type InjectPhase = 'start' | 'end' | 'all'
+type InjectPhase = 'start' | 'end' | 'idle' | 'all'

@@ -51,9 +51,16 @@ export const isBuiltinPdfViewerUrl = (url: string) => {
   }
 };
 
-export const getViewPreloadFilename = (securityKind: ViewSecurityKind) =>
-  securityKind === 'privileged-koodo' ||
-  (securityKind === 'sandboxed' && !areSandboxedTabsEnabled())
+export const getViewPreloadFilename = (
+  securityKind: ViewSecurityKind,
+  url = '',
+) =>
+  isBuiltinPdfViewerUrl(url)
+    ? 'view-preload.bundle.js'
+    : securityKind === 'privileged-extension'
+    ? 'extension-view-preload.bundle.js'
+    : securityKind === 'privileged-koodo' ||
+      (securityKind === 'sandboxed' && !areSandboxedTabsEnabled())
     ? 'privileged-view-preload.bundle.js'
     : 'view-preload.bundle.js';
 

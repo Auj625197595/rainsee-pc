@@ -25,6 +25,18 @@ import { ERROR_PROTOCOL, WEBUI_BASE_URL, WEBUI_PROTOCOL } from '~/constants/file
 // webFrame are captured imports; the runtime `process` reads below use the
 // captured __crxNodeProcess reference).
 const __crxNodeProcess = process
+const __crxPreloadGlobal = globalThis as any
+const __crxIsBuiltinPdfViewer = (() => {
+  try {
+    return (
+      typeof location !== 'undefined' &&
+      location.protocol === 'chrome-extension:' &&
+      location.hostname === 'mhjfbmdgcfjbbpaeojofohoefgiehjai'
+    )
+  } catch {
+    return false
+  }
+})()
 try {
   let exempt = false
   if (typeof location !== 'undefined') {
@@ -66,40 +78,67 @@ try {
 // Normal web pages also receive this registered frame preload. It is the only
 // reliable way to execute a dynamic script in a child frame without falling
 // back to the page's MAIN world.
-ipcRenderer.on(
-  'crx-execute-isolated-script',
-  (_event, payload: { code?: string; extensionId?: string; worldId?: number }) => {
-    if (!payload || typeof payload.code !== 'string') return
-    try {
-      if (
-        typeof payload.worldId === 'number' &&
-        typeof (webFrame as any).executeJavaScriptInIsolatedWorld === 'function'
-      ) {
-        void (webFrame as any)
-          .executeJavaScriptInIsolatedWorld(
-            payload.worldId,
-            [{ code: payload.code }],
-            true,
-          )
-          .catch((error: unknown) =>
-            console.error(
-              `[crx-isolated] script failed for ${payload.extensionId || 'unknown'}`,
-              error,
-            ),
-          )
-      } else {
-        const g = globalThis as any
-        if (!g.electron) g.electron = { ipcRenderer }
-        ;(0, eval)(payload.code)
+if (!__crxPreloadGlobal.__crxIsolatedScriptListenerInstalled) {
+  __crxPreloadGlobal.__crxIsolatedScriptListenerInstalled = true
+  ipcRenderer.on(
+    'crx-execute-isolated-script',
+    (_event, payload: { code?: string; extensionId?: string; worldId?: number }) => {
+      if (!payload || typeof payload.code !== 'string') return
+      try {
+        if (
+          typeof payload.worldId === 'number' &&
+          typeof (webFrame as any).executeJavaScriptInIsolatedWorld === 'function'
+        ) {
+          void (webFrame as any)
+            .executeJavaScriptInIsolatedWorld(
+              payload.worldId,
+              [{ code: payload.code }],
+              true,
+            )
+            .catch((error: unknown) =>
+              console.error(
+                `[crx-isolated] script failed for ${payload.extensionId || 'unknown'}`,
+                error,
+              ),
+            )
+        } else {
+          const g = globalThis as any
+          if (!g.electron) g.electron = { ipcRenderer }
+          ;(0, eval)(payload.code)
+        }
+      } catch (error) {
+        console.error(`[crx-isolated] script failed for ${payload.extensionId || 'unknown'}`, error)
       }
-    } catch (error) {
-      console.error(`[crx-isolated] script failed for ${payload.extensionId || 'unknown'}`, error)
-    }
-  },
-)
+    },
+  )
+}
 
-// document_start must run from preload time; did-frame-navigate is already too
-// late for extensions that patch page primitives before site JavaScript.
+// A frame preload runs before Blink has necessarily inserted the document's
+// root element. Chrome's document_start scripts, however, run after the
+// document element exists (and before page scripts). Submit the script to its
+// target world now, but let that world wait for the first root insertion when
+// needed. Observing the Document preserves parser ordering: the observer runs
+// at the mutation checkpoint before a later parser-inserted page script.
+const wrapDocumentStartCode = (source: string) => `
+;(() => {
+  const run = () => {
+${source}
+  };
+  if (document.documentElement) {
+    run();
+    return;
+  }
+  const observer = new MutationObserver(() => {
+    if (!document.documentElement) return;
+    observer.disconnect();
+    run();
+  });
+  observer.observe(document, { childList: true });
+})();
+`
+
+// document_start must be submitted from preload time; did-frame-navigate is
+// already too late for extensions that patch page primitives before site JS.
 try {
   if (typeof window !== 'undefined' && !location.href.startsWith('chrome-extension://')) {
     // senderFrame.url can still be empty while a new document's preload is
@@ -112,37 +151,48 @@ try {
       const g = globalThis as any
       if (!g.electron) g.electron = { ipcRenderer }
       for (const payload of scripts) {
-        const code = typeof payload === 'string' ? payload : payload?.code
-        const worldId = typeof payload === 'object' ? payload?.worldId : undefined
-        if (typeof code !== 'string') continue
-        if (
-          typeof worldId === 'number' &&
-          typeof (webFrame as any).executeJavaScriptInIsolatedWorld === 'function'
-        ) {
-          void (webFrame as any)
-            .executeJavaScriptInIsolatedWorld(
-              worldId,
-              [{ code }],
-              true,
-            )
-            .catch((error: unknown) =>
-              console.error('[crx-isolated] document-start script failed', error),
-            )
-        } else {
-          Function(code)()
+        try {
+          const source = typeof payload === 'string' ? payload : payload?.code
+          const worldId = typeof payload === 'object' ? payload?.worldId : undefined
+          if (typeof source !== 'string') continue
+          const code = wrapDocumentStartCode(source)
+          if (
+            typeof worldId === 'number' &&
+            typeof (webFrame as any).executeJavaScriptInIsolatedWorld === 'function'
+          ) {
+            void (webFrame as any)
+              .executeJavaScriptInIsolatedWorld(
+                worldId,
+                [{ code }],
+                true,
+              )
+              .catch((error: unknown) =>
+                console.error('[crx-isolated] document-start script failed', error),
+              )
+          } else {
+            Function(code)()
+          }
+        } catch (error) {
+          // Chrome isolates failures between registered content scripts.
+          console.error('[crx-isolated] document-start script failed', error)
         }
       }
     }
     const mainScripts = Array.isArray(payload.main) ? payload.main : []
-    for (const code of mainScripts) {
-      if (typeof code !== 'string') continue
-      if (__crxNodeProcess.contextIsolated && 'executeInMainWorld' in contextBridge) {
-        ;(contextBridge as any).executeInMainWorld({
-          func: (source: string) => Function(source)(),
-          args: [code],
-        })
-      } else {
-        Function(code)()
+    for (const source of mainScripts) {
+      if (typeof source !== 'string') continue
+      try {
+        const code = wrapDocumentStartCode(source)
+        if (__crxNodeProcess.contextIsolated && 'executeInMainWorld' in contextBridge) {
+          ;(contextBridge as any).executeInMainWorld({
+            func: (source: string) => Function(source)(),
+            args: [code],
+          })
+        } else {
+          Function(code)()
+        }
+      } catch (error) {
+        console.error('[crx-main] document-start script failed', error)
       }
     }
   }
@@ -165,14 +215,22 @@ try {
 } catch (e) {
   // ignore
 }
-beacon(
-  `preload-top type=${__crxNodeProcess.type} href=${
-    typeof location !== 'undefined' ? location.href : '<none>'
-  } hasWindow=${typeof window !== 'undefined'}`,
-)
+if (!__crxPreloadGlobal.__crxPreloadTopReported) {
+  __crxPreloadGlobal.__crxPreloadTopReported = true
+  beacon(
+    `preload-top type=${__crxNodeProcess.type} href=${
+      typeof location !== 'undefined' ? location.href : '<none>'
+    } hasWindow=${typeof window !== 'undefined'}`,
+  )
+}
 
-// Only load within extension page context
-if (__crxNodeProcess.type === 'service-worker' || location.href.startsWith('chrome-extension://')) {
+// Only load within hosted extension contexts. Chromium's built-in PDF viewer
+// owns native private bindings and must not receive this host's synthesized
+// third-party chrome.* surface merely because its URL uses the same scheme.
+if (
+  __crxNodeProcess.type === 'service-worker' ||
+  (location.href.startsWith('chrome-extension://') && !__crxIsBuiltinPdfViewer)
+) {
   // Idempotency guard. crx-preload is registered BOTH as a session preload
   // (registerPreloadScript, frame/service-worker type) AND — for contexts where
   // that delivery is unreliable (popup/options renderers co-sited with a
@@ -182,7 +240,7 @@ if (__crxNodeProcess.type === 'service-worker' || location.href.startsWith('chro
   // a second pass re-installs chrome.* (double event listeners, duplicated
   // contextBridge surface). The flag is set before inject so a concurrently-
   // scheduled second preload sees it.
-  const g = globalThis as any
+  const g = __crxPreloadGlobal
   if (g.__crxApisInjected) {
     beacon('inject-skip already-injected')
   } else {

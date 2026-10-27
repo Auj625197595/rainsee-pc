@@ -306,6 +306,24 @@ export class ExtensionStore extends EventEmitter {
     this.tabOrderByWindow.set(windowId, Array.isArray(orderedTabIds) ? orderedTabIds.slice() : [])
   }
 
+  /** 窗口内标签总数(含宿主顺序里的占位标签),用于 chrome.tabs.move 夹取 index。 */
+  getWindowTabCount(win: Electron.BaseWindow): number {
+    const order = this.tabOrderByWindow.get(win.id)
+    return Math.max(order ? order.length : 0, this.getTabsInWindow(win).length)
+  }
+
+  /**
+   * chrome.tabs.move 预写顺序:宿主 renderer 异步重排后才回推 crx-set-tab-order,
+   * 这里先改本地顺序,使 move 的返回值与紧随其后的 tabs.query 立即看到新 index。
+   */
+  moveTabInOrder(win: Electron.BaseWindow, tab: Electron.WebContents, toIndex: number) {
+    const order = this.tabOrderByWindow.get(win.id)?.slice() || this.getTabsInWindow(win).map((t) => t.id)
+    const from = order.indexOf(tab.id)
+    if (from >= 0) order.splice(from, 1)
+    order.splice(Math.max(0, Math.min(toIndex, order.length)), 0, tab.id)
+    this.tabOrderByWindow.set(win.id, order)
+  }
+
   /** tab 在所属窗口标签栏里的位置(0-based)。优先用宿主推送的可视顺序;未推送时
    *  退化为插入顺序;都拿不到返回 -1。 */
   getTabIndex(tab: Electron.WebContents): number {

@@ -7,63 +7,65 @@ import {
 
 
 /**
- * Self-contained (no closures): remove only Electron's native `browser` fork.
+ * Self-contained (no closures): install the MV3 `browser` fallback.
  *
- * Chromium exposes `chrome`, not a separate native `browser`. Some extensions
- * use the mere presence of `browser` as a Firefox signal, while others
- * (uBlock's vapi.js, webextension normalizers) intentionally create
- * `browser = chrome` for shared code. So this must be relation-based, not
- * one-shot: drop only a distinct native `browser`, and preserve an alias that
- * already points at the patched `chrome`.
- *
- * Important compatibility rule: do NOT synthesize `chrome` from a lone native
- * `browser`. Real Chrome never does that, and creating that alias early can
- * leak a half-initialized/native object that extensions cache before our
- * patched namespace is ready.
+ * Chrome 148+ provides `browser` natively and guarantees identities such as
+ * `browser.tabs === chrome.tabs`; it does not require the namespace root
+ * objects themselves to be identical. Preserve Electron/Chromium's native
+ * object whenever it exists. For an MV3 context where it is absent, use the
+ * runtime guard recommended by Chrome and fall back to `chrome`.
  *
  * Must stay self-contained: it is serialized into the main world via
  * executeInMainWorld.
  */
-function removeNativeBrowserAlias() {
+function installBrowserNamespaceFallback() {
   try {
     const g: any = globalThis as any
     const chromeObj = g.chrome
-    let hasBrowser = false
-    let browserObj: any
-    try {
-      hasBrowser = 'browser' in g
-      browserObj = hasBrowser ? g.browser : undefined
-    } catch {
-      hasBrowser = false
-      browserObj = undefined
-    }
-
-    // Chrome does not expose a standalone native `browser` object. If chrome
-    // is not ready yet, leave the context untouched instead of aliasing
-    // browser->chrome; extensions may cache that early object and miss the
-    // later patched namespace entirely.
     if (!chromeObj) return
 
-    if (!hasBrowser || !browserObj || browserObj === chromeObj) return
+    let manifest: any
     try {
-      delete g.browser
-    } catch {
-      /* fall through to override */
-    }
-    if (g.browser && g.browser !== chromeObj) {
+      manifest = chromeObj.runtime?.getManifest?.()
+    } catch {}
+    if (manifest?.manifest_version !== 3) return
+
+    // Chrome 148-151 disables the browser namespace for the entire extension
+    // when devtools_page is declared. Leaving it absent is important: an
+    // installed webextension-polyfill must be allowed to wrap chrome instead of
+    // seeing browser and becoming a no-op. Chrome 152 removes this exception.
+    if (manifest.devtools_page) {
+      let chromiumMajor = 0
       try {
+        const match = String(g.navigator?.userAgent || '').match(/(?:Chrome|Chromium)\/(\d+)/)
+        chromiumMajor = match ? Number(match[1]) : 0
+      } catch {}
+      if (chromiumMajor >= 148 && chromiumMajor < 152) return
+    }
+
+    const isWorker = typeof window === 'undefined'
+    try {
+      if (g.browser && !isWorker) return
+    } catch {}
+
+    // Extension pages preserve a native browser namespace. In a service worker,
+    // Electron can expose a partial browser object with runtime.id but without
+    // runtime/tabs/permissions events. WXT selects that object and crashes
+    // during synchronous listener registration. Chrome exposes one complete API
+    // surface, so make the worker alias exact even when browser already exists.
+    try {
+      g.browser = chromeObj
+    } catch {}
+    try {
+      if (isWorker || !g.browser) {
         Object.defineProperty(g, 'browser', {
-          value: undefined,
+          value: chromeObj,
           configurable: true,
           writable: true,
         })
-      } catch {
-        try {
-          if (g.browser !== chromeObj) g.browser = undefined
-        } catch {
-          /* non-configurable native binding — nothing more we can do */
-        }
       }
+    } catch {
+      /* non-configurable binding */
     }
   } catch {
     /* never let this break startup */
@@ -183,25 +185,11 @@ const crxSerializeMessage = (value: any): any => {
   return serialized === undefined ? undefined : JSON.parse(serialized)
 }
 
+// Autofill tracing lives inside mainWorldScript (crxIsAutofillMessage); it
+// reads this flag via electronContext.autofillVerbose because serialized
+// main-world code has no access to `process`.
 const crxAutofillVerbose =
   typeof process !== 'undefined' && process?.env?.CRX_VERBOSE === '1'
-
-const crxIsAutofillMessage = (message: any): boolean =>
-  !!(
-    crxAutofillVerbose &&
-    message &&
-    typeof message === 'object' &&
-    typeof message.command === 'string' &&
-    /^(fillForm|triggerAutoSubmitLogin|collectPageDetails|collectPageDetailsResponse|bgCollectPageDetails|triggerAutofillScriptInjection|ignoreFieldFocus)$/.test(
-      message.command,
-    )
-  )
-
-const crxAutofillLog = (...args: any[]) => {
-  try {
-    console.warn('[crx-autofill]', ...args)
-  } catch {}
-}
 
 const crxBlobToDataUrl = (blob: Blob): Promise<string | undefined> =>
   new Promise((resolve) => {
@@ -380,6 +368,10 @@ export const injectExtensionAPIs = () => {
       console.error(e)
       result = undefined
     }
+    // Legacy path swallows errors; also swallow the apiError() sentinel.
+    if (result && typeof result === 'object' && typeof result.__crxApiError === 'string') {
+      result = undefined
+    }
 
     if (process.env.NODE_ENV === 'development') {
       console.log(fnName, '(result)', result)
@@ -406,11 +398,65 @@ export const injectExtensionAPIs = () => {
   ) {
     if (options.noop) return options.defaultResponse
     if (options.serialize) args = options.serialize(...args)
-    return ipcRenderer.invoke(
-      'crx-msg',
-      extensionId,
-      fnName,
-      ...args.map((a: any) => crxStripUncloneable(a)),
+    let result: any
+    try {
+      result = await ipcRenderer.invoke(
+        'crx-msg',
+        extensionId,
+        fnName,
+        ...args.map((a: any) => crxStripUncloneable(a)),
+      )
+    } catch (err: any) {
+      // ipcRenderer.invoke wraps handler errors as
+      // "Error invoking remote method 'crx-msg': Error: <message>". Chrome
+      // surfaces the bare message (extensions string-match on e.g.
+      // "Receiving end does not exist"), so unwrap it here for every caller.
+      const raw = String((err && err.message) || err || `${fnName} failed`)
+      const message = raw
+        .replace(/^Error invoking remote method '[^']*':\s*/, '')
+        .replace(/^Error:\s*/, '')
+      throw new Error(message || `${fnName} failed`)
+    }
+    // Handlers signal routine API errors (e.g. tabs.sendMessage with no
+    // receiver) with a sentinel instead of throwing, so the main process does
+    // not log every one of them; see apiError() in messaging.ts.
+    if (result && typeof result === 'object' && typeof result.__crxApiError === 'string') {
+      throw new Error(result.__crxApiError)
+    }
+    return result
+  }
+
+  // A long-lived Promise returned directly through contextBridge can be
+  // observed as an already-resolved `undefined` by some extension contexts.
+  // Keep the Promise in the page world and settle it through this callback
+  // bridge only after the main-process OAuth handler really completes.
+  const launchIdentityWebAuthFlow = (
+    extensionId: string,
+    details: { url: string; interactive?: boolean },
+    complete: (packet: { ok: boolean; value?: string; error?: string }) => void,
+  ) => {
+    ipcRenderer.invoke('crx-msg', extensionId, 'identity.launchWebAuthFlow', details).then(
+      (value: any) => {
+        try {
+          if (typeof value === 'string' && value) {
+            complete({ ok: true, value })
+          } else {
+            complete({ ok: false, error: 'identity.launchWebAuthFlow returned no redirect URL' })
+          }
+        } catch {
+          /* page context was destroyed */
+        }
+      },
+      (error: any) => {
+        try {
+          complete({
+            ok: false,
+            error: String((error && error.message) || error || 'identity.launchWebAuthFlow failed'),
+          })
+        } catch {
+          /* page context was destroyed */
+        }
+      },
     )
   }
 
@@ -422,24 +468,32 @@ export const injectExtensionAPIs = () => {
     disconnect: () => void,
     callback: ConnectNativeCallback,
   ) => {
+    if (typeof application !== 'string' || application.length === 0) {
+      throw new TypeError('runtime.connectNative requires a native application name')
+    }
     const connectionId = (contextBridge as any).executeInMainWorld({
       func: () => crypto.randomUUID(),
     })
-    // The main-process handler reports launch/configuration failures through
-    // the Port disconnect event. Also handle an IPC rejection here: otherwise
-    // a popup keeps a permanently buffered NativePort and every download waits
-    // for its request timeout with no visible feedback.
-    void invokeExtensionRaw(extensionId, 'runtime.connectNative', {}, connectionId, application).catch(
-      () => disconnect(),
-    )
+    // Install the IPC listeners before asking the browser process to create
+    // the host. A manifest/permission failure can disconnect synchronously;
+    // registering afterwards loses that event and leaves Chrome's Port in a
+    // permanently connecting state.
     const onMessage = (_event: Electron.IpcRendererEvent, message: any) => {
       receive(message)
     }
-    ipcRenderer.on(`crx-native-msg-${connectionId}`, onMessage)
-    ipcRenderer.once(`crx-native-msg-${connectionId}-disconnect`, () => {
+    let cleanedUp = false
+    const cleanup = () => {
+      if (cleanedUp) return
+      cleanedUp = true
       ipcRenderer.off(`crx-native-msg-${connectionId}`, onMessage)
+      ipcRenderer.off(`crx-native-msg-${connectionId}-disconnect`, onDisconnect)
+    }
+    const onDisconnect = () => {
+      cleanup()
       disconnect()
-    })
+    }
+    ipcRenderer.on(`crx-native-msg-${connectionId}`, onMessage)
+    ipcRenderer.on(`crx-native-msg-${connectionId}-disconnect`, onDisconnect)
     const send = (message: any) => {
       // Native Messaging uses JSON serialization, not Electron's structured
       // clone. This also protects direct preload callers from enumerable
@@ -447,6 +501,14 @@ export const injectExtensionAPIs = () => {
       ipcRenderer.send(`crx-native-msg-${connectionId}`, crxSerializeMessage(message))
     }
     callback(connectionId, send)
+
+    // The main-process handler reports launch/configuration failures through
+    // the Port disconnect event. Also handle an IPC rejection here: this is
+    // the same terminal transition, so the callback remains idempotent.
+    void invokeExtensionRaw(extensionId, 'runtime.connectNative', {}, connectionId, application).catch(() => {
+      cleanup()
+      disconnect()
+    })
   }
 
   const disconnectNative = (extensionId: string, connectionId: string) => {
@@ -565,9 +627,10 @@ export const injectExtensionAPIs = () => {
     tabId: number | undefined,
     info: { name?: string; frameId?: number } | undefined,
     receive: (message: any) => void,
-    disconnect: () => void,
+    disconnect: (error?: string) => void,
     ready: (send: (m: any) => void, close: () => void) => void,
   ) => {
+    const noReceiver = 'Could not establish connection. Receiving end does not exist.'
     ipcRenderer
       .invoke('crx-msg', extensionId, 'tabs.connect', tabId, {
         name: info?.name || '',
@@ -575,14 +638,14 @@ export const injectExtensionAPIs = () => {
       })
       .then((portId: string) => {
         if (!portId) {
-          disconnect()
+          disconnect(noReceiver)
           return
         }
-        portAccept(portId, receive, disconnect, ready)
+        portAccept(portId, receive, () => disconnect(), ready)
       })
       .catch((e: any) => {
         console.error('crx-tabs-connect failed', e)
-        disconnect()
+        disconnect(noReceiver)
       })
   }
 
@@ -593,16 +656,14 @@ export const injectExtensionAPIs = () => {
     } catch {
       serialized = undefined
     }
-    const p = ipcRenderer
-      .invoke('crx-runtime-message', extensionId, serialized)
-      .catch(() => undefined)
-    // Never surface as unhandledRejection — Chrome's sendMessage resolves
-    // undefined when delivery fails, it doesn't reject.
+    const p = ipcRenderer.invoke('crx-runtime-message', extensionId, serialized)
+    // Attach an observer without changing the returned Promise. Chrome 148
+    // propagates a rejected onMessage listener to the sendMessage caller.
     p.then(undefined, () => {})
     return p
   }
 
-  const sendMessageResponse = (messageId: string, response: any) => {
+  const sendMessageResponse = (messageId: string, response: any, error?: string) => {
     let serialized = response
     try {
       // `undefined` is the bridge's no-response sentinel. Chrome JSON-coerces
@@ -618,7 +679,7 @@ export const injectExtensionAPIs = () => {
     // the recurring renderer-level "An object could not be cloned" error. The
     // response channel is best-effort, just like Chrome when its sender closed.
     try {
-      ipcRenderer.send('crx-cs-message-response', messageId, serialized)
+      ipcRenderer.send('crx-cs-message-response', messageId, serialized, error)
     } catch (error) {
       try {
         console.warn('[crx-runtime] response IPC dropped', error)
@@ -778,8 +839,10 @@ export const injectExtensionAPIs = () => {
   }
 
   const electronContext = {
+    autofillVerbose: crxAutofillVerbose,
     invokeExtension,
     invokeExtensionRaw,
+    launchIdentityWebAuthFlow,
     addExtensionListener,
     removeExtensionListener,
     connectNative,
@@ -801,7 +864,11 @@ export const injectExtensionAPIs = () => {
   // IMPORTANT: This must be self-contained, no closure variable will be included!
   function mainWorldScript(runtimeContextType: RuntimeContextTypeMap) {
     // Use context bridge API or closure variable when context isolation is disabled.
-    const electron = ((globalThis as any).electron as typeof electronContext) || electronContext
+    // `typeof` guard: when serialized into the main world the closure name is
+    // unbound, and a bare reference would throw instead of falling back.
+    const electron =
+      ((globalThis as any).electron as typeof electronContext) ||
+      (typeof electronContext !== 'undefined' ? electronContext : (undefined as any))
     const deferTask = (fn: () => void, delay = 0) => {
       if (delay > 0) {
         setTimeout(fn, delay)
@@ -811,6 +878,53 @@ export const injectExtensionAPIs = () => {
     }
 
     const chrome = globalThis.chrome || {}
+    const syncBrowserNamespaceAPIs = () => {
+      try {
+        const manifest = (chrome as any).runtime?.getManifest?.()
+        const browser = (globalThis as any).browser
+        if (manifest?.manifest_version !== 3 || !browser || browser === chrome) return
+        if (manifest.devtools_page) {
+          let chromiumMajor = 0
+          try {
+            const match = String((globalThis as any).navigator?.userAgent || '').match(
+              /(?:Chrome|Chromium)\/(\d+)/,
+            )
+            chromiumMajor = match ? Number(match[1]) : 0
+          } catch {}
+          if (chromiumMajor >= 148 && chromiumMajor < 152) return
+        }
+        for (const key of Object.getOwnPropertyNames(chrome)) {
+          if (key.startsWith('__crx')) continue
+          let value: any
+          try {
+            value = (chrome as any)[key]
+            if (browser[key] === value) continue
+          } catch {
+            continue
+          }
+          try {
+            Object.defineProperty(browser, key, {
+              value,
+              configurable: true,
+              enumerable: true,
+              writable: true,
+            })
+          } catch {
+            try {
+              browser[key] = value
+            } catch {
+              /* native property is locked */
+            }
+          }
+        }
+      } catch {
+        /* namespace synchronization must never block extension startup */
+      }
+    }
+    const runtimeMessageErrorText = (error: any) =>
+      String(
+        (error && error.message) || error || 'An extension message listener rejected its Promise.',
+      )
     // Keep this helper inside mainWorldScript: executeInMainWorld serializes the
     // function without closure variables. Chrome JSON-serializes Native
     // Messaging payloads, which omits enumerable functions before they cross
@@ -819,6 +933,24 @@ export const injectExtensionAPIs = () => {
       const serialized = JSON.stringify(value)
       return serialized === undefined ? undefined : JSON.parse(serialized)
     }
+    // Main-world copies of the module-level crx* helpers (same closure rule).
+    const crxSerializeMessage = serializeNativeMessage
+    const crxIsAutofillMessage = (message: any): boolean =>
+      !!(
+        (electron as any)?.autofillVerbose === true &&
+        message &&
+        typeof message === 'object' &&
+        typeof message.command === 'string' &&
+        /^(fillForm|triggerAutoSubmitLogin|collectPageDetails|collectPageDetailsResponse|bgCollectPageDetails|triggerAutofillScriptInjection|ignoreFieldFocus)$/.test(
+          message.command,
+        )
+      )
+    const crxAutofillLog = (...args: any[]) => {
+      try {
+        console.warn('[crx-autofill]', ...args)
+      } catch {}
+    }
+    const WORKER_INBOUND_PROTOCOL = 3
     const isWorkerContext =
       typeof (globalThis as any).serviceWorker !== 'undefined' ||
       (typeof window === 'undefined' &&
@@ -847,6 +979,7 @@ export const injectExtensionAPIs = () => {
     // execution this context, bail out. Keeps re-runs idempotent (the SW poll
     // harness and the legacy immediate-inject fallback may both fire).
     if ((chrome as any).__crxPatched) {
+      syncBrowserNamespaceAPIs()
       return
     }
 
@@ -858,6 +991,16 @@ export const injectExtensionAPIs = () => {
     // OFFSCREEN_DOCUMENT contexts do not have this function defined.
     const manifest: chrome.runtime.Manifest =
       (extensionId && chrome.runtime.getManifest?.()) || ({} as any)
+
+    // Chrome binds permission-gated namespaces when the permission is either
+    // required or optional (optional ones then throw until granted). With no
+    // readable manifest, keep the namespace so degraded contexts behave as before.
+    const manifestDeclaresPermission = (permission: string): boolean => {
+      if (!manifest.manifest_version) return true
+      const required = (manifest.permissions as string[] | undefined) || []
+      const optional = (manifest.optional_permissions as string[] | undefined) || []
+      return required.includes(permission) || optional.includes(permission)
+    }
 
     // LAZY extension id. chrome.runtime.id bootstraps asynchronously (SW main
     // world for certain; popup/options during early native bootstrap too), so
@@ -872,6 +1015,146 @@ export const injectExtensionAPIs = () => {
     // runtime.id is ready. extId() is used everywhere below that previously
     // closed over the bare `extensionId`.
     const extId = () => (chrome.runtime && chrome.runtime.id) || extensionId
+
+    // Electron does not expose Chromium's extension URLLoader to MV3 service
+    // workers.  A cross-origin fetch with non-simple headers (for example a
+    // WebDAV PROPFIND carrying Authorization/Depth) therefore performs a CORS
+    // preflight in the worker and fails when the server answers OPTIONS with
+    // 401.  Route HTTP(S) requests through the main-process session instead;
+    // the session uses Chromium's network stack and host-permission checks are
+    // applied by the corresponding IPC handler.
+    try {
+      const g: any = globalThis as any
+      if (
+        typeof g.fetch === 'function' &&
+        typeof g.Request === 'function' &&
+        typeof g.Response === 'function' &&
+        !g.__crxExtensionFetchPatched &&
+        typeof location !== 'undefined' &&
+        location.protocol === 'chrome-extension:'
+      ) {
+        const nativeFetch = g.fetch.bind(g)
+
+        const toBase64 = (buffer: ArrayBuffer) => {
+          const bytes = new Uint8Array(buffer)
+          let binary = ''
+          for (let i = 0; i < bytes.length; i += 0x8000) {
+            binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+          }
+          return btoa(binary)
+        }
+
+        const extensionFetch = async (input: any, init?: any) => {
+          const request = new g.Request(input, init)
+          let target: URL
+          try {
+            target = new URL(request.url)
+          } catch {
+            return nativeFetch(input, init)
+          }
+
+          // Keep extension-local resources and non-HTTP schemes on native fetch.
+          if (!/^https?:$/.test(target.protocol)) return nativeFetch(input, init)
+          // Preserve Fetch's opaque/no-cors and same-origin behavior. The
+          // privileged bridge is only needed for normal CORS requests.
+          if (request.mode !== 'cors') return nativeFetch(input, init)
+          // Electron's Session.fetch currently rejects manual redirects rather
+          // than returning a redirect response. Keep the browser-native path
+          // for this mode so extensions retain Fetch's opaqueredirect behavior.
+          if (request.redirect === 'manual') return nativeFetch(input, init)
+
+          if (request.signal?.aborted) {
+            throw new DOMException('The operation was aborted.', 'AbortError')
+          }
+
+          const bodyBase64 =
+            request.method !== 'GET' && request.method !== 'HEAD'
+              ? toBase64(await request.arrayBuffer())
+              : ''
+          const headers: Array<[string, string]> = []
+          request.headers.forEach((value: string, name: string) => headers.push([name, value]))
+          const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+          let bridgeStarted = false
+          const cancelBridgeRequest = () => {
+            void electron
+              .invokeExtensionRaw(extId(), 'extension.fetch.cancel', {}, {requestId})
+              .catch(() => {})
+          }
+          request.signal?.addEventListener('abort', cancelBridgeRequest, {once: true})
+
+          try {
+            if (request.signal?.aborted) {
+              throw new DOMException('The operation was aborted.', 'AbortError')
+            }
+            bridgeStarted = true
+            const packet = await electron.invokeExtensionRaw(
+              extId(),
+              'extension.fetch',
+              {},
+              {
+                url: request.url,
+                method: request.method,
+                headers,
+                bodyBase64,
+                redirect: request.redirect,
+                credentials: request.credentials,
+                cache: request.cache,
+                referrer: request.referrer,
+                requestId,
+              },
+            )
+            if (!packet || packet.__crxExtensionFetch !== true) {
+              throw new Error('extension.fetch bridge returned an invalid response')
+            }
+            const body = packet.bodyBase64
+              ? Uint8Array.from(atob(packet.bodyBase64), (char) => char.charCodeAt(0))
+              : undefined
+            const response = new g.Response(body, {
+              status: packet.status,
+              statusText: packet.statusText || '',
+              headers: packet.headers || [],
+            })
+            try {
+              Object.defineProperties(response, {
+                url: { value: packet.url || '', configurable: true },
+                redirected: { value: packet.redirected === true, configurable: true },
+              })
+            } catch {
+              /* response metadata is best-effort */
+            }
+            return response
+          } catch (error: any) {
+            if (request.signal?.aborted) {
+              throw new DOMException('The operation was aborted.', 'AbortError')
+            }
+            const message = String(error?.message || error || '')
+            // Permission/validation failures happen before the main-process
+            // request is sent, so retain native fetch's CORS/permission error.
+            // Once the bridge has started a request, never issue a second
+            // network request (important for PUT/PROPFIND and other writes).
+            if (bridgeStarted && !message.includes('extension.fetch preflight:')) {
+              throw new TypeError(message || 'Failed to fetch')
+            }
+            try {
+              request.signal?.removeEventListener('abort', cancelBridgeRequest)
+            } catch {}
+            return nativeFetch(input, init)
+          } finally {
+            try {
+              request.signal?.removeEventListener('abort', cancelBridgeRequest)
+            } catch {}
+          }
+        }
+
+        Object.defineProperty(g, '__crxExtensionFetchPatched', {
+          value: true,
+          configurable: true,
+        })
+        g.fetch = extensionFetch
+      }
+    } catch {
+      // Never prevent extension startup if the host lacks a standard fetch API.
+    }
 
     // Content-script chrome.storage tunnel (see content-bridge.ts). A normal web
     // page has no native chrome.storage, so the content-script bridge marshals
@@ -969,6 +1252,7 @@ export const injectExtensionAPIs = () => {
     // mainWorldScript, but that freeze is shallow, so chrome.runtime itself
     // stays mutable. Best-effort: if runtime is a locked native object it's a
     // no-op, matching the previous behavior.
+    const CRX_NO_RECEIVER_ERROR = 'Could not establish connection. Receiving end does not exist.'
     const crxSetLastError = (message?: string) => {
       try {
         const rt: any = (chrome as any).runtime
@@ -1024,6 +1308,83 @@ export const injectExtensionAPIs = () => {
         ).catch(() => {})
         return undefined
       }
+
+    // chrome.desktopCapture / chrome.tabCapture stream ids are opaque tokens
+    // issued by browser/api/capture.ts ("crx-desktop:…" / "crx-tab:…"). Chrome
+    // lets any document of the issuing extension redeem one through
+    // getUserMedia({ mandatory: { chromeMediaSource, chromeMediaSourceId } }).
+    // Electron only understands its own desktopCapturer ids and per-consumer
+    // WebContents ids, so translate the token at consume time — the main
+    // process knows the real consumer frame only now.
+    try {
+      const md: any =
+        typeof navigator !== 'undefined' ? (navigator as any).mediaDevices : undefined
+      if (
+        md &&
+        typeof md.getUserMedia === 'function' &&
+        !md.__crxCaptureIdsPatched &&
+        typeof location !== 'undefined' &&
+        location.protocol === 'chrome-extension:'
+      ) {
+        const nativeGetUserMedia = md.getUserMedia.bind(md)
+        const CRX_STREAM_ID = /^crx-(desktop|tab):/
+        const streamIdOf = (track: any): string | null => {
+          if (!track || typeof track !== 'object') return null
+          const id = track.mandatory?.chromeMediaSourceId ?? track.chromeMediaSourceId
+          return typeof id === 'string' && CRX_STREAM_ID.test(id) ? id : null
+        }
+        const rewrite = (
+          track: any,
+          resolved: { kind: 'desktop' | 'tab'; sourceId: string },
+          isAudio: boolean,
+        ) => {
+          const mandatory = { ...(track.mandatory || {}) }
+          mandatory.chromeMediaSource = resolved.kind
+          // Electron's desktop loopback audio takes no source id; a window
+          // source id on the audio track makes the whole request fail.
+          if (isAudio && resolved.kind === 'desktop') delete mandatory.chromeMediaSourceId
+          else mandatory.chromeMediaSourceId = resolved.sourceId
+          const next = { ...track, mandatory }
+          delete next.chromeMediaSource
+          delete next.chromeMediaSourceId
+          return next
+        }
+        const crxGetUserMedia = async function (constraints?: any) {
+          const videoId = streamIdOf(constraints?.video)
+          const audioId = streamIdOf(constraints?.audio)
+          const streamId = videoId || audioId
+          if (!streamId) return nativeGetUserMedia(constraints)
+          let resolved: { kind: 'desktop' | 'tab'; sourceId: string; audio: boolean }
+          try {
+            resolved = await invokeExtension('capture.resolveStreamId')(streamId, location.href)
+          } catch {
+            throw new DOMException('Invalid state', 'AbortError')
+          }
+          const next: any = { ...constraints }
+          if (constraints.video && videoId) {
+            next.video = rewrite(constraints.video, resolved, false)
+          }
+          if (constraints.audio) {
+            // Chrome reports canRequestAudioTrack=false when the user did not
+            // share audio; many recorders still ask for it unconditionally.
+            // Drop the audio track instead of failing the whole capture.
+            next.audio =
+              resolved.audio && (audioId || resolved.kind === 'desktop')
+                ? rewrite(constraints.audio, resolved, true)
+                : false
+          }
+          return nativeGetUserMedia(next)
+        }
+        Object.defineProperty(md, 'getUserMedia', {
+          value: crxGetUserMedia,
+          configurable: true,
+          writable: true,
+        })
+        Object.defineProperty(md, '__crxCaptureIdsPatched', { value: true })
+      }
+    } catch {
+      /* mediaDevices unavailable in this context */
+    }
 
     function imageData2base64(imageData: ImageData) {
       const canvas = document.createElement('canvas')
@@ -1132,41 +1493,51 @@ export const injectExtensionAPIs = () => {
     class NativePort implements chrome.runtime.Port {
       private connectionId: string = ''
       private connected = false
+      private closed = false
       private pending: any[] = []
 
       name: string = ''
 
       _init = (connectionId: string, send: (message: any) => void) => {
+        if (this.closed) return
         this.connected = true
         this.connectionId = connectionId
         this._send = send
 
-        this.pending.forEach((msg) => this.postMessage(msg))
+        this.pending.forEach((msg) => send(msg))
         this.pending = []
 
         Object.defineProperty(this, '_init', { value: undefined })
       }
 
       _send(message: any) {
+        if (this.closed) {
+          throw new Error('Attempting to use a disconnected port')
+        }
         this.pending.push(message)
       }
 
       _receive(message: any) {
+        if (this.closed) return
         ;(this.onMessage as any)._emit(message)
       }
 
       _disconnect() {
-        this.disconnect()
+        if (this.closed) return
+        this.closed = true
+        this.connected = false
+        ;(this.onDisconnect as any)._emit(this)
       }
 
       postMessage(message: any) {
         this._send(serializeNativeMessage(message))
       }
       disconnect() {
-        if (this.connected) {
+        if (this.closed) return
+        this.closed = true
+        this.connected = false
+        if (this.connectionId) {
           electron.disconnectNative(extId(), this.connectionId)
-          ;(this.onDisconnect as any)._emit()
-          this.connected = false
         }
       }
       onMessage: chrome.runtime.PortMessageEvent = new Event() as any
@@ -1207,15 +1578,26 @@ export const injectExtensionAPIs = () => {
         ;(this.onMessage as any)._emit(message, this)
       }
 
-      _remoteDisconnect() {
+      /**
+       * `error` is surfaced as chrome.runtime.lastError for the duration of the
+       * onDisconnect listeners (Chrome sets it when the connection could not be
+       * established, e.g. tabs.connect to a tab with no receiver).
+       */
+      _remoteDisconnect(error?: string) {
         if (this.closed) return
         this.closed = true
         this.connected = false
-        ;(this.onDisconnect as any)._emit(this)
+        if (error) crxSetLastError(error)
+        try {
+          ;(this.onDisconnect as any)._emit(this)
+        } finally {
+          if (error) crxSetLastError(undefined)
+        }
       }
 
       postMessage(message: any) {
-        if (this.closed) return
+        // Chrome throws synchronously on a port that is already disconnected.
+        if (this.closed) throw new Error('Attempting to use a disconnected port object')
         if (this.connected && this._send) this._send(message)
         else this.pending.push(message)
       }
@@ -1225,7 +1607,6 @@ export const injectExtensionAPIs = () => {
         this.closed = true
         this.connected = false
         this._close?.()
-        ;(this.onDisconnect as any)._emit(this)
       }
     }
 
@@ -1322,7 +1703,7 @@ export const injectExtensionAPIs = () => {
       action: {
         // Chrome provides chrome.action to ALL mv3 extensions, even those
         // without an `action` manifest key (they just get no default icon).
-        shouldInject: () => manifest.manifest_version === 3,
+        shouldInject: () => manifest.manifest_version === 3 && !!(manifest as any).action,
         factory: browserActionFactory,
       },
 
@@ -1349,6 +1730,7 @@ export const injectExtensionAPIs = () => {
       },
 
       alarms: {
+        shouldInject: () => manifestDeclaresPermission('alarms'),
         // Electron's native runtime has no chrome.alarms; back it with the
         // main-process AlarmsAPI. create() is fire-and-forget (callers don't
         // await); get/getAll/clear/clearAll resolve via the handler.
@@ -1364,6 +1746,7 @@ export const injectExtensionAPIs = () => {
       },
 
       commands: {
+        shouldInject: () => !manifest.manifest_version || !!(manifest as any).commands,
         factory: (base) => {
           return {
             ...base,
@@ -1374,6 +1757,7 @@ export const injectExtensionAPIs = () => {
       },
 
       contextMenus: {
+        shouldInject: () => manifestDeclaresPermission('contextMenus'),
         factory: (base) => {
           let menuCounter = 0
           const menuCallbacks: {
@@ -1420,6 +1804,7 @@ export const injectExtensionAPIs = () => {
       },
 
       cookies: {
+        shouldInject: () => manifestDeclaresPermission('cookies'),
         factory: (base) => {
           return {
             ...base,
@@ -1434,6 +1819,7 @@ export const injectExtensionAPIs = () => {
       },
 
       bookmarks: {
+        shouldInject: () => manifestDeclaresPermission('bookmarks'),
         factory: (base) => {
           return {
             ...base,
@@ -1460,6 +1846,7 @@ export const injectExtensionAPIs = () => {
       },
 
       history: {
+        shouldInject: () => manifestDeclaresPermission('history'),
         factory: (base) => {
           return {
             ...base,
@@ -1480,6 +1867,7 @@ export const injectExtensionAPIs = () => {
       // Replaces the former all-noop stub. setUiOptions/setShelfEnabled/drag have
       // no Electron meaning and stay no-ops; the rest are functional.
       downloads: {
+        shouldInject: () => manifestDeclaresPermission('downloads'),
         factory: (base) => {
           return {
             ...base,
@@ -1655,6 +2043,7 @@ export const injectExtensionAPIs = () => {
       },
 
       notifications: {
+        shouldInject: () => manifestDeclaresPermission('notifications'),
         factory: (base) => {
           return {
             ...base,
@@ -1726,15 +2115,18 @@ export const injectExtensionAPIs = () => {
         //
         // Now each setting routes get/set/clear to the main-process PrivacyAPI
         // (browser/api/privacy.ts) — persisted to userData/privacy-settings.json
-        // and broadcasting privacy.<cat>.<name>.onChange. No `shouldInject`: the
-        // namespace is always installed (Chrome exposes chrome.privacy to every
-        // extension; the "privacy" permission is enforced at the method level by
-        // the router, so a call from an extension that didn't declare it throws
-        // "requires privacy permissions" instead of leaving the namespace
-        // undefined and crashing). invokeExtension handles callback-or-promise.
+        // and broadcasting privacy.<cat>.<name>.onChange. The router still
+        // enforces the permission per method. invokeExtension handles
+        // callback-or-promise.
         // Return typed `any` (like omnibox): @types/chrome has no chrome.privacy,
         // so the nested-function literal can't satisfy DeepPartial<any>'s index
         // signature — runtime shape is what matters here.
+        //
+        // Gated like Chrome: the namespace only exists when "privacy" is a
+        // required or optional permission. Extensions feature-detect it
+        // (`chrome.privacy && ...`), so exposing it unconditionally sends
+        // them down code paths that assume the full native API.
+        shouldInject: () => manifestDeclaresPermission('privacy'),
         factory: (base): any => {
           const mk = (cat: string, name: string) => ({
             get: invokeExtension(`privacy.${cat}.${name}.get`),
@@ -1782,12 +2174,18 @@ export const injectExtensionAPIs = () => {
         // background init completes and the options/popup UI renders instead of
         // staying display:none) AND actually switch the proxy. set/clear/get route
         // over the crx-msg router; get returns the last-applied value with
-        // levelOfControl. onChange/onProxyError are local no-op events (Electron
-        // emits no external proxy-change signal). Generic: applies to every
+        // levelOfControl. onChange is emitted by the host proxy coordinator.
+        // Electron has no equivalent proxy-error stream, so onProxyError stays
+        // a local no-op event. Generic: applies to every
         // extension that touches chrome.proxy. The SHIM (extension-storage-patch.ts)
         // routes the SAME calls over the electron bridge for the service-worker /
         // sandboxed contexts this factory does not reach.
-        shouldInject: () => true,
+        //
+        // Only for extensions that declare "proxy" (required or optional),
+        // matching Chrome. WXT-style code does `const p = chrome.proxy;
+        // p && p.onRequest.addListener(...)`; a partial namespace without
+        // onRequest crashes such a service worker at startup.
+        shouldInject: () => manifestDeclaresPermission('proxy'),
         factory: (base) => {
           const noopEvent = () => ({
             addListener: () => {},
@@ -1798,7 +2196,7 @@ export const injectExtensionAPIs = () => {
             set: invokeExtension('proxy.settings.set'),
             clear: invokeExtension('proxy.settings.clear'),
             get: invokeExtension('proxy.settings.get'),
-            onChange: noopEvent(),
+            onChange: new ExtensionEvent('proxy.settings.onChange'),
           }
           return {
             ...base,
@@ -1817,6 +2215,7 @@ export const injectExtensionAPIs = () => {
       // factory covers MV2 background pages and every other mainWorldScript
       // context (popup/options pages).
       omnibox: {
+        shouldInject: () => !manifest.manifest_version || !!(manifest as any).omnibox,
         factory: (): any => {
           const noopEvt = () => ({
             addListener: () => {},
@@ -1860,7 +2259,11 @@ export const injectExtensionAPIs = () => {
             ...base,
             // connect / sendMessage stay native (from base) — do not override.
             connectNative: (application: string) => {
+              if (typeof application !== 'string' || application.length === 0) {
+                throw new TypeError('runtime.connectNative requires a native application name')
+              }
               const port = new NativePort()
+              port.name = application
               const receive = port._receive.bind(port)
               const disconnect = port._disconnect.bind(port)
               const callback: ConnectNativeCallback = (connectionId, send) => {
@@ -1871,6 +2274,9 @@ export const injectExtensionAPIs = () => {
             },
             openOptionsPage: invokeExtension('runtime.openOptionsPage'),
             sendNativeMessage: (application: string, message: any, callback?: (response: any) => void) => {
+              if (typeof application !== 'string' || application.length === 0) {
+                throw new TypeError('runtime.sendNativeMessage requires a native application name')
+              }
               const args: any[] = [application, serializeNativeMessage(message)]
               if (typeof callback === 'function') args.push(callback)
               return invokeExtension('runtime.sendNativeMessage')(...args)
@@ -1943,6 +2349,15 @@ export const injectExtensionAPIs = () => {
                 responded = true
                 electron.sendMessageResponse(payload.messageId, response)
               }
+              const sendError = (error: any) => {
+                if (responded) return
+                responded = true
+                electron.sendMessageResponse(
+                  payload.messageId,
+                  undefined,
+                  runtimeMessageErrorText(error),
+                )
+              }
               const results = (bridgedOnMessageExternal as any)._emit(
                 payload.message,
                 payload.sender,
@@ -1957,24 +2372,16 @@ export const injectExtensionAPIs = () => {
               )
               if (promises.length > 0) {
                 asyncPending = true
-                let rejectedPromises = 0
-                promises.forEach((p) =>
-                  p.then(
-                    (v: any) => {
-                      if (!responded) sendResponse(v)
-                    },
-                    () => {
-                      rejectedPromises++
-                      if (
-                        rejectedPromises === promises.length &&
-                        !hasAsyncFlag &&
-                        !responded
-                      ) {
-                        sendResponse(undefined)
-                      }
-                    },
-                  ),
-                )
+              promises.forEach((p) =>
+                p.then(
+                  (v: any) => {
+                    if (!responded) sendResponse(v)
+                  },
+                  (error: any) => {
+                    if (!responded) sendError(error)
+                  },
+                ),
+              )
               }
               if (hasAsyncFlag) {
                 asyncPending = true
@@ -2161,6 +2568,15 @@ export const injectExtensionAPIs = () => {
                 responded = true
                 electron.sendMessageResponse(payload.messageId, response)
               }
+              const sendError = (error: any) => {
+                if (responded) return
+                responded = true
+                electron.sendMessageResponse(
+                  payload.messageId,
+                  undefined,
+                  runtimeMessageErrorText(error),
+                )
+              }
               // Content-script chrome.storage tunnel: handle before extension
               // listeners so the internal envelope never reaches them.
               if (handleStorageOp(payload.message, sendResponse)) return
@@ -2196,8 +2612,8 @@ export const injectExtensionAPIs = () => {
                     (v: any) => {
                       if (!responded) sendResponse(v)
                     },
-                    () => {
-                      /* listener rejected; wait for others / requestResponse timeout */
+                    (error: any) => {
+                      if (!responded) sendError(error)
                     },
                   ),
                 )
@@ -2206,13 +2622,23 @@ export const injectExtensionAPIs = () => {
                 asyncPending = true
                 try {
                   setTimeout(() => {
-                    if (!responded) sendResponse(undefined)
+                    if (!responded) {
+                      sendResponse(
+                        payload.message?.type === 'fetch'
+                          ? { __crxNoReceiver: true }
+                          : undefined,
+                      )
+                    }
                   }, 30000)
                 } catch {
                   /* setTimeout unavailable — rely on caller timeout */
                 }
               }
-              if (!asyncPending && !responded) sendResponse(undefined)
+              if (!asyncPending && !responded) {
+                sendResponse(
+                  payload.message?.type === 'fetch' ? { __crxNoReceiver: true } : undefined,
+                )
+              }
             },
           )
 
@@ -2245,6 +2671,39 @@ export const injectExtensionAPIs = () => {
           const wrapNativeMsgListener = (cb: any) => {
             let wrapper = nativeMsgWrappers.get(cb)
             if (wrapper) return wrapper
+            const stripPromiseResponse = (val: any, seen?: WeakSet<any>): any => {
+              if (val == null || typeof val !== 'object') return val
+              try {
+                if (typeof Blob !== 'undefined' && val instanceof Blob) {
+                  return {__crxBlob: true, type: val.type || '', size: val.size || 0}
+                }
+                if (typeof File !== 'undefined' && val instanceof File) {
+                  return {
+                    __crxFile: true,
+                    type: val.type || '',
+                    size: val.size || 0,
+                    name: val.name || '',
+                  }
+                }
+              } catch {}
+              if (!seen) seen = new WeakSet<any>()
+              if (seen.has(val)) return null
+              seen.add(val)
+              try {
+                if (Array.isArray(val)) {
+                  return val.map((entry) => stripPromiseResponse(entry, seen))
+                }
+                const out: any = {}
+                for (const key of Object.keys(val)) {
+                  const descriptor = Object.getOwnPropertyDescriptor(val, key)
+                  if (!descriptor || descriptor.get || descriptor.set) continue
+                  out[key] = stripPromiseResponse(descriptor.value, seen)
+                }
+                return out
+              } finally {
+                seen.delete(val)
+              }
+            }
             wrapper = (message: any, sender: any, sendResponse: any) => {
               let nativeResponded = false
               const safeSend = (response: any) => {
@@ -2344,18 +2803,10 @@ export const injectExtensionAPIs = () => {
                 return undefined
               }
               if (ret && typeof ret.then === 'function') {
-                // async: drive the response ourselves after the Promise settles;
-                // return true so the native channel stays open for safeSend.
-                ret.then(
-                  (v: any) => safeSend(v),
-                  (err: any) => {
-                    console.warn(
-                      `[crx-onmsg-native] REJECTED id=${message && message.id} err=${(err && err.message) || err}`,
-                    )
-                    safeSend(undefined)
-                  },
-                )
-                return true
+                // Chrome 148 understands Promise-returning listeners natively.
+                // Preserve the Promise itself so rejection reaches the sender;
+                // resolved values are still clone-sanitized for Electron IPC.
+                return Promise.resolve(ret).then((v: any) => stripPromiseResponse(v))
               }
               // Sync return value: Chrome would auto-send it as the response
               // (and we can't intercept that serialization). For dessant this
@@ -2412,6 +2863,15 @@ export const injectExtensionAPIs = () => {
                 if (responded) return
                 responded = true
                 electron.sendMessageResponse(payload.messageId, response)
+              }
+              const sendError = (error: any) => {
+                if (responded) return
+                responded = true
+                electron.sendMessageResponse(
+                  payload.messageId,
+                  undefined,
+                  runtimeMessageErrorText(error),
+                )
               }
               // Content-script chrome.storage tunnel: handle before extension
               // listeners so the internal envelope never reaches them.
@@ -2496,8 +2956,8 @@ export const injectExtensionAPIs = () => {
                     (v: any) => {
                       if (!responded) sendResponse(v)
                     },
-                    () => {
-                      /* listener rejected; wait for others / requestResponse timeout */
+                    (error: any) => {
+                      if (!responded) sendError(error)
                     },
                   ),
                 )
@@ -2509,13 +2969,23 @@ export const injectExtensionAPIs = () => {
                 // undefined so the caller doesn't wait for its full timeout.
                 try {
                   setTimeout(() => {
-                    if (!responded) sendResponse(undefined)
+                    if (!responded) {
+                      sendResponse(
+                        payload.message?.type === 'fetch'
+                          ? { __crxNoReceiver: true }
+                          : undefined,
+                      )
+                    }
                   }, 30000)
                 } catch {
                   /* setTimeout unavailable — rely on caller timeout */
                 }
               }
-              if (!asyncPending && !responded) sendResponse(undefined)
+              if (!asyncPending && !responded) {
+                sendResponse(
+                  payload.message?.type === 'fetch' ? { __crxNoReceiver: true } : undefined,
+                )
+              }
             },
           )
 
@@ -2635,38 +3105,103 @@ export const injectExtensionAPIs = () => {
               try {
                 const nativeArgs = crossExt ? [targetExt, message] : [message]
                 const r = nativeFn.apply(base, nativeArgs)
-                return r && typeof r.then === 'function'
-                  ? r.catch((): undefined => undefined)
-                  : Promise.resolve(r)
-              } catch {
-                return Promise.resolve(undefined)
+                return Promise.resolve(r)
+              } catch (error) {
+                return Promise.reject(error)
               }
             }
             const tryIpc = (): Promise<any> => {
               if (crossExt || typeof (electron as any).sendRuntimeMessage !== 'function') {
                 return Promise.resolve(undefined)
               }
-              return Promise.resolve(
-                (electron as any).sendRuntimeMessage(targetExt, message),
-              ).catch((): undefined => undefined)
+              return Promise.resolve((electron as any).sendRuntimeMessage(targetExt, message))
             }
+
+            // An extension page embedded as a sub-frame of a WEB page (uBO Lite's
+            // picker-ui.html overlay, inline password-manager menus) runs in an
+            // extension process whose ipcRenderer never reaches the main process
+            // in this host: invoke() stays pending forever, so the picker's
+            // "Create" button awaited addCustomFilters indefinitely. The top
+            // web page's view-preload already relays __crxCsSend →
+            // crx-runtime-message-from-frame (with the correct sender frame) and
+            // replies by mid, so use that transport for such frames.
+            const webEmbedded = (() => {
+              try {
+                if (typeof window === 'undefined' || window.top === window) return false
+                const ao: any = (location as any).ancestorOrigins
+                const topOrigin = ao && ao.length ? String(ao[ao.length - 1]) : ''
+                return /^https?:/i.test(topOrigin)
+              } catch {
+                return false
+              }
+            })()
+            const tryTopRelay = (): Promise<any> =>
+              new Promise((resolve, reject) => {
+                let wire: any
+                try {
+                  const s = JSON.stringify(message)
+                  wire = s === undefined ? undefined : JSON.parse(s)
+                } catch (error) {
+                  reject(error)
+                  return
+                }
+                const mid = `crxpage-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+                let timer: any
+                const onResp = (ev: MessageEvent) => {
+                  const d: any = ev && ev.data
+                  if (!d || !d.__crxCsSendResp || d.mid !== mid) return
+                  window.removeEventListener('message', onResp)
+                  clearTimeout(timer)
+                  if (d.error !== undefined) reject(new Error(String(d.error)))
+                  else resolve(d.response)
+                }
+                window.addEventListener('message', onResp)
+                timer = setTimeout(() => {
+                  window.removeEventListener('message', onResp)
+                  resolve(undefined)
+                }, 30000)
+                try {
+                  window.top!.postMessage(
+                    { __crxCsSend: true, mid, extId: targetExt, message: wire },
+                    '*',
+                  )
+                } catch (error) {
+                  window.removeEventListener('message', onResp)
+                  clearTimeout(timer)
+                  reject(error)
+                }
+              })
 
             const ipcAvailable =
               !crossExt && typeof (electron as any).sendRuntimeMessage === 'function'
-            const merged = ipcAvailable
+            const merged = !crossExt && webEmbedded
+              ? tryTopRelay()
+              : ipcAvailable
               ? tryIpc()
               : hasNative
                 ? tryNative()
                 : Promise.resolve(undefined)
 
             if (cb) {
-              merged.then((r: any) => {
-                try {
-                  cb(r)
-                } catch {
-                  /* listener threw — swallow, mirrors Chrome behavior */
-                }
-              })
+              merged.then(
+                (r: any) => {
+                  try {
+                    cb(r)
+                  } catch {
+                    /* listener threw — swallow, mirrors Chrome behavior */
+                  }
+                },
+                (error: any) => {
+                  crxSetLastError(String((error && error.message) || error))
+                  try {
+                    cb(undefined)
+                  } catch {
+                    /* listener threw */
+                  } finally {
+                    deferTask(() => crxSetLastError(undefined))
+                  }
+                },
+              )
               return undefined
             }
             return merged
@@ -2708,8 +3243,47 @@ export const injectExtensionAPIs = () => {
           if (local) api.local = local
           if (session) api.session = session
           if (onChanged) api.onChanged = onChanged
-          // TODO: provide a real backend for browsers to opt-in to.
-          api.managed = local
+          // Chrome without enterprise policy: storage.managed is an EMPTY,
+          // read-only area. Aliasing it to local made extensions read their own
+          // local data as admin policy (uBlock adminSettings, Bitwarden config).
+          const ro = (...a: any[]) => {
+            const cb = typeof a[a.length - 1] === 'function' ? a[a.length - 1] : undefined
+            const err = new Error('This is a read-only store.')
+            if (cb) {
+              crxSetLastError(err.message)
+              try {
+                cb()
+              } finally {
+                crxSetLastError(undefined)
+              }
+              return undefined
+            }
+            return Promise.reject(err)
+          }
+          const managedValue = (value: any) => (...a: any[]) => {
+            const cb = typeof a[a.length - 1] === 'function' ? a[a.length - 1] : undefined
+            if (cb) {
+              cb(value)
+              return undefined
+            }
+            return Promise.resolve(value)
+          }
+          api.managed = {
+            get: (...a: any[]) => managedValue({})(...a),
+            getBytesInUse: (...a: any[]) => managedValue(0)(...a),
+            getKeys: (...a: any[]) => managedValue([])(...a),
+            set: ro,
+            remove: ro,
+            clear: ro,
+            setAccessLevel: ro,
+            onChanged: {
+              addListener() {},
+              removeListener() {},
+              hasListener: () => false,
+              hasListeners: () => false,
+            },
+          }
+          // TODO: provide a real sync backend for browsers to opt-in to.
           api.sync = local
           return api
         },
@@ -2904,7 +3478,7 @@ export const injectExtensionAPIs = () => {
               .invokeExtension(extId(), 'tabs.connect', {}, tabId, { name, frameId })
               .then((portId: string) => {
                 if (!portId) {
-                  port._remoteDisconnect()
+                  port._remoteDisconnect(CRX_NO_RECEIVER_ERROR)
                   return
                 }
                 electron.portAccept(
@@ -2914,7 +3488,7 @@ export const injectExtensionAPIs = () => {
                   (send: any, close: any) => port._bind(send, close),
                 )
               })
-              .catch(() => port._remoteDisconnect())
+              .catch(() => port._remoteDisconnect(CRX_NO_RECEIVER_ERROR))
             return port
           }
 
@@ -2960,11 +3534,46 @@ export const injectExtensionAPIs = () => {
                 })
                 return api.executeScript(activeTab.id, arg1, arg2)
               } else {
-                return (base.executeScript as typeof chrome.tabs.executeScript)(
-                  arg1 as number,
-                  arg2 as chrome.tabs.InjectDetails,
-                  arg3 as () => {},
-                )
+                // MV2 file injections carry the SHIM receive bridge; report
+                // them (as for scripting.executeScript) before the caller's
+                // callback so a following tabs.sendMessage finds the receiver.
+                const details: any = arg2 || {}
+                const userCb = typeof arg3 === 'function' ? (arg3 as (...a: any[]) => void) : undefined
+                if (typeof details.file !== 'string') {
+                  return (base.executeScript as typeof chrome.tabs.executeScript)(
+                    arg1 as number,
+                    arg2 as chrome.tabs.InjectDetails,
+                    arg3 as () => {},
+                  )
+                }
+                const mark = () =>
+                  Promise.resolve(
+                    (electron as any).invokeExtensionRaw(extId(), 'scripting.markInjected', {}, {
+                      tabId: arg1,
+                      allFrames: !!details.allFrames,
+                      frameId: typeof details.frameId === 'number' ? details.frameId : undefined,
+                    }),
+                  ).catch(() => undefined)
+                return new Promise((resolve) => {
+                  ;(base.executeScript as any)(arg1, details, (result: any) => {
+                    const failed = !!(chrome.runtime && (chrome.runtime as any).lastError)
+                    const lastError = failed ? (chrome.runtime as any).lastError : undefined
+                    const done = () => {
+                      if (userCb) {
+                        if (lastError) crxSetLastError(lastError.message)
+                        try {
+                          userCb(result)
+                        } catch {
+                        } finally {
+                          if (lastError) crxSetLastError(undefined)
+                        }
+                      }
+                      resolve(result)
+                    }
+                    if (failed) done()
+                    else mark().then(done)
+                  })
+                })
               }
             },
             group: invokeExtension('tabs.group'),
@@ -3009,9 +3618,16 @@ export const injectExtensionAPIs = () => {
                     `frameId=${options?.frameId ?? ''} command=${message.command}`,
                 )
               }
-              const routed = electron
-                .invokeExtension(extId(), 'tabs.sendMessage', {}, tabId, serialized, options)
-                .catch((): undefined => undefined)
+              // Chrome rejects (promise form) / sets lastError (callback form)
+              // with "Could not establish connection. Receiving end does not
+              // exist." when the tab has no receiver — extensions use exactly
+              // that to decide whether to inject their content script.
+              const rawSend = (electron as any).invokeExtensionRaw
+              const routed: Promise<any> = Promise.resolve(
+                typeof rawSend === 'function'
+                  ? rawSend(extId(), 'tabs.sendMessage', {}, tabId, serialized, options)
+                  : electron.invokeExtension(extId(), 'tabs.sendMessage', {}, tabId, serialized, options),
+              )
 
               if (crxIsAutofillMessage(message)) {
                 routed.then(
@@ -3025,13 +3641,33 @@ export const injectExtensionAPIs = () => {
               }
 
               if (cb) {
-                routed.then((r: any) => cb(r)).catch(() => cb(undefined))
+                routed.then(
+                  (r: any) => {
+                    try {
+                      cb(r)
+                    } catch {
+                      /* listener threw — swallow, mirrors Chrome */
+                    }
+                  },
+                  (err: any) => {
+                    crxSetLastError((err && err.message) || 'tabs.sendMessage failed')
+                    try {
+                      cb(undefined)
+                    } catch {
+                      /* listener threw — swallow, mirrors Chrome */
+                    } finally {
+                      crxSetLastError(undefined)
+                    }
+                  },
+                )
                 return undefined
               }
               return routed
             },
             update: invokeExtension('tabs.update'),
             remove: invokeExtension('tabs.remove'),
+            move: invokeExtension('tabs.move'),
+            discard: invokeExtension('tabs.discard'),
             goBack: invokeExtension('tabs.goBack'),
             goForward: invokeExtension('tabs.goForward'),
             onCreated: new ExtensionEvent('tabs.onCreated'),
@@ -3049,6 +3685,13 @@ export const injectExtensionAPIs = () => {
             onHighlighted: new ExtensionEvent('tabs.onHighlighted'),
             onZoomChange: new ExtensionEvent('tabs.onZoomChange'),
           }
+          // MV2-only members (removed from MV3 in Chrome): extensions feature-
+          // detect them to pick the scripting path over the legacy one.
+          if (manifest.manifest_version === 3) {
+            for (const k of ['executeScript', 'insertCSS', 'removeCSS', 'getAllInWindow', 'getSelected']) {
+              delete (api as any)[k]
+            }
+          }
           return api
         },
       },
@@ -3056,6 +3699,7 @@ export const injectExtensionAPIs = () => {
       // chrome.topSites — real backend in browser/api/topsites.ts (ranks the
       // host's history by visitCount). Replaces the former noop that returned [].
       topSites: {
+        shouldInject: () => manifestDeclaresPermission('topSites'),
         factory: (base) => {
           return {
             ...base,
@@ -3064,9 +3708,10 @@ export const injectExtensionAPIs = () => {
         },
       },
 
-      // chrome.idle — no manifest permission required. Backed by powerMonitor
+      // chrome.idle — requires the "idle" permission. Backed by powerMonitor
       // (getSystemIdleTime + idle/active/lock-screen events).
       idle: {
+        shouldInject: () => manifestDeclaresPermission('idle'),
         factory: (base) => ({
           ...base,
           queryState: invokeExtension('idle.queryState'),
@@ -3075,9 +3720,10 @@ export const injectExtensionAPIs = () => {
         }),
       },
 
-      // chrome.power — no manifest permission required. Maps onto
+      // chrome.power — requires the "power" permission. Maps onto
       // powerSaveBlocker (requestKeepAwake/releaseKeepAwake).
       power: {
+        shouldInject: () => manifestDeclaresPermission('power'),
         factory: (base) => ({
           ...base,
           requestKeepAwake: invokeExtension('power.requestKeepAwake'),
@@ -3085,27 +3731,119 @@ export const injectExtensionAPIs = () => {
         }),
       },
 
+      // chrome.desktopCapture — backed by the host screen/window picker
+      // (browser/api/capture.ts). chooseDesktopMedia is callback-only in
+      // Chrome: it returns a request id synchronously and later calls
+      // callback(streamId, { canRequestAudioTrack }); streamId is "" on cancel.
+      desktopCapture: {
+        shouldInject: () => manifestDeclaresPermission('desktopCapture'),
+        factory: (base) => {
+          let nextRequestId = 0
+          const choose = invokeExtension('desktopCapture.chooseDesktopMedia')
+          return {
+            ...base,
+            DesktopCaptureSourceType: {
+              SCREEN: 'screen',
+              WINDOW: 'window',
+              TAB: 'tab',
+              AUDIO: 'audio',
+            } as any,
+            chooseDesktopMedia: ((sources: string[], targetTabOrCb?: any, maybeCb?: any) => {
+              const callback = typeof targetTabOrCb === 'function' ? targetTabOrCb : maybeCb
+              const targetTab = typeof targetTabOrCb === 'function' ? undefined : targetTabOrCb
+              const requestId = ++nextRequestId
+              Promise.resolve(choose(requestId, sources, targetTab))
+                .catch(() => null)
+                .then((result: any) => {
+                  if (typeof callback !== 'function') return
+                  try {
+                    callback(result?.streamId || '', {
+                      canRequestAudioTrack: result?.canRequestAudioTrack === true,
+                    })
+                  } catch {
+                    /* listener threw — swallow, mirrors Chrome */
+                  }
+                })
+              return requestId
+            }) as any,
+            cancelChooseDesktopMedia: ((requestId: number) => {
+              invokeExtension('desktopCapture.cancelChooseDesktopMedia')(requestId)
+            }) as any,
+          }
+        },
+      },
+
+      // chrome.tabCapture — getMediaStreamId mints a token that the
+      // getUserMedia wrapper redeems for WebContents.getMediaSourceId.
+      // capture() (MV2/extension pages) is getMediaStreamId + getUserMedia in
+      // one step, using the caller's active tab like Chrome.
+      tabCapture: {
+        shouldInject: () => manifestDeclaresPermission('tabCapture'),
+        factory: (base) => {
+          const getMediaStreamId = invokeExtension('tabCapture.getMediaStreamId')
+          const toTrack = (wanted: any, extra: any, streamId: string) => {
+            if (!wanted) return false
+            const mandatory = {
+              ...((extra && extra.mandatory) || {}),
+              chromeMediaSource: 'tab',
+              chromeMediaSourceId: streamId,
+            }
+            return { ...(extra || {}), mandatory }
+          }
+          return {
+            ...base,
+            getMediaStreamId,
+            getCapturedTabs: invokeExtension('tabCapture.getCapturedTabs'),
+            onStatusChanged: new ExtensionEvent('tabCapture.onStatusChanged'),
+            capture: ((options: any, callback?: (stream: MediaStream | null) => void) => {
+              const run = async () => {
+                const streamId: string = await getMediaStreamId({})
+                return navigator.mediaDevices.getUserMedia({
+                  audio: toTrack(options?.audio, options?.audioConstraints, streamId),
+                  video: toTrack(options?.video, options?.videoConstraints, streamId),
+                } as any)
+              }
+              run().then(
+                (stream) => {
+                  crxSetLastError(undefined)
+                  try {
+                    callback?.(stream)
+                  } catch {}
+                },
+                (err: any) => {
+                  crxSetLastError((err && err.message) || 'Error starting tab capture')
+                  try {
+                    callback?.(null)
+                  } catch {
+                  } finally {
+                    crxSetLastError(undefined)
+                  }
+                },
+              )
+            }) as any,
+          }
+        },
+      },
+
       // chrome.system.{cpu,memory,display} — gated on any of the three
       // system.* permissions. Read methods return real Node/Electron data;
       // write methods are accepted as no-ops.
       system: {
-        shouldInject: () => {
-          const perms = (manifest.permissions as string[]) || []
-          return (
-            perms.includes('system.cpu') ||
-            perms.includes('system.memory') ||
-            perms.includes('system.display')
-          )
-        },
+        // Each sub-namespace is bound by its own permission in Chrome
+        // (system.cpu without "system.display" has no chrome.system.display).
+        shouldInject: () =>
+          manifestDeclaresPermission('system.cpu') ||
+          manifestDeclaresPermission('system.memory') ||
+          manifestDeclaresPermission('system.display'),
         factory: (base) => ({
           ...base,
-          cpu: {
-            getInfo: invokeExtension('system.cpu.getInfo'),
-          },
-          memory: {
-            getInfo: invokeExtension('system.memory.getInfo'),
-          },
-          display: {
+          cpu: manifestDeclaresPermission('system.cpu')
+            ? { getInfo: invokeExtension('system.cpu.getInfo') }
+            : (base as any)?.cpu,
+          memory: manifestDeclaresPermission('system.memory')
+            ? { getInfo: invokeExtension('system.memory.getInfo') }
+            : (base as any)?.memory,
+          display: !manifestDeclaresPermission('system.display') ? (base as any)?.display : {
             getInfo: invokeExtension('system.display.getInfo'),
             getDisplayLayout: invokeExtension('system.display.getDisplayLayout'),
             setDisplayProperties: invokeExtension('system.display.setDisplayProperties', {
@@ -3123,6 +3861,7 @@ export const injectExtensionAPIs = () => {
       // chrome.browsingData — gated on "browsingData" permission. Maps onto
       // Electron session.clearCache/clearStorageData + host history impl.
       browsingData: {
+        shouldInject: () => manifestDeclaresPermission('browsingData'),
         factory: (base) => ({
           ...base,
           remove: invokeExtension('browsingData.remove'),
@@ -3146,28 +3885,68 @@ export const injectExtensionAPIs = () => {
       // chrome.management — gated on "management". Reads from the session's
       // loaded extensions; setEnabled/uninstall delegate to the host impl.
       management: {
+        // getSelf / uninstallSelf / getPermissionWarningsByManifest are open to
+        // every extension; the rest of the namespace requires "management".
         factory: (base) => ({
           ...base,
-          get: invokeExtension('management.get'),
-          getAll: invokeExtension('management.getAll'),
           getSelf: invokeExtension('management.getSelf'),
-          getPermissionWarningsById: invokeExtension('management.getPermissionWarningsById'),
           getPermissionWarningsByManifest: invokeExtension(
             'management.getPermissionWarningsByManifest',
           ),
-          setEnabled: invokeExtension('management.setEnabled'),
-          uninstall: invokeExtension('management.uninstall'),
           uninstallSelf: invokeExtension('management.uninstallSelf'),
-          onInstalled: new ExtensionEvent('management.onInstalled'),
-          onUninstalled: new ExtensionEvent('management.onUninstalled'),
-          onEnabled: new ExtensionEvent('management.onEnabled'),
-          onDisabled: new ExtensionEvent('management.onDisabled'),
+          ...(manifestDeclaresPermission('management')
+            ? {
+                get: invokeExtension('management.get'),
+                getAll: invokeExtension('management.getAll'),
+                getPermissionWarningsById: invokeExtension(
+                  'management.getPermissionWarningsById',
+                ),
+                setEnabled: invokeExtension('management.setEnabled'),
+                uninstall: invokeExtension('management.uninstall'),
+                onInstalled: new ExtensionEvent('management.onInstalled'),
+                onUninstalled: new ExtensionEvent('management.onUninstalled'),
+                onEnabled: new ExtensionEvent('management.onEnabled'),
+                onDisabled: new ExtensionEvent('management.onDisabled'),
+              }
+            : {}),
         }),
       },
 
-      // chrome.search — no permission required. query() opens a search tab
+      // chrome.declarativeContent — not native in Electron. Mirrors the SW
+      // core-ns copy for MV2 background pages; rules are evaluated per tab by
+      // browser/api/declarative-content.ts (ShowAction enables the action).
+      declarativeContent: {
+        shouldInject: () => manifestDeclaresPermission('declarativeContent'),
+        factory: (base: any) => {
+          const dcType = (instanceType: string) =>
+            function (this: any, init?: any) {
+              if (init && typeof init === 'object') Object.assign(this, init)
+              this.instanceType = instanceType
+            }
+          return {
+            ...base,
+            PageStateMatcher: dcType('declarativeContent.PageStateMatcher'),
+            ShowAction: dcType('declarativeContent.ShowAction'),
+            ShowPageAction: dcType('declarativeContent.ShowPageAction'),
+            SetIcon: dcType('declarativeContent.SetIcon'),
+            RequestContentScript: dcType('declarativeContent.RequestContentScript'),
+            onPageChanged: {
+              addRules: invokeExtension('declarativeContent.addRules'),
+              removeRules: invokeExtension('declarativeContent.removeRules'),
+              getRules: invokeExtension('declarativeContent.getRules'),
+              addListener: () => {},
+              removeListener: () => {},
+              hasListener: () => false,
+              hasListeners: () => false,
+            },
+          }
+        },
+      } as any,
+
+      // chrome.search — requires the "search" permission. query() opens a search tab
       // via impl.createTab.
       search: {
+        shouldInject: () => manifestDeclaresPermission('search'),
         factory: (base) => ({
           ...base,
           query: invokeExtension('search.query'),
@@ -3178,6 +3957,7 @@ export const injectExtensionAPIs = () => {
       // chrome.sessions — gated on "sessions". In-memory recently-closed list
       // rebuilt from the store's tab-removed signal.
       sessions: {
+        shouldInject: () => manifestDeclaresPermission('sessions'),
         factory: (base) => ({
           ...base,
           getRecentlyClosed: invokeExtension('sessions.getRecentlyClosed'),
@@ -3191,6 +3971,7 @@ export const injectExtensionAPIs = () => {
       // chrome.tabGroups — gated on "tabGroups". Shares in-memory group state
       // with chrome.tabs.group/ungroup (registered from index.ts).
       tabGroups: {
+        shouldInject: () => manifestDeclaresPermission('tabGroups'),
         factory: (base) => ({
           ...base,
           // Chrome uses -1 for tabs that do not belong to a tab group.
@@ -3211,7 +3992,7 @@ export const injectExtensionAPIs = () => {
       // get() and accepts set/clear as no-ops (extensions querying it get a
       // well-formed value instead of a crash).
       contentSettings: {
-        shouldInject: () => !!(manifest.permissions as string[])?.includes('contentSettings'),
+        shouldInject: () => manifestDeclaresPermission('contentSettings'),
         factory: (base) => {
           const cs = () => ({
             get: (_d: any, cb: any) => {
@@ -3255,7 +4036,7 @@ export const injectExtensionAPIs = () => {
       // (persisted to userData/font-settings.json; set*/clear* broadcast the
       // matching on*Changed event). getFontList enumerates real OS fonts.
       fontSettings: {
-        shouldInject: () => !!(manifest.permissions as string[])?.includes('fontSettings'),
+        shouldInject: () => manifestDeclaresPermission('fontSettings'),
         factory: (base) => ({
           ...base,
           getFont: invokeExtension('fontSettings.getFont'),
@@ -3283,7 +4064,7 @@ export const injectExtensionAPIs = () => {
       // chrome.tts — gated on "tts". speak() returns true (queued); on Windows
       // it drives SAPI via powershell. getVoices returns []; pause/resume noop.
       tts: {
-        shouldInject: () => !!(manifest.permissions as string[])?.includes('tts'),
+        shouldInject: () => manifestDeclaresPermission('tts'),
         factory: (base) => ({
           ...base,
           speak: invokeExtension('tts.speak'),
@@ -3299,7 +4080,7 @@ export const injectExtensionAPIs = () => {
       // (per-tab/global options + openPanelOnActionClick behavior); open() asks
       // the host to show its right-docked panel container. No events.
       sidePanel: {
-        shouldInject: () => !!(manifest.permissions as string[])?.includes('sidePanel'),
+        shouldInject: () => manifestDeclaresPermission('sidePanel'),
         factory: (base) => ({
           ...base,
           open: invokeExtension('sidePanel.open'),
@@ -3307,6 +4088,9 @@ export const injectExtensionAPIs = () => {
           setPanelBehavior: invokeExtension('sidePanel.setPanelBehavior'),
           getOptions: invokeExtension('sidePanel.getOptions'),
           getPanelBehavior: invokeExtension('sidePanel.getPanelBehavior'),
+          close: invokeExtension('sidePanel.close'),
+          onOpened: new ExtensionEvent('sidePanel.onOpened'),
+          onClosed: new ExtensionEvent('sidePanel.onClosed'),
         }),
       },
 
@@ -3324,9 +4108,64 @@ export const injectExtensionAPIs = () => {
           ...base,
           getRedirectURL: (path?: string) => {
             const root = `https://${extId()}.chromiumapp.org/`
-            return path ? root + String(path).replace(/^\//, '') : root
+            return path ? root + String(path).replace(/^\/+/, '') : root
           },
-          launchWebAuthFlow: invokeExtension('identity.launchWebAuthFlow'),
+          launchWebAuthFlow: (...args: any[]) => {
+            const callback = typeof args[args.length - 1] === 'function' ? args.pop() : undefined
+            const details = args[0]
+            const bridge = (electron as any).launchIdentityWebAuthFlow
+            const resultPromise: Promise<string> =
+              typeof bridge === 'function'
+                ? new Promise<string>((resolve, reject) => {
+                  // Keep the long-lived Promise in the extension's main world.
+                  // Only the completion callback crosses contextBridge.
+                  try {
+                    bridge(extId(), details, (packet: any) => {
+                      if (packet?.ok && typeof packet.value === 'string' && packet.value) {
+                        resolve(packet.value)
+                      } else {
+                        reject(new Error(String(packet?.error || 'identity.launchWebAuthFlow failed')))
+                      }
+                    })
+                  } catch (error) {
+                    reject(error)
+                  }
+                })
+                : Promise.resolve(invokeExtension('identity.launchWebAuthFlow')(details)).then(
+                  (value: any) => {
+                    if (typeof value !== 'string' || !value) {
+                      throw new Error('identity.launchWebAuthFlow returned no redirect URL')
+                    }
+                    return value
+                  },
+                )
+
+            if (!callback) return resultPromise
+
+            resultPromise.then(
+              (value) => {
+                crxSetLastError(undefined)
+                try {
+                  callback(value)
+                } catch {
+                  /* callback errors are isolated from the API bridge */
+                } finally {
+                  crxSetLastError(undefined)
+                }
+              },
+              (error: any) => {
+                crxSetLastError((error && error.message) || 'identity.launchWebAuthFlow failed')
+                try {
+                  callback(undefined)
+                } catch {
+                  /* callback errors are isolated from the API bridge */
+                } finally {
+                  crxSetLastError(undefined)
+                }
+              },
+            ).catch(() => {})
+            return undefined
+          },
           getAuthToken: invokeExtension('identity.getAuthToken'),
           removeCachedAuthToken: invokeExtension('identity.removeCachedAuthToken'),
           clearAllCachedAuthTokens: invokeExtension('identity.clearAllCachedAuthTokens'),
@@ -3434,7 +4273,7 @@ export const injectExtensionAPIs = () => {
       // so typed loosely. Electron has no native implementation; the vendored
       // browser-side UserScriptsAPI stores and injects the scripts.
       userScripts: {
-        shouldInject: () => !!(manifest.permissions as string[] | undefined)?.includes('userScripts'),
+        shouldInject: () => manifestDeclaresPermission('userScripts'),
         factory: (base: any) => {
           return {
             __crxHosted: true,
@@ -3475,8 +4314,7 @@ export const injectExtensionAPIs = () => {
       // contextIsolation:false `persist:view` pages this app uses, so the
       // vendored ScriptingAPI handles them (see scripting.ts).
       scripting: {
-        shouldInject: () =>
-          !!(manifest.permissions as string[] | undefined)?.includes('scripting'),
+        shouldInject: () => manifestDeclaresPermission('scripting'),
         factory: (base: any) => {
           const ipcExecuteScript = invokeExtension('scripting.executeScript', {
             // A `func` can't survive structured-clone over IPC; stringify it so
@@ -3565,10 +4403,44 @@ export const injectExtensionAPIs = () => {
               },
             }
 
+            // Native injections are invisible to the main process. Report the
+            // target once the files ran (their SHIM receive bridge is live) and
+            // before the caller observes completion, so an immediate
+            // tabs.sendMessage reaches them instead of "Receiving end does not
+            // exist". Only file injections carry the SHIM bridge.
+            const markInjected = () =>
+              Array.isArray(injection?.files) && injection.files.length && injection?.target
+                ? Promise.resolve(
+                    (electron as any).invokeExtensionRaw(
+                      extId(),
+                      'scripting.markInjected',
+                      {},
+                      injection.target,
+                    ),
+                  ).catch(() => undefined)
+                : Promise.resolve(undefined)
             const result = Promise.resolve(nativeExecuteScript(compatibilityInjection))
               .catch(() => undefined)
-              .then(() => nativeExecuteScript(injection, callback))
-            return callback ? undefined : result
+              .then(() => nativeExecuteScript(injection))
+              .then((r: any) => markInjected().then(() => r))
+            if (!callback) return result
+            result.then(
+              (r: any) => {
+                try {
+                  callback(r)
+                } catch {}
+              },
+              (err: any) => {
+                crxSetLastError((err && err.message) || 'scripting.executeScript failed')
+                try {
+                  callback(undefined)
+                } catch {
+                } finally {
+                  crxSetLastError(undefined)
+                }
+              },
+            )
+            return undefined
           }
           return {
             ...base,
@@ -3584,6 +4456,7 @@ export const injectExtensionAPIs = () => {
       } as any,
 
       webNavigation: {
+        shouldInject: () => manifestDeclaresPermission('webNavigation'),
         factory: (base) => {
           return {
             ...base,
@@ -3607,11 +4480,29 @@ export const injectExtensionAPIs = () => {
       },
 
       webRequest: {
+        shouldInject: () => manifestDeclaresPermission('webRequest'),
         factory: (base) => {
+          // Electron 43 binds chrome.webRequest natively, but every event prop
+          // resolves to undefined and each read logs "No source for
+          // require(webRequestEvent)" as an extension RuntimeError. Copy only
+          // the non-event members (enums, *Options, handlerBehaviorChanged,
+          // MAX_* constants) by name so the native events are never touched.
+          const nativeMembers: Record<string, any> = {}
+          try {
+            for (const name of Object.getOwnPropertyNames(base || {})) {
+              if (/^on[A-Z]/.test(name)) continue
+              try {
+                nativeMembers[name] = (base as any)[name]
+              } catch {}
+            }
+          } catch {}
           const eventFor = (key: string, name: string) => {
-            const nativeEvent = (base as any)?.[key]
+            if (manifest.manifest_version !== 2) return new ExtensionEvent(name)
+            let nativeEvent: any
+            try {
+              nativeEvent = (base as any)?.[key]
+            } catch {}
             if (
-              manifest.manifest_version === 2 &&
               nativeEvent &&
               typeof nativeEvent.addListener === 'function' &&
               typeof nativeEvent.removeListener === 'function'
@@ -3621,7 +4512,7 @@ export const injectExtensionAPIs = () => {
             return new ExtensionEvent(name)
           }
           return {
-            ...base,
+            ...nativeMembers,
             // AdGuard 等扩展依赖这些事件来拦截和统计网络请求
             onBeforeRequest: eventFor('onBeforeRequest', 'webRequest.onBeforeRequest'),
             onBeforeSendHeaders: eventFor(
@@ -3894,8 +4785,13 @@ export const injectExtensionAPIs = () => {
     try {
       ;(chrome as any).__crxPatched = true
     } catch {
-      /* chrome may be frozen/non-extensible — sentinel is best-effort */
+      /* a native root namespace may reject the sentinel — best-effort */
     }
+
+    // Chrome 148+ keeps each API namespace identical across both roots. Keep
+    // Chromium's native browser root, but point its MV3 API properties at the
+    // hosted chrome implementations installed above.
+    syncBrowserNamespaceAPIs()
 
     // Signal from the same main-world turn that installed the inbound runtime
     // bridge. The host records this against the exact worker version and still
@@ -3912,16 +4808,12 @@ export const injectExtensionAPIs = () => {
       }
     }
 
-    // SW main world: native `chrome` finishes bootstrapping asynchronously
-    // AFTER the preload's executeInMainWorld runs (runtime.id/getManifest are
-    // populated by Chromium's worker bootstrapping). Freezing here would lock
-    // a half-initialized object and silently drop both late-arriving native
-    // properties and the dedicated SW patches. The SW main world exposes
-    // `globalThis.serviceWorker`; frames/popups/background pages do not — so
-    // only freeze those fully-bootstrapped contexts.
-    if (typeof (globalThis as any).serviceWorker === 'undefined') {
-      Object.freeze(chrome)
-    }
+    // Keep the root namespace extensible, matching Chrome. Extensions commonly
+    // normalise cross-browser APIs by adding aliases directly to `chrome`
+    // (for example `chrome.action = chrome.browserAction` in an MV2 background
+    // page). Freezing the object makes that valid compatibility pattern throw
+    // before the extension can initialise. Chrome also permits extensions to
+    // replace properties on the exposed namespace objects.
 
     void 0 // no return
   }
@@ -4019,10 +4911,9 @@ export const injectExtensionAPIs = () => {
         } catch {}
       }
     }
-    // CRITICAL: remove the native `globalThis.browser` alias FIRST so the
-    // extension's bundled webextension-polyfill wraps our patched `chrome`
-    // instead of the unpatched native object. See removeNativeBrowserAlias.
-    cb.executeInMainWorld({ func: removeNativeBrowserAlias })
+    // Preserve Chromium's native browser namespace. Only MV3 contexts missing
+    // it receive Chrome's documented browser=chrome fallback.
+    cb.executeInMainWorld({ func: installBrowserNamespaceFallback })
     // CRITICAL: patch chrome.storage.sync/managed -> local with a DEDICATED,
     // self-contained function FIRST, independent of mainWorldScript.
     //
@@ -4398,8 +5289,7 @@ export const injectExtensionAPIs = () => {
       },
     })
     // CRITICAL: install chrome.alarms with a DEDICATED self-contained patch
-    // BEFORE mainWorldScript (which Object.freeze()s `chrome`, after which a new
-    // `alarms` property can no longer be added). mainWorldScript's alarms
+    // BEFORE mainWorldScript. mainWorldScript's alarms
     // factory is unreliable in the SW main world (same class of issue as
     // storage/getPlatformInfo), so extensions that call chrome.alarms.create
     // during a search/setup flow crash with "Cannot read 'create' of undefined"
@@ -4412,6 +5302,18 @@ export const injectExtensionAPIs = () => {
           const el: any = (globalThis as any).electron
           if (!c || !c.runtime || !el) return
           if (c.alarms && typeof c.alarms.create === 'function') return // already present
+          // chrome.alarms requires the "alarms" permission (required or optional).
+          try {
+            const m = c.runtime.getManifest ? c.runtime.getManifest() : null
+            if (
+              m &&
+              ![...(m.permissions || []), ...(m.optional_permissions || [])].includes('alarms')
+            ) {
+              return
+            }
+          } catch {
+            /* unreadable manifest — keep installing */
+          }
           const extId = c.runtime.id
           const inv = (name: string) => (...args: any[]) =>
             el.invokeExtension(extId, name, {}, ...args)
@@ -4460,15 +5362,197 @@ export const injectExtensionAPIs = () => {
           const c: any = (globalThis as any).chrome
           const el: any = (globalThis as any).electron
           if (!c || !c.runtime || !el) return
+          // executeInMainWorld serializes this function without its closure,
+          // so every helper must be declared locally (mainWorldScript's
+          // isWorkerContext / GenericPort are NOT visible here).
+          const isWorkerContext =
+            typeof (globalThis as any).serviceWorker !== 'undefined' ||
+            (typeof (globalThis as any).window === 'undefined' &&
+              typeof (globalThis as any).document === 'undefined')
           const extId = c.runtime.id
-          const inv = (name: string) => (...args: any[]) =>
-            el.invokeExtension(extId, name, {}, ...args)
-          const evt = (name: string) => ({
-            addListener: (fn: any) => el.addExtensionListener(extId, name, fn),
-            removeListener: (fn: any) => el.removeExtensionListener(extId, name, fn),
-            hasListener: () => false,
-          })
+          // Chrome semantics: promise form rejects on API errors ("No tab with
+          // id"), callback form gets runtime.lastError. The legacy
+          // invokeExtension swallowed both to undefined.
+          const inv = (name: string) => (...args: any[]) => {
+            const cb = typeof args[args.length - 1] === 'function' ? args.pop() : undefined
+            const p: Promise<any> = Promise.resolve(
+              typeof el.invokeExtensionRaw === 'function'
+                ? el.invokeExtensionRaw(extId, name, {}, ...args)
+                : el.invokeExtension(extId, name, {}, ...args),
+            )
+            if (!cb) return p
+            p.then(
+              (r: any) => {
+                try {
+                  cb(r)
+                } catch {}
+              },
+              (error: any) => {
+                try {
+                  Object.defineProperty(c.runtime, 'lastError', {
+                    value: { message: String((error && error.message) || error) },
+                    configurable: true,
+                  })
+                } catch {}
+                try {
+                  cb(undefined)
+                } catch {
+                } finally {
+                  try {
+                    delete c.runtime.lastError
+                  } catch {}
+                }
+              },
+            )
+            return undefined
+          }
+          // Minimal chrome.runtime.Port for tabs.connect, mirroring GenericPort.
+          const portEvent = () => {
+            const ls: any[] = []
+            return {
+              addListener: (fn: any) => {
+                if (typeof fn === 'function' && !ls.includes(fn)) ls.push(fn)
+              },
+              removeListener: (fn: any) => {
+                const i = ls.indexOf(fn)
+                if (i >= 0) ls.splice(i, 1)
+              },
+              hasListener: (fn: any) => ls.includes(fn),
+              hasListeners: () => ls.length > 0,
+              _emit: (...args: any[]) => {
+                for (const fn of ls.slice()) {
+                  try {
+                    fn(...args)
+                  } catch (err) {
+                    console.error(err)
+                  }
+                }
+              },
+            }
+          }
+          class Port {
+            name: string
+            sender: any = undefined
+            onMessage: any = portEvent()
+            onDisconnect: any = portEvent()
+            private connected = false
+            private closed = false
+            private pending: any[] = []
+            private sendFn?: (m: any) => void
+            private closeFn?: () => void
+            constructor(name: string) {
+              this.name = name
+            }
+            _bind(send: (m: any) => void, close: () => void) {
+              if (this.closed) {
+                close()
+                return
+              }
+              this.connected = true
+              this.sendFn = send
+              this.closeFn = close
+              const pend = this.pending
+              this.pending = []
+              for (const m of pend) send(m)
+            }
+            _receive(message: any) {
+              this.onMessage._emit(message, this)
+            }
+            _remoteDisconnect(error?: string) {
+              if (this.closed) return
+              this.closed = true
+              this.connected = false
+              // Chrome exposes the connect failure as runtime.lastError while
+              // onDisconnect listeners run.
+              if (error) {
+                try {
+                  Object.defineProperty(c.runtime, 'lastError', {
+                    value: { message: String(error) },
+                    configurable: true,
+                  })
+                } catch {}
+              }
+              try {
+                this.onDisconnect._emit(this)
+              } finally {
+                if (error) {
+                  try {
+                    delete c.runtime.lastError
+                  } catch {}
+                }
+              }
+            }
+            postMessage(message: any) {
+              if (this.closed) {
+                throw new Error('Attempting to use a disconnected port object')
+              }
+              if (this.connected && this.sendFn) this.sendFn(message)
+              else this.pending.push(message)
+            }
+            disconnect() {
+              if (this.closed) return
+              this.closed = true
+              this.connected = false
+              if (this.closeFn) this.closeFn()
+            }
+          }
+          // Chrome dedupes addListener(fn) and reports registrations through
+          // hasListener/hasListeners; keep a local mirror of the IPC bindings.
+          const evt = (name: string) => {
+            const ls: any[] = []
+            return {
+              addListener: (fn: any) => {
+                if (typeof fn !== 'function' || ls.includes(fn)) return
+                ls.push(fn)
+                el.addExtensionListener(extId, name, fn)
+              },
+              removeListener: (fn: any) => {
+                const i = ls.indexOf(fn)
+                if (i < 0) return
+                ls.splice(i, 1)
+                el.removeExtensionListener(extId, name, fn)
+              },
+              hasListener: (fn: any) => ls.includes(fn),
+              hasListeners: () => ls.length > 0,
+            }
+          }
+          // Chrome 150 binds a namespace only when the manifest allows it
+          // (permission — required or optional — or manifest key). Installing
+          // one otherwise breaks `chrome.x && chrome.x.onY.addListener()`
+          // feature detection. Unreadable manifest → keep installing.
+          let swManifest: any = null
+          try {
+            swManifest = c.runtime.getManifest ? c.runtime.getManifest() : null
+          } catch {
+            swManifest = null
+          }
+          const swPerms: string[] = swManifest
+            ? [...(swManifest.permissions || []), ...(swManifest.optional_permissions || [])]
+            : []
+          const declares = (p: string) => !swManifest || swPerms.includes(p)
+          const hasKey = (k: string) => !swManifest || !!swManifest[k]
           const install = (key: string, value: any) => {
+            // Keep Chromium's native constants/enums (tabs.TabStatus,
+            // tabs.WindowType, …) that our replacement object doesn't define.
+            try {
+              const native = (c as any)[key]
+              if (native && typeof native === 'object') {
+                for (const prop of Object.keys(native)) {
+                  if (prop in value) continue
+                  let v: any
+                  try {
+                    v = native[prop]
+                  } catch {
+                    continue
+                  }
+                  if (typeof v !== 'function' && !(v && typeof v.addListener === 'function')) {
+                    value[prop] = v
+                  }
+                }
+              }
+            } catch {
+              /* native namespace unreadable — nothing to preserve */
+            }
             // 1) Try to replace the whole namespace object.
             try {
               Object.defineProperty(c, key, {
@@ -4528,6 +5612,104 @@ export const injectExtensionAPIs = () => {
           // messages through the IPC hub; cross-extension still falls back to
           // native for standards compatibility.
           if (c.runtime && typeof c.runtime === 'object') {
+            // The extension entry script can execute before the full runtime
+            // facade is installed. Capture onMessage/onConnect registrations
+            // synchronously so WXT can register listeners without observing an
+            // undefined event. The hosted dispatchers consume these same
+            // arrays once the bridge is ready.
+            //
+            // ADDITIVE, never capture-only when a native event exists: native
+            // onMessage/onConnect is still the transport for extension pages
+            // without crx-preload (sandboxed offscreen/popup) and for the SHIM
+            // portbroker's internal `crx-page-listen` / `crxreq` ports. A
+            // capture-only replacement severed those — Tampermonkey's offscreen
+            // requests then relayed to zero saved pages and every call failed
+            // with "no response". Mirrors the SHIM's ARE early-event semantics.
+            // Arrays are re-read from globalThis on every call because the SHIM
+            // portbroker later swaps in its own SBLS/SBLSOC stores.
+            const earlyRuntimeEvent = (slot: string, native: any) => {
+              const g: any = globalThis as any
+              if (!Array.isArray(g[slot])) {
+                try {
+                  g[slot] = []
+                } catch {
+                  /* best-effort */
+                }
+              }
+              const store = (): any[] => (Array.isArray(g[slot]) ? g[slot] : [])
+              const hasNative = !!native && typeof native.addListener === 'function'
+              const nativeRegistered = new WeakSet<object>()
+              // Once the SHIM portbroker is installed it wraps this object's
+              // addListener, records the extension callback in its own store
+              // and then calls us with the callback (onMessage) or an internal
+              // port-filtering wrapper (onConnect). Recording again here would
+              // double-dispatch hosted IPC deliveries, so the SHIM owns the store.
+              const shimOwnsStore = (): boolean => {
+                try {
+                  return !!(c.runtime as any).__crxPortBrokerSW
+                } catch {
+                  return false
+                }
+              }
+              return {
+                __crxHosted: true,
+                addListener: (fn: any) => {
+                  if (typeof fn !== 'function') return
+                  if (!shimOwnsStore()) {
+                    const listeners = store()
+                    if (!listeners.includes(fn)) listeners.push(fn)
+                  }
+                  if (hasNative && !nativeRegistered.has(fn)) {
+                    try {
+                      native.addListener(fn)
+                      nativeRegistered.add(fn)
+                    } catch {
+                      /* native event rejected the listener - capture still holds it */
+                    }
+                  }
+                },
+                removeListener: (fn: any) => {
+                  const listeners = store()
+                  const index = listeners.indexOf(fn)
+                  if (index >= 0) listeners.splice(index, 1)
+                  nativeRegistered.delete(fn)
+                  if (hasNative && typeof native.removeListener === 'function') {
+                    try {
+                      native.removeListener(fn)
+                    } catch {
+                      /* best-effort */
+                    }
+                  }
+                },
+                hasListener: (fn: any) => store().includes(fn),
+                hasListeners: () => store().length > 0,
+              }
+            }
+            if (isWorkerContext) {
+              for (const [eventName, slot] of [
+                ['onMessage', '__crxPortBrokerOnMsg'],
+                ['onConnect', '__crxPortBrokerOnConnect'],
+              ]) {
+                try {
+                  let native: any
+                  try {
+                    native = (c.runtime as any)[eventName]
+                  } catch {
+                    native = undefined
+                  }
+                  if (native && native.__crxHosted === true) continue
+                  Object.defineProperty(c.runtime, eventName, {
+                    value: earlyRuntimeEvent(slot, native),
+                    configurable: true,
+                    enumerable: true,
+                    writable: true,
+                  })
+                } catch {
+                  /* locked runtime namespace - leave native */
+                }
+              }
+            }
+
             // runtime.onInstalled / runtime.onStartup: install BEFORE mainWorldScript.
             // mainWorldScript's runtime.factory (which also defines these two as real
             // ExtensionEvents) only re-fires AFTER chrome.runtime.id is ready (the poll
@@ -4541,11 +5723,7 @@ export const injectExtensionAPIs = () => {
             // electron.addExtensionListener regardless of timing. If mainWorldScript's
             // factory lands later it overwrites these harmlessly; if it throws, ours
             // remain and the SW still receives the lifecycle events.
-            const runtimeLifecycleEvt = (name: string) => ({
-              addListener: (fn: any) => el.addExtensionListener(extId, name, fn),
-              removeListener: (fn: any) => el.removeExtensionListener(extId, name, fn),
-              hasListener: () => false,
-            })
+            const runtimeLifecycleEvt = (name: string) => evt(name)
             for (const evName of ['runtime.onInstalled', 'runtime.onStartup']) {
               try {
                 Object.defineProperty(c.runtime, evName.slice('runtime.'.length), {
@@ -4577,33 +5755,51 @@ export const injectExtensionAPIs = () => {
                 try {
                   const nativeArgs = crossExt ? [targetExt, message] : [message]
                   const r = nativeRuntimeSend.apply(c.runtime, nativeArgs)
-                  return r && typeof r.then === 'function'
-                    ? r.catch((): undefined => undefined)
-                    : Promise.resolve(r)
-                } catch {
-                  return Promise.resolve(undefined)
+                  return Promise.resolve(r)
+                } catch (error) {
+                  return Promise.reject(error)
                 }
               }
               const tryIpc = (): Promise<any> => {
                 if (crossExt || !el || typeof el.sendRuntimeMessage !== 'function') {
                   return Promise.resolve(undefined)
                 }
-                return Promise.resolve(el.sendRuntimeMessage(targetExt, message)).catch(
-                  (): undefined => undefined,
-                )
+                return Promise.resolve(el.sendRuntimeMessage(targetExt, message))
               }
               const merged =
                 !crossExt && el && typeof el.sendRuntimeMessage === 'function'
                   ? tryIpc()
                   : tryNative()
               if (cb) {
-                merged.then((r: any) => {
-                  try {
-                    cb(r)
-                  } catch {
-                    /* listener threw — swallow, mirrors Chrome behavior */
-                  }
-                })
+                merged.then(
+                  (r: any) => {
+                    try {
+                      cb(r)
+                    } catch {
+                      /* listener threw — swallow, mirrors Chrome behavior */
+                    }
+                  },
+                  (error: any) => {
+                    const message = String((error && error.message) || error)
+                    try {
+                      Object.defineProperty(c.runtime, 'lastError', {
+                        value: {message},
+                        configurable: true,
+                      })
+                    } catch {}
+                    try {
+                      cb(undefined)
+                    } catch {
+                      /* listener threw */
+                    } finally {
+                      Promise.resolve().then(() => {
+                        try {
+                          delete c.runtime.lastError
+                        } catch {}
+                      })
+                    }
+                  },
+                )
                 return undefined
               }
               return merged
@@ -4642,14 +5838,21 @@ export const injectExtensionAPIs = () => {
           // move/discard/removeCSS have no host API either — left in
           // the list so the method exists (returns undefined via the swallowed
           // router error) rather than being an undefined property.
+          // MV3 (the only manifest version with a service worker) has no
+          // tabs.executeScript/insertCSS/removeCSS/getAllInWindow: extensions
+          // feature-detect them to choose between the MV2 and scripting paths.
           const tabsMethods = [
-            'get', 'getCurrent', 'getAllInWindow', 'query', 'create', 'update',
+            'get', 'getCurrent', 'query', 'create', 'update',
             'remove', 'reload', 'duplicate', 'move', 'highlight', 'discard',
-            'sendMessage', 'insertCSS', 'removeCSS',
+            'sendMessage',
             'captureVisibleTab', 'detectLanguage', 'getZoom', 'setZoom',
             'getZoomSettings', 'setZoomSettings', 'goBack', 'goForward',
           ]
-          const tabs: any = {}
+          const tabs: any = {
+            TAB_ID_NONE: -1,
+            TAB_INDEX_NONE: -1,
+            MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND: 2,
+          }
           for (const m of tabsMethods) tabs[m] = inv(`tabs.${m}`)
           tabs.sendMessage = function (...args: any[]): any {
             const cb =
@@ -4664,11 +5867,37 @@ export const injectExtensionAPIs = () => {
               : typeof args[1] === 'object'
                 ? args[1]
                 : undefined
-            const routed = el
-              .invokeExtension(extId, 'tabs.sendMessage', {}, tabId, message, options)
-              .catch((): undefined => undefined)
+            // Raw invoke so a missing receiver rejects as in Chrome instead of
+            // being swallowed to undefined by the legacy invokeExtension.
+            const routed: Promise<any> = Promise.resolve(
+              typeof el.invokeExtensionRaw === 'function'
+                ? el.invokeExtensionRaw(extId, 'tabs.sendMessage', {}, tabId, message, options)
+                : el.invokeExtension(extId, 'tabs.sendMessage', {}, tabId, message, options),
+            )
             if (cb) {
-              routed.then((r: any) => cb(r)).catch(() => cb(undefined))
+              routed.then(
+                (r: any) => {
+                  try {
+                    cb(r)
+                  } catch {}
+                },
+                (error: any) => {
+                  try {
+                    Object.defineProperty(c.runtime, 'lastError', {
+                      value: { message: String((error && error.message) || error) },
+                      configurable: true,
+                    })
+                  } catch {}
+                  try {
+                    cb(undefined)
+                  } catch {
+                  } finally {
+                    try {
+                      delete c.runtime.lastError
+                    } catch {}
+                  }
+                },
+              )
               return undefined
             }
             return routed
@@ -4690,38 +5919,13 @@ export const injectExtensionAPIs = () => {
               tabId,
               { name, frameId },
               (message: any) => port._receive(message),
-              () => port._remoteDisconnect(),
+              (error?: string) => port._remoteDisconnect(error),
               (send: any, close: any) => port._bind(send, close),
             )
             return port
           }
-          // MV2-style tabs.executeScript(tabId?, details, cb?) -> delegate to
-          // scripting.executeScript (the only IPC-backed script injector with
-          // a real handler). Inline `details.code` is unsupported in the MV3
-          // scripting path; only `details.file` is honored.
-          tabs.executeScript = function (arg1: any, arg2: any, arg3: any) {
-            const tabId = typeof arg1 === 'number' ? arg1 : undefined
-            const details =
-              (typeof arg1 === 'object' && arg1 !== null ? arg1 : arg2) || {}
-            const cb =
-              typeof arguments[arguments.length - 1] === 'function'
-                ? arguments[arguments.length - 1]
-                : undefined
-            const injection: any = {
-              target: { tabId: tabId || -1, allFrames: !!details.allFrames },
-            }
-            if (details.file) injection.files = [details.file]
-            const p = el
-              .invokeExtension(extId, 'scripting.executeScript', {}, injection)
-              .then((r: any) =>
-                Array.isArray(r) ? r.map((x: any) => (x ? x.result : undefined)) : r,
-              )
-              .catch((): undefined => undefined)
-            if (cb) {
-              p.then((r: any) => cb(r))
-            }
-            return p
-          }
+          // No tabs.executeScript here: MV3 service workers only have
+          // chrome.scripting (Chrome throws on tabs.executeScript in MV3).
           for (const e of [
             'onCreated', 'onUpdated', 'onRemoved', 'onActivated', 'onMoved',
             'onAttached', 'onDetached', 'onReplaced', 'onHighlighted', 'onZoomChange',
@@ -4745,6 +5949,38 @@ export const injectExtensionAPIs = () => {
           }
           install('windows', windows)
 
+          // Electron may expose no permissions or commands namespace in an MV3
+          // worker even when the manifest declares them. Extensions commonly
+          // register these events synchronously at top level, so provide the
+          // missing IPC-backed surface without replacing a complete native one.
+          const permissions: any = {}
+          for (const method of ['contains', 'getAll', 'request', 'remove']) {
+            permissions[method] = inv(`permissions.${method}`)
+          }
+          permissions.onAdded = evt('permissions.onAdded')
+          permissions.onRemoved = evt('permissions.onRemoved')
+          try {
+            if (!c.permissions || typeof c.permissions.contains !== 'function') {
+              install('permissions', permissions)
+            }
+          } catch {
+            install('permissions', permissions)
+          }
+
+          const commands: any = {
+            getAll: inv('commands.getAll'),
+            onCommand: evt('commands.onCommand'),
+          }
+          if (hasKey('commands')) {
+            try {
+              if (!c.commands || typeof c.commands.getAll !== 'function') {
+                install('commands', commands)
+              }
+            } catch {
+              install('commands', commands)
+            }
+          }
+
           // ---- chrome.notifications ----
           const notifications: any = {}
           for (const m of [
@@ -4758,7 +5994,7 @@ export const injectExtensionAPIs = () => {
           ]) {
             notifications[e] = evt(`notifications.${e}`)
           }
-          install('notifications', notifications)
+          if (declares('notifications')) install('notifications', notifications)
 
           // ---- chrome.contextMenus ----
           // create() must return the menu id synchronously (the extension uses the
@@ -4771,7 +6007,10 @@ export const injectExtensionAPIs = () => {
                 if (createProperties && typeof createProperties.id === 'undefined') {
                   createProperties.id = `${++menuCounter}`
                 }
-                cmCreate(createProperties, callback)
+                // create() returns the id, not a Promise: without a callback a
+                // failure (duplicate id) is only an unchecked lastError in Chrome.
+                const r = cmCreate(createProperties, callback)
+                if (r && typeof r.catch === 'function') r.catch(() => {})
                 return createProperties ? createProperties.id : undefined
               } catch {
                 return createProperties ? createProperties.id : undefined
@@ -4782,7 +6021,7 @@ export const injectExtensionAPIs = () => {
             removeAll: inv('contextMenus.removeAll'),
             onClicked: evt('contextMenus.onClicked'),
           }
-          install('contextMenus', contextMenus)
+          if (declares('contextMenus')) install('contextMenus', contextMenus)
 
           // ---- chrome.omnibox ----
           // Manifests may declare `omnibox: { keyword }`, so the SW calls
@@ -4811,7 +6050,82 @@ export const injectExtensionAPIs = () => {
             onInputAccepted: noopOmniboxEvt(),
             onDeleteSuggestion: noopOmniboxEvt(),
           }
-          install('omnibox', omnibox)
+          if (hasKey('omnibox')) install('omnibox', omnibox)
+
+          // ---- chrome.declarativeContent ----
+          // Not native in Electron. SWs build rules at top level with
+          // `new chrome.declarativeContent.PageStateMatcher(...)`; without the
+          // namespace that throws and the worker dies before registering
+          // action.onClicked (and an action.disable() earlier never gets undone).
+          // Rules are evaluated per tab by browser/api/declarative-content.ts.
+          if (declares('declarativeContent')) {
+            const dcType = (instanceType: string) =>
+              function (this: any, init?: any) {
+                if (init && typeof init === 'object') Object.assign(this, init)
+                this.instanceType = instanceType
+              }
+            install('declarativeContent', {
+              PageStateMatcher: dcType('declarativeContent.PageStateMatcher'),
+              ShowAction: dcType('declarativeContent.ShowAction'),
+              ShowPageAction: dcType('declarativeContent.ShowPageAction'),
+              SetIcon: dcType('declarativeContent.SetIcon'),
+              RequestContentScript: dcType('declarativeContent.RequestContentScript'),
+              onPageChanged: {
+                addRules: inv('declarativeContent.addRules'),
+                removeRules: inv('declarativeContent.removeRules'),
+                getRules: inv('declarativeContent.getRules'),
+                addListener: () => {},
+                removeListener: () => {},
+                hasListener: () => false,
+                hasListeners: () => false,
+              },
+            })
+          }
+
+          // ---- chrome.tabCapture / chrome.desktopCapture ----
+          // MV3 recorders mint the stream id in the SW and redeem it in an
+          // offscreen document (browser/api/capture.ts). chooseDesktopMedia is
+          // callback-only and returns its request id synchronously.
+          if (declares('tabCapture')) {
+            install('tabCapture', {
+              getMediaStreamId: inv('tabCapture.getMediaStreamId'),
+              getCapturedTabs: inv('tabCapture.getCapturedTabs'),
+              onStatusChanged: evt('tabCapture.onStatusChanged'),
+            })
+          }
+          if (declares('desktopCapture')) {
+            let desktopRequestId = 0
+            const chooseDesktop = inv('desktopCapture.chooseDesktopMedia')
+            install('desktopCapture', {
+              DesktopCaptureSourceType: {
+                SCREEN: 'screen',
+                WINDOW: 'window',
+                TAB: 'tab',
+                AUDIO: 'audio',
+              },
+              chooseDesktopMedia: (sources: string[], targetTabOrCb?: any, maybeCb?: any) => {
+                const callback = typeof targetTabOrCb === 'function' ? targetTabOrCb : maybeCb
+                const targetTab = typeof targetTabOrCb === 'function' ? undefined : targetTabOrCb
+                const requestId = ++desktopRequestId
+                Promise.resolve(chooseDesktop(requestId, sources, targetTab))
+                  .catch(() => null)
+                  .then((result: any) => {
+                    if (typeof callback !== 'function') return
+                    try {
+                      callback(result?.streamId || '', {
+                        canRequestAudioTrack: result?.canRequestAudioTrack === true,
+                      })
+                    } catch {}
+                  })
+                return requestId
+              },
+              cancelChooseDesktopMedia: (requestId: number) => {
+                Promise.resolve(inv('desktopCapture.cancelChooseDesktopMedia')(requestId)).catch(
+                  () => {},
+                )
+              },
+            })
+          }
 
         } catch (e: any) {
           console.error('[crx-preload] SW core-ns patch error: ' + (e && e.message))
@@ -5321,8 +6635,44 @@ export const injectExtensionAPIs = () => {
               const elx: any = (globalThis as any).electron
               if (!c || !c.runtime || !elx) return false
               const id = c.runtime.id
-              const ourCreate = (opts: any) =>
-                elx.invokeExtension(id, 'offscreen.createDocument', {}, opts)
+              // Chrome semantics: promise form rejects on API errors (e.g.
+              // "Only a single offscreen document may be created."), callback
+              // form gets runtime.lastError. Legacy invokeExtension swallowed
+              // both to undefined.
+              const call = (name: string, args: any[]) => {
+                const cb = typeof args[args.length - 1] === 'function' ? args.pop() : undefined
+                const p: Promise<any> = Promise.resolve(
+                  typeof elx.invokeExtensionRaw === 'function'
+                    ? elx.invokeExtensionRaw(id, name, {}, ...args)
+                    : elx.invokeExtension(id, name, {}, ...args),
+                )
+                if (!cb) return p
+                p.then(
+                  (r: any) => {
+                    try {
+                      cb(r)
+                    } catch {}
+                  },
+                  (error: any) => {
+                    try {
+                      Object.defineProperty(c.runtime, 'lastError', {
+                        value: { message: String((error && error.message) || error) },
+                        configurable: true,
+                      })
+                    } catch {}
+                    try {
+                      cb(undefined)
+                    } catch {
+                    } finally {
+                      try {
+                        delete c.runtime.lastError
+                      } catch {}
+                    }
+                  },
+                )
+                return undefined
+              }
+              const ourCreate = (...args: any[]) => call('offscreen.createDocument', args)
               const offscreen = {
                 __crxHosted: true,
                 supported: true,
@@ -5344,9 +6694,9 @@ export const injectExtensionAPIs = () => {
                   GEOLOCATION: 'GEOLOCATION',
                 },
                 createDocument: ourCreate,
-                closeDocument: () => elx.invokeExtension(id, 'offscreen.closeDocument', {}),
-                hasDocument: (f: any) => elx.invokeExtension(id, 'offscreen.hasDocument', {}, f),
-                getContexts: (f: any) => elx.invokeExtension(id, 'offscreen.getContexts', {}, f),
+                closeDocument: (...args: any[]) => call('offscreen.closeDocument', args),
+                hasDocument: (...args: any[]) => call('offscreen.hasDocument', args),
+                getContexts: (...args: any[]) => call('offscreen.getContexts', args),
               }
               // Replace the namespace; fall back to in-place patching if native
               // is non-configurable.
@@ -5393,7 +6743,7 @@ export const injectExtensionAPIs = () => {
               // runtime.getContexts: route to the OffscreenAPI registry too.
               try {
                 Object.defineProperty(c.runtime, 'getContexts', {
-                  value: (f: any) => elx.invokeExtension(id, 'runtime.getContexts', {}, f),
+                  value: (...args: any[]) => call('runtime.getContexts', args),
                   configurable: true,
                   enumerable: true,
                   writable: true,
@@ -5510,10 +6860,9 @@ export const injectExtensionAPIs = () => {
       console.error(`[crx-preload] non-isolated electron bridge install failed: ${e && e.message}`)
     }
 
-    // Preload and page share one world here, so removing the native `browser`
-    // alias directly takes effect for the page's bundled polyfill (which runs
-    // after this preload). See removeNativeBrowserAlias.
-    removeNativeBrowserAlias()
+    // Preload and page share one world here, so install the guarded fallback
+    // before the extension bundle evaluates.
+    installBrowserNamespaceFallback()
 
     // Robust storage patch for the non-isolated path (popup, and any extension
     // page with contextIsolation:false). Preload and page share one world here,
@@ -5560,16 +6909,14 @@ export const injectExtensionAPIs = () => {
 
     // Mutate global 'chrome' object with additional APIs in the main world.
     if ('executeInMainWorld' in contextBridge) {
-      // Remove the native `browser` alias first so the page's bundled polyfill
-      // wraps our patched `chrome`. See removeNativeBrowserAlias.
-      ;(contextBridge as any).executeInMainWorld({ func: removeNativeBrowserAlias })
+      ;(contextBridge as any).executeInMainWorld({ func: installBrowserNamespaceFallback })
       ;(contextBridge as any).executeInMainWorld({
         func: mainWorldScript,
         args: [RUNTIME_CONTEXT_TYPE],
       })
     } else {
       // TODO(mv3): remove webFrame usage
-      webFrame.executeJavaScript(`(${removeNativeBrowserAlias})();`)
+      webFrame.executeJavaScript(`(${installBrowserNamespaceFallback})();`)
       webFrame.executeJavaScript(
         `(${mainWorldScript})(${JSON.stringify(RUNTIME_CONTEXT_TYPE)});`,
       )

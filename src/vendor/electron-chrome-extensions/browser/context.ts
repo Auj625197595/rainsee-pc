@@ -71,6 +71,8 @@ export interface ExtensionContext {
   /** Lazy compatibility fallback for extensions whose native offscreen binding has no loader. */
   offscreen?: {
     ensureDocument(extensionId: string): Promise<boolean>
+    /** The live offscreen document (any URL the extension chose), if one exists. */
+    getDocument(extensionId: string): { url: string; webContents: Electron.WebContents } | undefined
   }
   /**
    * The SidePanelAPI instance, assigned by ElectronChromeExtensions after the
@@ -83,6 +85,11 @@ export interface ExtensionContext {
     getPanelBehavior(extensionId: string): { openPanelOnActionClick?: boolean }
     hasPanel(extensionId: string): boolean
     openFromAction(extensionId: string, tabId: number, windowId?: number): void
+    notifyPanelState(
+      opened: boolean,
+      extensionId: string,
+      info: { windowId: number; tabId?: number; path: string },
+    ): void
   }
   /**
    * The DeclarativeNetRequestAPI instance, assigned in its constructor. Lets

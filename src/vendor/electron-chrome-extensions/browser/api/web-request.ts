@@ -327,6 +327,16 @@ export class WebRequestAPI {
       } catch (err) {
         d('DNR onBeforeRequest error: %O', err)
       }
+      if (!response.cancel && !response.redirectURL) {
+        try {
+          const hostRedirect = this.ctx.store.impl.resolveHostRequestRedirect?.(details.url)
+          if (hostRedirect && hostRedirect !== details.url) {
+            response = { redirectURL: hostRedirect }
+          }
+        } catch (err) {
+          d('host request redirect error: %O', err)
+        }
+      }
       callback(response)
     })
   }

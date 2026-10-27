@@ -22,7 +22,7 @@
  *   recv   'crx-port-disconnect:<portId>' ()
  *   invoke 'crx-runtime-message'(extensionId, message)        -> response
  *   recv   'crx-dynamic-cs-message' (messageId, message, sender) [tabs.sendMessage -> dynamic CS]
- *   send   'crx-cs-message-response' (messageId, response)
+ *   send   'crx-cs-message-response' (messageId, response, error?)
  */
 /**
  * Cache of the serialized bridge per extension. The bridge depends only on the
@@ -57,6 +57,11 @@ export function buildContentScriptBridge(
   function bridge(EXT_ID: string, MANIFEST: any, SURFACE: BridgeSurface) {
     const w: any = window as any;
     const g: any = globalThis as any;
+    const runtimeMessageErrorText = (error: any) =>
+      String(
+        (error && error.message) || error ||
+          'An extension message listener rejected its Promise.',
+      );
 
     // Reuse an existing bridge if a prior script already installed it.
     if (
@@ -80,7 +85,7 @@ export function buildContentScriptBridge(
       const listeners: Record<string, Function[]> = Object.create(null);
       const pendingMessages: Record<
         string,
-        { resolve: Function; timer: any; retryTimer: any }
+        { resolve: Function; reject: Function; timer: any; retryTimer: any }
       > =
         Object.create(null);
       const outboundPorts: Record<string, { retryTimer: any; stopTimer: any }> =
@@ -116,7 +121,8 @@ export function buildContentScriptBridge(
           delete pendingMessages[data.mid];
           clearTimeout(pending.timer);
           clearInterval(pending.retryTimer);
-          pending.resolve(data.response);
+          if (data.error !== undefined) pending.reject(new Error(String(data.error)));
+          else pending.resolve(data.response);
           return;
         }
         if (data.__crxCSPortAck && data.connId) {
@@ -167,7 +173,7 @@ export function buildContentScriptBridge(
         invoke(channel: string, ...args: any[]) {
           if (channel === 'crx-runtime-message') {
             const mid = EXT_ID + '-message-' + ++sequence;
-            return new Promise((resolve) => {
+            return new Promise((resolve, reject) => {
               const timer = setTimeout(() => {
                 const pending = pendingMessages[mid];
                 if (!pending) return;
@@ -193,7 +199,7 @@ export function buildContentScriptBridge(
                 }
               };
               const retryTimer = setInterval(post, 100);
-              pendingMessages[mid] = { resolve, timer, retryTimer };
+              pendingMessages[mid] = { resolve, reject, timer, retryTimer };
               post();
             });
           }
@@ -243,7 +249,12 @@ export function buildContentScriptBridge(
             delete outboundPorts[portId];
           } else if (channel === 'crx-cs-message-response') {
             w.postMessage(
-              { __crxCsFwdResp: true, messageId: args[0], response: args[1] },
+              {
+                __crxCsFwdResp: true,
+                messageId: args[0],
+                response: args[1],
+                error: args[2],
+              },
               '*',
             );
           }
@@ -301,6 +312,9 @@ export function buildContentScriptBridge(
       }
     }
 
+    const NO_RECEIVER =
+      'Could not establish connection. Receiving end does not exist.';
+
     class Port {
       name: string;
       onMessage = new Evt();
@@ -327,14 +341,18 @@ export function buildContentScriptBridge(
             .invoke('crx-port-connect', EXT_ID, { name: this.name })
             .then((portId: string) => {
               if (this._closed) {
-                ipc.send('crx-port-disconnect', portId);
+                if (portId) ipc.send('crx-port-disconnect', portId);
+                return;
+              }
+              if (!portId) {
+                this._handleDisconnect(NO_RECEIVER);
                 return;
               }
               this._bind(portId);
             })
             .catch((err: any) => {
               console.error('crx port connect failed', err);
-              this._handleDisconnect();
+              this._handleDisconnect(NO_RECEIVER);
             });
         }
       }
@@ -354,7 +372,9 @@ export function buildContentScriptBridge(
       }
 
       postMessage(message: any) {
-        if (this._closed) return;
+        // Chrome throws synchronously on a disconnected port.
+        if (this._closed)
+          throw new Error('Attempting to use a disconnected port object');
         const serialized = serializeMessage(message);
         if (this._id) ipc.send('crx-port-post', this._id, serialized);
         else this._pending.push(serialized);
@@ -367,11 +387,18 @@ export function buildContentScriptBridge(
         this._cleanup();
       }
 
-      private _handleDisconnect() {
+      private _handleDisconnect(error?: string) {
         if (this._closed) return;
         this._closed = true;
         this._cleanup();
-        this.onDisconnect._emit(this);
+        // Chrome exposes a failed connect as runtime.lastError while the
+        // onDisconnect listeners run.
+        if (error) _lastError = { message: error };
+        try {
+          this.onDisconnect._emit(this);
+        } finally {
+          if (error) _lastError = undefined;
+        }
       }
 
       private _cleanup() {
@@ -412,6 +439,16 @@ export function buildContentScriptBridge(
           }
           ipc.send('crx-cs-message-response', messageId, serialized);
         };
+        const sendError = (error: any) => {
+          if (responded) return;
+          responded = true;
+          ipc.send(
+            'crx-cs-message-response',
+            messageId,
+            undefined,
+            runtimeMessageErrorText(error),
+          );
+        };
         const results = onMessage._emit(message, sender || {}, sendResponse);
         let asyncPending = false;
         for (const result of results) {
@@ -425,8 +462,8 @@ export function buildContentScriptBridge(
               (value) => {
                 if (!responded) sendResponse(value);
               },
-              () => {
-                if (!responded) sendResponse(undefined);
+              (error) => {
+                if (!responded) sendError(error);
               },
             );
           } else if (result !== undefined && result !== false && !responded) {
@@ -513,8 +550,16 @@ export function buildContentScriptBridge(
           p.then((r: any) => {
             if (r === undefined) noReceiver();
             cb(r);
-          }).catch(() => {
-            noReceiver();
+          }).catch((error: any) => {
+            _lastError = {
+              message: String(
+                (error && error.message) || error ||
+                  'The message port closed before a response was received.',
+              ),
+            };
+            queueMicrotask(() => {
+              _lastError = undefined;
+            });
             cb(undefined);
           });
           return;

@@ -106,8 +106,13 @@ export class TabsAPI {
     handle('tabs.getZoomSettings', this.getZoomSettings.bind(this))
     // Electron has no zoom-mode/scope distinction; accept the call but no-op.
     handle('tabs.setZoomSettings', this.setZoomSettings.bind(this))
+    handle('tabs.move', this.move.bind(this))
+    handle('tabs.discard', this.discard.bind(this))
 
     this.ctx.store.on('tab-added', this.observeTab.bind(this))
+    this.ctx.store.on('tab-removed', (tabId: number, isWindowClosing?: boolean) => {
+      this.onRemoved(tabId, !!isWindowClosing)
+    })
 
     // When the store re-elects an active tab (e.g. the active tab was closed and
     // a sibling was promoted), refresh caches and broadcast onActivated so both
@@ -188,8 +193,10 @@ export class TabsAPI {
       })
       tab.off('page-favicon-updated', faviconHandler)
 
+      // store.removeTab emits 'tab-removed' exactly once per tab, which drives
+      // tabs.onRemoved (see constructor). Calling onRemoved here as well fired
+      // the event twice for every tabs.remove / host-initiated close.
       this.ctx.store.removeTab(tab)
-      this.onRemoved(tabId)
     })
 
     this.onCreated(tabId)
@@ -254,7 +261,8 @@ export class TabsAPI {
       tabGetLogCount++
       tabLog(`get ext=${event?.extension?.id || '-'} tabId=${tabId} found=${!!tab}`)
     }
-    if (!tab) return { id: TabsAPI.TAB_ID_NONE }
+    // Chrome rejects with "No tab with id: N." (callback form: lastError).
+    if (!tab) throw new Error(`No tab with id: ${tabId}.`)
     return this.getTabDetails(tab)
   }
 
@@ -582,11 +590,77 @@ export class TabsAPI {
   private remove(event: ExtensionEvent, id: number | number[]) {
     const ids = Array.isArray(id) ? id : [id]
 
-    ids.forEach((tabId) => {
+    // Chrome validates every id before closing any of them.
+    const tabs = ids.map((tabId) => {
       const tab = this.ctx.store.getTabById(tabId)
-      if (tab) this.ctx.store.removeTab(tab)
-      this.onRemoved(tabId)
+      if (!tab) throw new Error(`No tab with id: ${tabId}.`)
+      return tab
     })
+    // store.removeTab emits 'tab-removed' → tabs.onRemoved (once).
+    tabs.forEach((tab) => this.ctx.store.removeTab(tab))
+  }
+
+  /**
+   * chrome.tabs.move within a window. index -1 means "end of window"; the
+   * host reorders its tab strip asynchronously, so the store's order is
+   * updated up front and onMoved is emitted per moved tab. Cross-window moves
+   * require tearing a live view between host windows and are rejected.
+   */
+  private move(event: ExtensionEvent, tabIds: number | number[], moveProperties: chrome.tabs.MoveProperties) {
+    const ids = Array.isArray(tabIds) ? tabIds : [tabIds]
+    const index = moveProperties?.index
+    if (typeof index !== 'number' || !Number.isInteger(index) || index < -1) {
+      throw new Error('Invalid value for argument 2. Property \'index\': Value must be at least -1.')
+    }
+    const tabs = ids.map((tabId) => {
+      const tab = this.ctx.store.getTabById(tabId)
+      if (!tab) throw new Error(`No tab with id: ${tabId}.`)
+      return tab
+    })
+    const results: chrome.tabs.Tab[] = []
+    let target = index
+    for (const tab of tabs) {
+      const win = this.ctx.store.tabToWindow.get(tab)
+      if (!win || win.isDestroyed()) throw new Error(`No window for tab: ${tab.id}.`)
+      if (
+        typeof moveProperties.windowId === 'number' &&
+        moveProperties.windowId !== TabsAPI.WINDOW_ID_CURRENT &&
+        moveProperties.windowId !== win.id
+      ) {
+        throw new Error('Moving tabs between windows is not supported.')
+      }
+      const fromIndex = this.ctx.store.getTabIndex(tab)
+      const lastIndex = this.ctx.store.getWindowTabCount(win) - 1
+      const toIndex = target === -1 || target > lastIndex ? lastIndex : target
+      if (fromIndex !== toIndex) {
+        this.ctx.store.moveTabInOrder(win, tab, toIndex)
+        this.ctx.store.getTabsInWindow(win).forEach((t) => this.ctx.store.tabDetailsCache.delete(t.id))
+        this.ctx.store.impl.moveTab?.(tab, win, toIndex)
+        this.ctx.router.broadcastEvent('tabs.onMoved', tab.id, {
+          windowId: win.id,
+          fromIndex,
+          toIndex,
+        })
+      }
+      results.push(this.createTabDetails(tab))
+      // Chrome places successive tabs after each other when an explicit index is given.
+      if (target !== -1) target = toIndex + 1
+    }
+    return Array.isArray(tabIds) ? results : results[0]
+  }
+
+  /**
+   * chrome.tabs.discard. The host only discards crashed background views and
+   * has no general "unload but keep the tab" path, so this resolves with the
+   * tab unchanged (Chrome also leaves a tab undiscarded when discarding isn't
+   * possible — e.g. the active tab — but it resolves undefined in that case).
+   */
+  private discard(event: ExtensionEvent, tabId?: number) {
+    if (typeof tabId === 'number') {
+      const tab = this.ctx.store.getTabById(tabId)
+      if (!tab) throw new Error(`No tab with id: ${tabId}.`)
+    }
+    return undefined
   }
 
   private highlight(event: ExtensionEvent, highlightInfo: chrome.tabs.HighlightInfo) {
@@ -703,8 +777,25 @@ export class TabsAPI {
       win = this.ctx.store.getCurrentWindow(event)
     }
     const tab = win ? this.ctx.store.getActiveTabFromWindow(win) : undefined
-    if (!tab || tab.isDestroyed()) return undefined
-    const image = await tab.capturePage()
+    // Chrome rejects instead of resolving undefined; screenshot extensions
+    // surface that message rather than silently doing nothing.
+    if (!tab || tab.isDestroyed()) throw new Error('No active tab')
+    let image: Electron.NativeImage
+    try {
+      image = await tab.capturePage()
+    } catch {
+      // A minimized/occluded window has no display surface. Chromium can
+      // still produce the frame when the capture keeps the page hidden.
+      image = await tab.capturePage(undefined, { stayHidden: true })
+    }
+    if (image.isEmpty()) throw new Error('Failed to capture tab: unknown error')
+    // Honor ImageDetails like Chrome: png by default, jpeg with quality 0-100
+    // (Chrome's default jpeg quality is 92).
+    if (_options && _options.format === 'jpeg') {
+      const q = typeof _options.quality === 'number' ? _options.quality : 92
+      const quality = Math.max(0, Math.min(100, Math.round(q)))
+      return `data:image/jpeg;base64,${image.toJPEG(quality).toString('base64')}`
+    }
     return image.toDataURL()
   }
 
@@ -829,7 +920,7 @@ export class TabsAPI {
     this.ctx.router.broadcastEvent('tabs.onUpdated', tab.id, changeInfo, details)
   }
 
-  onRemoved(tabId: number) {
+  onRemoved(tabId: number, isWindowClosing?: boolean) {
     const details = this.ctx.store.tabDetailsCache.has(tabId)
       ? this.ctx.store.tabDetailsCache.get(tabId)
       : null
@@ -843,7 +934,12 @@ export class TabsAPI {
 
     this.ctx.router.broadcastEvent('tabs.onRemoved', tabId, {
       windowId,
-      isWindowClosing: win ? win.isDestroyed() : false,
+      isWindowClosing:
+        typeof isWindowClosing === 'boolean' && isWindowClosing
+          ? true
+          : win
+            ? win.isDestroyed()
+            : false,
     })
   }
 
@@ -855,9 +951,10 @@ export class TabsAPI {
     const activeChanged = activeTab?.id !== tabId
     if (!activeChanged) return
 
+    // setActiveTab emits 'active-tab-changed' when the record changes, and the
+    // constructor's listener broadcasts tabs.onActivated from there. Calling
+    // broadcastActivated here as well delivered the event twice.
     this.ctx.store.setActiveTab(tab)
-
-    this.broadcastActivated(tabId)
   }
 
   /**

@@ -169,6 +169,18 @@ export class BrowserActionAPI {
       // )
       this.ctx.emit('browser-action-update', extension.id, propName, value, tabId)
 
+      // The host renderer applies a global update to every per-tab toolbar
+      // entry. Re-assert per-tab enabled overrides (action.enable(tabId),
+      // declarativeContent ShowAction) so a later global disable() doesn't
+      // visually disable tabs that are still enabled here.
+      if (propName === 'enabled' && !tabId) {
+        for (const [tid, tabAction] of Object.entries(action.tabs)) {
+          if (typeof tabAction.enabled === 'boolean') {
+            this.ctx.emit('browser-action-update', extension.id, 'enabled', tabAction.enabled, Number(tid))
+          }
+        }
+      }
+
       this.onUpdate()
     }
 
@@ -386,6 +398,26 @@ export class BrowserActionAPI {
       if (typeof tabEnabled === 'boolean') return tabEnabled
     }
     return action.enabled !== false
+  }
+
+  /**
+   * declarativeContent ShowAction/ShowPageAction hook: `true` enables the
+   * action on a tab, `undefined` drops the per-tab override so the global
+   * state applies again. Emits the effective value for the host toolbar.
+   */
+  setDeclarativeTabEnabled(extensionId: string, tabId: number, enabled: boolean | undefined) {
+    if (typeof tabId !== 'number' || tabId < 0) return
+    const action = this.getAction(extensionId)
+    const tabAction = action.tabs[tabId] || (action.tabs[tabId] = {})
+    // Re-emit `true` even when unchanged: the renderer may only now have
+    // created this tab's toolbar entry (seeded from the disabled default).
+    if (tabAction.enabled === enabled && enabled !== true) return
+    if (typeof enabled === 'boolean') tabAction.enabled = enabled
+    else delete tabAction.enabled
+    const effective = this.isEnabledForTab(extensionId, tabId)
+    d(`declarativeContent ext=${extensionId} tab=${tabId} enabled=${effective}`)
+    this.ctx.emit('browser-action-update', extensionId, 'enabled', effective, tabId)
+    this.onUpdate()
   }
 
   // TODO: Make private for v4 major release.

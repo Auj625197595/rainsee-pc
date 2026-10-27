@@ -5,6 +5,8 @@ export interface ChromeExtensionImpl {
   ): Promise<[Electron.WebContents, Electron.BaseWindow]>
   selectTab?(tab: Electron.WebContents, window: Electron.BaseWindow): void
   removeTab?(tab: Electron.WebContents, window: Electron.BaseWindow): void
+  /** Reorder a tab within its window's tab strip (0-based, already clamped). */
+  moveTab?(tab: Electron.WebContents, window: Electron.BaseWindow, index: number): void
 
   /**
    * Populate additional details to a tab descriptor which gets passed back to
@@ -19,6 +21,13 @@ export interface ChromeExtensionImpl {
   removeWindow?(window: Electron.BaseWindow): void
   /** Return the host window's intrinsic incognito mode when known. */
   isIncognitoWindow?(window: Electron.BaseWindow): boolean | undefined
+
+  /**
+   * Per-extension notification policy. 'block' drops notifications (and
+   * reports permission level 'denied'); 'hide-name' shows them without the
+   * extension name. Defaults to 'allow'.
+   */
+  getNotificationMode?(extensionId: string): 'allow' | 'block' | 'hide-name' | undefined
 
   requestPermissions?(
     extension: Electron.Extension,
@@ -41,6 +50,13 @@ export interface ChromeExtensionImpl {
   history?: HistoryImpl
 
   /**
+   * Host-owned proxy preference coordinator. A browser can have multiple
+   * proxy writers (profile settings, policy and extensions), so the extension
+   * layer must not write Session.setProxy directly when this hook is present.
+   */
+  proxy?: ProxyImpl
+
+  /**
    * chrome.management enable/disable + uninstall hooks. The host owns the
    * installed-extension lifecycle (persisting disabled state, removing from
    * disk). Omit to leave `setEnabled`/`uninstall` as no-ops.
@@ -55,7 +71,23 @@ export interface ChromeExtensionImpl {
    * (per-tab override > global > manifest side_panel.default_path).
    */
   openSidePanel?(extensionId: string, tabId: number, path: string, windowId?: number): void
-  closeSidePanel?(extensionId?: string): void
+  /** chrome.sidePanel.close: hide the extension's panel in the given window. */
+  closeSidePanel?(extensionId: string, windowId?: number): void
+  /**
+   * chrome.desktopCapture.chooseDesktopMedia host hook: show the browser's
+   * screen/window picker and resolve with the desktopCapturer source the user
+   * picked (or null when cancelled). `tabId` is the tab the picker should be
+   * associated with, when the caller is known. Omit to make every
+   * chooseDesktopMedia call resolve as cancelled.
+   */
+  chooseDesktopMedia?(details: {
+    extensionId: string
+    extensionName: string
+    sources: string[]
+    tabId?: number
+  }): Promise<{ id: string; name: string; shareAudio: boolean } | null>
+  /** Dismiss the picker opened by chooseDesktopMedia, if it is still showing. */
+  cancelChooseDesktopMedia?(): void
   /**
    * Host hook for Chrome-owned extension resources such as
    * `chrome-extension://<id>/_favicon/?pageUrl=...`.
@@ -63,6 +95,31 @@ export interface ChromeExtensionImpl {
    * Chrome-compatible without requiring the vendor layer to know app details.
    */
   resolveChromeExtensionResourceUrl?(url: string): string | undefined
+  /**
+   * Host network fallback, evaluated synchronously in onBeforeRequest after
+   * extension DNR decisions. Return a replacement URL to redirect the request
+   * (Chromium performs a 307 internal redirect, preserving method and body).
+   */
+  resolveHostRequestRedirect?(url: string): string | undefined
+}
+
+export type ProxyLevelOfControl =
+  | 'not_controllable'
+  | 'controlled_by_other_extensions'
+  | 'controllable_by_this_extension'
+  | 'controlled_by_this_extension'
+
+export interface ProxySettingSnapshot {
+  value: any
+  levelOfControl: ProxyLevelOfControl
+}
+
+export interface ProxyImpl {
+  set(extensionId: string, value: any, config: Electron.ProxyConfig): Promise<void>
+  clear(extensionId: string): Promise<void>
+  get(extensionId: string): Promise<ProxySettingSnapshot>
+  release(extensionId: string): Promise<void>
+  onChanged?(listener: () => void): () => void
 }
 
 export interface ManagementImpl {

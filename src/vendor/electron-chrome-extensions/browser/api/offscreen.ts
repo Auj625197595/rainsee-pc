@@ -5,6 +5,7 @@ import * as path from 'node:path'
 
 import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
+import { apiError } from './messaging'
 
 const log = (...args: any[]) => console.log('[crx-offscreen]', ...args)
 const warn = (...args: any[]) => console.warn('[crx-offscreen]', ...args)
@@ -20,6 +21,7 @@ const OFFSCREEN_CONTEXT_TYPE = 'OFFSCREEN_DOCUMENT'
 const LEGACY_OFFSCREEN_CONTEXT_TYPE = 'OFFSCREEN'
 const CRASH_STREAK_RESET_MS = 5 * 60 * 1000
 const CRASH_RETRY_DELAYS_MS = [250, 1000, 5000, 15000, 30000]
+const OFFSCREEN_PRELOAD_FILENAME = 'crx-offscreen-preload.bundle.js'
 
 /**
  * The documented `chrome.offscreen.Reason` enum. `createDocument` validates each
@@ -140,7 +142,14 @@ export class OffscreenAPI {
     // skip createDocument entirely.
     handle('runtime.getContexts', this.runtimeGetContexts)
 
-    this.ctx.offscreen = { ensureDocument: this.ensureDocument }
+    this.ctx.offscreen = {
+      ensureDocument: this.ensureDocument,
+      getDocument: (extensionId: string) => {
+        const doc = this.docs.get(extensionId)
+        if (!doc || doc.window.isDestroyed() || doc.window.webContents.isDestroyed()) return undefined
+        return { url: doc.url, webContents: doc.window.webContents }
+      },
+    }
   }
 
   /**
@@ -233,6 +242,21 @@ export class OffscreenAPI {
     log('openDocument ext=', extensionId, 'url=', url, 'documentId=', documentId)
 
     const preloadPath = this.ctx.preloadPath
+    // A distinct preload filename is an effective renderer-profile boundary
+    // in Electron 43. Never silently fall back to the shared popup preload:
+    // that would re-arm the native renderer crash this boundary prevents.
+    const offscreenPreloadPath = path.join(
+      path.dirname(preloadPath),
+      OFFSCREEN_PRELOAD_FILENAME,
+    )
+    if (!existsSync(offscreenPreloadPath)) {
+      const error = new Error(
+        `[crx-offscreen] required preload bundle is missing: ${offscreenPreloadPath}`,
+      )
+      console.error(error)
+      throw error
+    }
+    const effectivePreload = offscreenPreloadPath
     const win = new BrowserWindow({
       show: false,
       skipTaskbar: true,
@@ -247,7 +271,12 @@ export class OffscreenAPI {
         // already injects crx-preload for frames, but co-sited/sandboxed
         // renderers can skip it (see popup.ts). Setting it explicitly mirrors
         // PopupView / SidePanelView and guarantees the page gets chrome.*.
-        preload: preloadPath,
+        // Electron 43's sandboxed renderer bootstrap can receive a null
+        // binding.startupData when co-sited with an extension popup. That
+        // native failure terminates the shared renderer with 0x80000003. Keep
+        // the stable extension-page profile here; effectivePreload above is
+        // the process-isolation boundary.
+        preload: effectivePreload,
         sandbox: false,
         contextIsolation: false,
         nodeIntegration: false,
@@ -284,6 +313,8 @@ export class OffscreenAPI {
         preferences?.contextIsolation,
         'hasPreload=',
         Boolean(preferences?.preload),
+        'preloadPath=',
+        effectivePreload,
       )
     } catch {
       // Diagnostics must not affect document creation.
@@ -374,6 +405,22 @@ export class OffscreenAPI {
         extensionId,
         'documentId=',
         documentId,
+        'osPid=',
+        (() => {
+          try {
+            return win.webContents.getOSProcessId()
+          } catch {
+            return -1
+          }
+        })(),
+        'framePid=',
+        (() => {
+          try {
+            return win.webContents.mainFrame.processId
+          } catch {
+            return -1
+          }
+        })(),
         'reason=',
         crash.reason,
         'exitCode=',
@@ -408,7 +455,22 @@ export class OffscreenAPI {
     // first message (e.g. Tampermonkey's "config" handshake) races with
     // did-finish-load; a tiny delay here closes that window without a busy-wait.
     await new Promise((r) => setTimeout(r, 0))
-    log('openDocument ready ext=', extensionId, 'url=', url)
+    try {
+      log(
+        'openDocument ready ext=',
+        extensionId,
+        'url=',
+        url,
+        'osPid=',
+        win.webContents.getOSProcessId(),
+        'framePid=',
+        win.webContents.mainFrame.processId,
+        'sessionStoragePath=',
+        (this.ctx.session as any).getStoragePath?.(),
+      )
+    } catch {
+      log('openDocument ready ext=', extensionId, 'url=', url)
+    }
     return doc
   }
 
@@ -418,32 +480,59 @@ export class OffscreenAPI {
   ): Promise<void> => {
     const extensionId = event.extension.id
     if (!details || !details.url) {
-      throw new Error("chrome.offscreen.createDocument: 'url' is required")
+      return apiError("chrome.offscreen.createDocument: 'url' is required") as any
     }
-    if (typeof details.url !== 'string' || /^[a-z][a-z0-9+.-]*:/i.test(details.url)) {
-      // Chrome requires a relative path that resolves to a packed page within
-      // the calling extension; it rejects absolute / cross-origin URLs
-      // synchronously with "must be a relative path" before any load. resolveUrl
-      // would otherwise turn "https://evil/x" into a broken
-      // "chrome-extension://<id>/https://evil/x" that 404s at load time.
-      throw new Error("chrome.offscreen.createDocument: 'url' must be a relative path")
+    // Chrome's contract is a relative extension path. In practice, a number
+    // of otherwise-valid MV3 extensions pass runtime.getURL(path) here (an
+    // absolute chrome-extension:// URL) and Chrome resolves that URL back to
+    // the calling extension before loading it. Normalize that same-extension
+    // form while retaining the spec-mandated rejection for other schemes and
+    // cross-extension URLs. This keeps the API generic and avoids turning a
+    // valid packed page into `<id>/chrome-extension://...`.
+    let documentPath = details.url
+    if (typeof documentPath !== 'string') {
+      return apiError("chrome.offscreen.createDocument: 'url' must be a relative path") as any
+    }
+    if (/^[a-z][a-z0-9+.-]*:/i.test(documentPath)) {
+      try {
+        const absolute = new URL(documentPath)
+        if (
+          absolute.protocol !== 'chrome-extension:' ||
+          absolute.hostname !== extensionId
+        ) {
+          throw new Error('cross-origin offscreen URL')
+        }
+        documentPath = `${absolute.pathname.replace(/^\/+/, '')}${absolute.search}${absolute.hash}`
+      } catch {
+        return apiError("chrome.offscreen.createDocument: 'url' must be a relative path") as any
+      }
     }
     if (!Array.isArray(details.reasons) || details.reasons.length === 0) {
-      throw new Error("chrome.offscreen.createDocument: 'reasons' is required")
+      return apiError("chrome.offscreen.createDocument: 'reasons' is required") as any
     }
     for (const reason of details.reasons) {
       if (!ALLOWED_REASONS.has(reason)) {
-        throw new Error(`Reason "${reason}" is not supported.`)
+        return apiError(`Reason "${reason}" is not supported.`) as any
       }
     }
-    if (!details.justification || typeof details.justification !== 'string') {
-      throw new Error("chrome.offscreen.createDocument: 'justification' is required")
+    // Chrome's schema only types `justification` as a string; it never checks
+    // the content, so `justification: ''` (OKX Wallet etc.) is accepted. Some
+    // extensions omit it entirely, which is harmless here, so tolerate that too
+    // and reject only a non-string value. Use the apiError sentinel so the
+    // caller sees a normal rejection and no "Error occurred in handler" is logged.
+    if (details.justification != null && typeof details.justification !== 'string') {
+      return apiError(
+        "chrome.offscreen.createDocument: 'justification' must be a string",
+      ) as any
     }
-    const existing = this.docs.get(extensionId)
-    if (existing) {
-      throw new Error('Only a single offscreen document is allowed.')
+    // Chrome rejects a second create while one exists OR is still loading.
+    // Extensions routinely race createDocument on SW startup and catch this,
+    // so signal it with the apiError sentinel (rejects in the renderer)
+    // instead of throwing, which would log "Error occurred in handler".
+    if (this.docs.has(extensionId) || this.opening.has(extensionId)) {
+      return apiError('Only a single offscreen document may be created.') as any
     }
-    const url = this.resolveUrl(extensionId, details.url)
+    const url = this.resolveUrl(extensionId, documentPath)
     await this.openDocument(extensionId, url)
   }
 

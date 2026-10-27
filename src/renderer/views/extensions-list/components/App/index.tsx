@@ -21,6 +21,7 @@ import store from '../../store';
 import { UIStyle } from '~/renderer/mixins/default-styles';
 import { IExtItem } from '~/interfaces';
 import { useI18n } from '~/renderer/components/I18n';
+import { useDragReorder } from '~/renderer/utils/use-drag-reorder';
 
 const onPinClick = (ext: IExtItem) => (e: React.MouseEvent) => {
   e.stopPropagation();
@@ -44,8 +45,15 @@ const onManageClick = () => {
 
 export const App = observer(() => {
   const t = useI18n();
-  const { extensions } = store;
+  const extensions = store.sortedExtensions;
   const rootRef = React.useRef<HTMLDivElement>(null);
+  // 按住行上下拖动调整顺序;与地址栏图标共用 extensionOrder。
+  const reorder = useDragReorder<HTMLDivElement>({
+    axis: 'y',
+    ids: extensions.map((x) => x.id),
+    attr: 'data-ext-id',
+    onMove: (from, to, after) => store.moveExtension(from, to, after),
+  });
 
   // 内容高度自适应:测量后上报给主进程重排弹窗高度。
   React.useEffect(() => {
@@ -68,12 +76,20 @@ export const App = observer(() => {
       <StyledApp ref={rootRef}>
         <UIStyle />
         <Header>{t('exlTitle')}</Header>
-        <List>
+        <List ref={reorder.containerRef} onMouseDown={reorder.onMouseDown}>
           {extensions.length === 0 && <Empty>{t('exlEmpty')}</Empty>}
-          {extensions.map((ext) => {
+          {reorder.previewIds.map((id) => {
+            const ext = extensions.find((x) => x.id === id);
+            if (!ext) return null;
             const pinned = store.isPinned(ext.id);
             return (
-              <Item key={ext.id} onClick={onItemClick(ext)} title={ext.name}>
+              <Item
+                key={ext.id}
+                data-ext-id={ext.id}
+                dragging={reorder.draggingId === ext.id}
+                onClick={onItemClick(ext)}
+                title={ext.name}
+              >
                 <ItemIcon
                   style={{ backgroundImage: ext.icon ? `url(${ext.icon})` : 'none' }}
                 />

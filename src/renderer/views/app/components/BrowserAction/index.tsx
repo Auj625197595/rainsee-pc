@@ -12,6 +12,8 @@ import {Application} from "~/main/application";
 
 interface Props {
   data: IBrowserAction;
+  // 正在被拖动排序(半透明占位)。
+  dragging?: boolean;
 }
 
 const showPopup = (
@@ -126,7 +128,7 @@ const onMouseDown = (data: IBrowserAction) => async (e: any) => {
   // ipcRenderer.send(`hide-extension-popup-${store.windowId}`);
 };
 
-export const BrowserAction = observer(({ data }: Props) => {
+export const BrowserAction = observer(({ data, dragging }: Props) => {
   const {
     icon,
     badgeText,
@@ -145,6 +147,7 @@ export const BrowserAction = observer(({ data }: Props) => {
       onClick={onClick(data)}
       onMouseDown={onMouseDown(data)}
       onContextMenu={onContextMenu(data)}
+      style={dragging ? { opacity: 0.45 } : undefined}
       opacity={data.enabled === false ? 0.4 : 1}
       autoInvert={false}
       size={16}

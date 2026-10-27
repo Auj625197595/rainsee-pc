@@ -1,3 +1,4 @@
+import { BrowserWindow } from 'electron'
 import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
 import debug from 'debug'
@@ -35,6 +36,19 @@ export class WindowsAPI {
 
     window.on('focus', () => {
       this.onFocusChanged(windowId)
+    })
+    // Chrome reports WINDOW_ID_NONE when focus leaves every browser window.
+    // Defer so a blur→focus hop between two browser windows only reports the
+    // newly focused window.
+    window.on('blur', () => {
+      setTimeout(() => {
+        // Any app window counts: extension popups/dialogs are separate
+        // BrowserWindows here but belong to the browser window in Chrome, so
+        // focusing one must not report WINDOW_ID_NONE.
+        if (!BrowserWindow.getFocusedWindow()) {
+          this.onFocusChanged(WindowsAPI.WINDOW_ID_NONE)
+        }
+      }, 50)
     })
 
     window.on('resized', () => {
@@ -131,7 +145,7 @@ export class WindowsAPI {
 
   private get(event: ExtensionEvent, windowId: number) {
     const win = this.getWindowFromId(event, windowId)
-    if (!win) return { id: WindowsAPI.WINDOW_ID_NONE }
+    if (!win) throw new Error(`No window with id: ${windowId}.`)
     return this.getWindowDetails(win)
   }
 
@@ -165,7 +179,7 @@ export class WindowsAPI {
     updateProperties: chrome.windows.UpdateInfo = {},
   ) {
     const win = this.getWindowFromId(event, windowId)
-    if (!win) return undefined
+    if (!win) throw new Error(`No window with id: ${windowId}.`)
 
     const props = updateProperties
 
@@ -240,7 +254,7 @@ export class WindowsAPI {
 
   private async remove(event: ExtensionEvent, windowId: number = WindowsAPI.WINDOW_ID_CURRENT) {
     const win = this.getWindowFromId(event, windowId)
-    if (!win) return
+    if (!win) throw new Error(`No window with id: ${windowId}.`)
     await this.ctx.store.removeWindow(win)
     // observeWindow emits onRemoved when the native window actually closes.
     // Emitting here as well delivered the event twice for API-initiated closes.
@@ -257,10 +271,19 @@ export class WindowsAPI {
     this.ctx.router.broadcastEvent('windows.onRemoved', windowId)
   }
 
-  onFocusChanged(windowId: number) {
-    if (this.ctx.store.lastFocusedWindowId === windowId) return
+  // Track the last *reported* focus separately: store.addWindow's own focus
+  // listener updates lastFocusedWindowId before this one runs, so comparing
+  // against it suppressed every onFocusChanged. lastFocusedWindowId keeps the
+  // last real window (Chrome's getLastFocused never returns WINDOW_ID_NONE).
+  private reportedFocusWindowId: number | undefined
 
-    this.ctx.store.lastFocusedWindowId = windowId
+  onFocusChanged(windowId: number) {
+    if (this.reportedFocusWindowId === windowId) return
+    this.reportedFocusWindowId = windowId
+
+    if (windowId !== WindowsAPI.WINDOW_ID_NONE) {
+      this.ctx.store.lastFocusedWindowId = windowId
+    }
     this.ctx.router.broadcastEvent('windows.onFocusChanged', windowId)
   }
 

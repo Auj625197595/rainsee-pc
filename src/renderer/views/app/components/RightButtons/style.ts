@@ -51,7 +51,7 @@ export const Separator = styled.div`
 `;
 
 // 「雨见 AI」胶囊按钮:蓝底白字 + 星形图标。
-export const AiPill = styled.div`
+export const AiPill = styled.div<{ $iconOnly?: boolean; toggled?: boolean }>`
   display: flex;
   align-items: center;
   height: 28px;
@@ -84,5 +84,18 @@ export const AiPill = styled.div`
     toggled &&
     css`
       background-color: #3a45b8;
+    `};
+
+  ${({ $iconOnly }: { $iconOnly?: boolean }) =>
+    $iconOnly &&
+    css`
+      width: 28px;
+      padding: 0;
+      justify-content: center;
+      border-radius: 50%;
+
+      svg {
+        margin-right: 0;
+      }
     `};
 `;

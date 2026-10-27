@@ -28,6 +28,7 @@ import { AlarmsAPI } from './api/alarms'
 import { ProxyAPI } from './api/proxy'
 import { IdleAPI } from './api/idle'
 import { PowerAPI } from './api/power'
+import { CaptureAPI } from './api/capture'
 import { SystemAPI } from './api/system'
 import { BrowsingDataAPI } from './api/browsing-data'
 import { ManagementAPI } from './api/management'
@@ -43,6 +44,7 @@ import { SidePanelAPI } from './api/side-panel'
 import { OffscreenAPI } from './api/offscreen'
 import { IdentityAPI } from './api/identity'
 import { DeclarativeNetRequestAPI } from './api/declarative-net-request'
+import { DeclarativeContentAPI } from './api/declarative-content'
 import { resolvePartition } from './partition'
 
 function createDynamicContentScriptRegistry(): ExtensionContext['dynamicContentScripts'] {
@@ -178,6 +180,7 @@ export class ElectronChromeExtensions extends EventEmitter {
     proxy: ProxyAPI
     idle: IdleAPI
     power: PowerAPI
+    capture: CaptureAPI
     system: SystemAPI
     browsingData: BrowsingDataAPI
     management: ManagementAPI
@@ -192,6 +195,7 @@ export class ElectronChromeExtensions extends EventEmitter {
     sidePanel: SidePanelAPI
     identity: IdentityAPI
     declarativeNetRequest: DeclarativeNetRequestAPI
+    declarativeContent: DeclarativeContentAPI
   }
 
   constructor(opts: ChromeExtensionOptions) {
@@ -220,8 +224,9 @@ export class ElectronChromeExtensions extends EventEmitter {
       store,
     }
 
+    const browserAction = new BrowserActionAPI(this.ctx)
     this.api = {
-      browserAction: new BrowserActionAPI(this.ctx),
+      browserAction,
       contextMenus: new ContextMenusAPI(this.ctx),
       commands: new CommandsAPI(this.ctx),
       cookies: new CookiesAPI(this.ctx),
@@ -242,6 +247,7 @@ export class ElectronChromeExtensions extends EventEmitter {
       proxy: new ProxyAPI(this.ctx),
       idle: new IdleAPI(this.ctx),
       power: new PowerAPI(this.ctx),
+      capture: new CaptureAPI(this.ctx),
       system: new SystemAPI(this.ctx),
       browsingData: new BrowsingDataAPI(this.ctx),
       management: new ManagementAPI(this.ctx),
@@ -259,6 +265,7 @@ export class ElectronChromeExtensions extends EventEmitter {
       // Before WebRequestAPI so ctx.declarativeNetRequest is set for its
       // synchronous DNR enforcement inside the webRequest callbacks.
       declarativeNetRequest: new DeclarativeNetRequestAPI(this.ctx),
+      declarativeContent: new DeclarativeContentAPI(this.ctx, browserAction),
     }
 
     // Expose the SidePanelAPI on ctx so BrowserActionAPI.activateClick can
@@ -281,6 +288,13 @@ export class ElectronChromeExtensions extends EventEmitter {
     // -> content script), registered here so it shares MessagingAPI's state.
     this.ctx.router
       .apiHandler()('tabs.sendMessage', this.api.messaging.sendMessageToTab.bind(this.api.messaging))
+    // Private: renderer reports native executeScript({files}) injections so
+    // tabs.sendMessage can see those receivers (see markContentScriptInjected).
+    this.ctx.router
+      .apiHandler()(
+        'scripting.markInjected',
+        this.api.messaging.markContentScriptInjected.bind(this.api.messaging),
+      )
     // `chrome.tabs.connect` (background -> content script long-lived Port) is
     // likewise backed by the messaging hub.
     this.ctx.router
@@ -306,10 +320,24 @@ export class ElectronChromeExtensions extends EventEmitter {
     const { session } = this.ctx
 
     if ('registerPreloadScript' in session) {
+      const framePreloadPath = path.join(path.dirname(preloadPath), 'crx-frame-preload.bundle.js')
+      const framePath = existsSync(framePreloadPath) ? framePreloadPath : preloadPath
+      if (framePath === preloadPath) {
+        console.error(
+          new Error(
+            `electron-chrome-extensions: Frame preload file not found at "${framePreloadPath}"; ` +
+              'falling back to the shared preload.',
+          ),
+        )
+      }
       session.registerPreloadScript({
         id: 'crx-mv2-preload',
         type: 'frame',
-        filePath: preloadPath,
+        // A distinct path is a renderer-profile boundary in Electron 43. If
+        // frame and worker registrations share one file, Chromium may place an
+        // extension page in the service-worker renderer; Electron then starts
+        // the frame with null startupData and skips every page preload.
+        filePath: framePath,
       })
       session.registerPreloadScript({
         id: 'crx-mv3-preload',
@@ -418,6 +446,11 @@ export class ElectronChromeExtensions extends EventEmitter {
     details?: any,
   ) {
     this.api.messaging.markServiceWorkerReady(serviceWorker, details)
+  }
+
+  /** Worker is running but its preload never completed the bridge handshake. */
+  isServiceWorkerBridgeStalled(extensionId: string, minMs?: number): boolean {
+    return this.api.messaging.isWorkerBridgeStalled(extensionId, minMs)
   }
 
   setServiceWorkerRecoveryHandler(
@@ -619,6 +652,15 @@ export class ElectronChromeExtensions extends EventEmitter {
     details: chrome.runtime.InstalledDetails,
   ) {
     return this.ctx.router.sendEvent(extensionId, 'runtime.onInstalled', details)!
+  }
+
+  /** Host hook: an extension side panel was shown / hidden by the host UI. */
+  notifySidePanelState(
+    opened: boolean,
+    extensionId: string,
+    info: { windowId: number; tabId?: number; path: string },
+  ) {
+    this.api.sidePanel.notifyPanelState(opened, extensionId, info)
   }
 
   notifyRuntimeStartup(extensionId: string) {

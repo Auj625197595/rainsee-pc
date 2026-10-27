@@ -16,6 +16,7 @@ import {
   resolveExtensionPath,
 } from './common'
 import { buildContentScriptBridge, clearContentScriptBridge } from './content-bridge'
+import { DocumentIdleScheduler } from './document-idle'
 
 const d = debug('electron-chrome-extensions:scripting')
 // `log` fires on every inject candidate (very hot); off unless CRX_VERBOSE=1.
@@ -51,12 +52,12 @@ interface RegisteredContentScript {
  * Which run_at phase an injection pass is servicing.
  *  - `start`: only `document_start` scripts (injected right after the frame's
  *    navigation commits, before the page's own scripts run).
- *  - `end`: everything else (`document_end` / `document_idle` / unspecified),
- *    injected at dom-ready / frame-finish-load.
+ *  - `end`: only `document_end`, injected at the frame's dom-ready event.
+ *  - `idle`: `document_idle` and unspecified scripts, injected after load.
  *  - `all`: no run_at filter — used when a script is registered AFTER the page
  *    already loaded, where document_start timing is moot.
  */
-type InjectPhase = 'start' | 'end' | 'all'
+type InjectPhase = 'start' | 'end' | 'idle' | 'all'
 
 // Electron exposes storage.sync/managed in extension isolated worlds as
 // objects whose methods throw "is not available in this instance of Chrome".
@@ -136,19 +137,22 @@ const installDocumentStartHandler = () => {
  * "has no access to this page" because the bridge never reports back.
  *
  * This mirrors UserScriptsAPI's injection model: scripts are stored per
- * extension and injected into matching frames at `dom-ready` (main frame) and
- * `did-frame-finish-load` (child frames). Before each extension's JS we prepend
- * a synthesized `chrome` bridge (see content-bridge.ts) so the content script
- * can talk to its background service worker over IPC.
+ * extension and injected into matching frames according to `runAt`.
+ * `document_end` runs at frame dom-ready. `document_idle` prefers load and has
+ * a bounded post-DOM fallback for pages whose load event never arrives.
+ * Before each extension's JS we prepend a synthesized `chrome` bridge (see
+ * content-bridge.ts) so the content script can talk to its background service
+ * worker over IPC.
  */
 export class ScriptingAPI {
   private scriptsMap = new Map</* extensionId */ string, RegisteredContentScript[]>()
+  private readonly idleScheduler: DocumentIdleScheduler<Electron.WebFrameMain>
   /**
    * Per-frame record of which scripts have already been injected at the current
    * navigation epoch (the dynamicContentScripts token). Prevents a document_start
-   * pass (did-frame-navigate) and the later document_end pass (dom-ready) — or
-   * two overlapping injectExistingTabs calls — from injecting the same script
-   * twice. Reset when the frame's token changes (i.e. on navigation).
+   * pass (did-frame-navigate), later lifecycle passes, or two overlapping
+   * injectExistingTabs calls from injecting the same script twice. Reset when
+   * the frame's token changes (i.e. on navigation).
    */
   private injected = new WeakMap<Electron.WebFrameMain, { token: number; keys: Set<string> }>()
   private readonly persistedFile = path.join(app.getPath('userData'), 'crx-dynamic-content-scripts.json')
@@ -156,6 +160,9 @@ export class ScriptingAPI {
   private persisted: Record<string, RegisteredContentScript[]> = {}
 
   constructor(private ctx: ExtensionContext) {
+    this.idleScheduler = new DocumentIdleScheduler((frame) =>
+      this.ctx.dynamicContentScripts.token(frame),
+    )
     scriptingBySession.set(ctx.session, this)
     installDocumentStartHandler()
     const handle = this.ctx.router.apiHandler()
@@ -409,7 +416,31 @@ export class ScriptingAPI {
     }
     const mainFrameHandler = () => {
       d(`dom-ready fired tabId=${tab.id}`)
-      this.injectInto(tab.mainFrame, false, undefined, 'end')
+      const frame = tab.mainFrame
+      this.injectInto(frame, false, undefined, 'end')
+      this.idleScheduler.schedule(frame, () => {
+        if (!tab.isDestroyed()) this.injectInto(frame, false, undefined, 'idle')
+      })
+    }
+    const mainFrameIdleHandler = () => {
+      d(`did-finish-load fired tabId=${tab.id}`)
+      const frame = tab.mainFrame
+      this.idleScheduler.runNow(frame, () =>
+        this.injectInto(frame, false, undefined, 'idle'),
+      )
+    }
+    const frameCreatedHandler = (
+      _event: Electron.Event,
+      details: { frame: Electron.WebFrameMain },
+    ) => {
+      const frame = details?.frame
+      if (!frame?.parent) return
+      frame.on('dom-ready', () => {
+        this.injectInto(frame, true, undefined, 'end')
+        this.idleScheduler.schedule(frame, () => {
+          if (!tab.isDestroyed()) this.injectInto(frame, true, undefined, 'idle')
+        })
+      })
     }
     const childFrameHandler = (
       _event: Electron.Event,
@@ -419,11 +450,17 @@ export class ScriptingAPI {
     ) => {
       if (isMainFrame) return
       const frame = webFrameMain.fromId(frameProcessId, frameRoutingId)
-      if (frame) this.injectInto(frame, true, undefined, 'end')
+      if (frame) {
+        this.idleScheduler.runNow(frame, () =>
+          this.injectInto(frame, true, undefined, 'idle'),
+        )
+      }
     }
 
     tab.on('did-frame-navigate', startFrameHandler)
     tab.on('dom-ready', mainFrameHandler)
+    tab.on('did-finish-load', mainFrameIdleHandler)
+    tab.on('frame-created', frameCreatedHandler)
     tab.on('did-frame-finish-load', childFrameHandler)
 
     // If the tab already finished loading before we attached (it existed at
@@ -434,8 +471,13 @@ export class ScriptingAPI {
     } catch {}
 
     tab.once('destroyed', () => {
+      try {
+        this.idleScheduler.cancel(tab.mainFrame)
+      } catch {}
       tab.off('did-frame-navigate', startFrameHandler)
       tab.off('dom-ready', mainFrameHandler)
+      tab.off('did-finish-load', mainFrameIdleHandler)
+      tab.off('frame-created', frameCreatedHandler)
       tab.off('did-frame-finish-load', childFrameHandler)
     })
   }
@@ -489,13 +531,14 @@ export class ScriptingAPI {
       }
 
       for (const script of scripts) {
-        // Only inject scripts belonging to the run_at phase being serviced
-        // (document_start vs everything else). 'all' skips the filter.
+        // Only inject scripts belonging to this run_at phase. 'all' is used
+        // when a script is registered against an already-loaded document.
         if (phase !== 'all') {
-          const isStart = (script.runAt || 'document_idle') === 'document_start'
-          if (phase === 'start' ? !isStart : isStart) continue
+          const runAt = script.runAt || 'document_idle'
+          if (runAt !== `document_${phase}`) continue
           // ISOLATED document_start scripts run from the registered frame
-          // preload before page JavaScript. This pass is only for MAIN world.
+          // preload before page JavaScript. The navigation pass is a fallback
+          // marker and must not execute either world a second time.
           if (phase === 'start') continue
         }
         if (isChildFrame && !script.allFrames) {

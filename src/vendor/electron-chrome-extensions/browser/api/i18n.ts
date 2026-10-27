@@ -1,5 +1,5 @@
 import { app, ipcMain } from 'electron'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import * as path from 'node:path'
 import debug from 'debug'
 
@@ -36,11 +36,33 @@ export function getAppUILocale(): string {
 
 const catalogCache = new Map<string, I18nCatalog>()
 
+function localeDirectory(localesDir: string, locale: string): string | null {
+  const exact = path.join(localesDir, locale)
+  if (existsSync(exact)) return exact
+  try {
+    // Some extensions use a different case or separator spelling for locale
+    // directories (for example `zh-CN` versus `zh_CN`). Chrome accepts both.
+    const wanted = locale.replace(/-/g, '_').toLowerCase()
+    const entry = readdirSync(localesDir, { withFileTypes: true }).find(
+      (item) =>
+        item.isDirectory() &&
+        item.name.replace(/-/g, '_').toLowerCase() === wanted,
+    )
+    return entry ? path.join(localesDir, entry.name) : null
+  } catch {
+    return null
+  }
+}
+
 function readMessages(localesDir: string, locale: string): Record<string, MessageEntry> | null {
-  const file = path.join(localesDir, locale, 'messages.json')
+  const dir = localeDirectory(localesDir, locale)
+  if (!dir) return null
+  const file = path.join(dir, 'messages.json')
   if (!existsSync(file)) return null
   try {
-    const raw = JSON.parse(readFileSync(file, 'utf8'))
+    // A UTF-8 BOM is valid in extension resources but JSON.parse does not
+    // accept it when the file is read as a string.
+    const raw = JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, ''))
     const out: Record<string, MessageEntry> = {}
     for (const key of Object.keys(raw)) {
       const entry = raw[key]
@@ -67,8 +89,10 @@ function localeCandidates(uiLocale: string, defaultLocale?: string): string[] {
   const out: string[] = []
   const add = (v?: string) => {
     if (!v) return
-    const norm = v.replace(/-/g, '_')
-    if (!out.includes(norm)) out.push(norm)
+    const variants = [v, v.replace(/-/g, '_'), v.replace(/_/g, '-')]
+    variants.forEach((variant) => {
+      if (variant && !out.includes(variant)) out.push(variant)
+    })
   }
   add(uiLocale) // e.g. zh_CN
   add(uiLocale.split(/[-_]/)[0]) // e.g. zh
@@ -90,11 +114,14 @@ export function buildI18nCatalog(
   manifest: any,
   uiLocale: string,
 ): I18nCatalog {
-  const cacheKey = `${extensionPath}|${uiLocale}`
+  const defaultLocale = manifest && manifest.default_locale
+  // Include the default locale in the key. The same extension can be queried
+  // first through an Electron manifest and later through the raw manifest;
+  // those objects do not always expose the same `default_locale` field.
+  const cacheKey = `${extensionPath}|${uiLocale}|${defaultLocale || ''}`
   const cached = catalogCache.get(cacheKey)
   if (cached) return cached
 
-  const defaultLocale: string | undefined = manifest && manifest.default_locale
   const localesDir = path.join(extensionPath, '_locales')
 
   let messageLocale = (uiLocale || 'en').replace(/-/g, '_')
@@ -135,8 +162,10 @@ export function resolveExtMessage(
   manifest: any,
   text: string | undefined,
 ): string {
-  if (!text || typeof text !== 'string' || !text.startsWith('__MSG_')) return text || ''
-  const key = text.slice(6, -2)
+  if (!text || typeof text !== 'string') return text || ''
+  const match = /^__MSG_(.+)__$/i.exec(text)
+  if (!match) return text
+  const key = match[1]
   try {
     const catalog = buildI18nCatalog(extensionPath, manifest, getAppUILocale())
     const entry = catalog.messages[key.toLowerCase()]

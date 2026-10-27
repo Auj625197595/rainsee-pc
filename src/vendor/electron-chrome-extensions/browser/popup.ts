@@ -66,9 +66,13 @@ export class PopupView extends EventEmitter {
   private url: string
   /** Host tab snapshot injected into the popup (see load). */
   private tabs: any[]
+  private lastWidth = -1
+  private lastHeight = -1
 
   /** Preferred size changes are only received in Electron v12+ */
   private usingPreferredSize = supportsPreferredSize()
+  /** True once Chromium has supplied a content preferred size for this load. */
+  private preferredSizeReceived = false
 
   private readyPromise: Promise<void>
 
@@ -90,6 +94,9 @@ export class PopupView extends EventEmitter {
   }
 
   private spawn(): Promise<void> {
+    this.preferredSizeReceived = false
+    this.lastWidth = -1
+    this.lastHeight = -1
     this.browserWindow = new BrowserWindow({
       show: false,
       frame: false,
@@ -274,8 +281,15 @@ export class PopupView extends EventEmitter {
     if (this.destroyed) return
 
     if (this.usingPreferredSize) {
-      // Set small initial size so the preferred size grows to what's needed
-      this.setSize({ width: PopupView.BOUNDS.minWidth, height: PopupView.BOUNDS.minHeight })
+      // A preferred-size event may have arrived before loadURL resolved. Do
+      // not reset that valid size to the minimum: fluid popup pages (such as
+      // FlowPick) use their current viewport to decide whether to apply their
+      // desktop width, so this reset can permanently collapse them.
+      if (!this.preferredSizeReceived) {
+        this.setSize({ width: PopupView.BOUNDS.minWidth, height: PopupView.BOUNDS.minHeight })
+        this.updatePosition()
+        this.show()
+      }
     } else {
       // Set large initial size to avoid overflow
       this.setSize({ width: PopupView.BOUNDS.maxWidth, height: PopupView.BOUNDS.maxHeight })
@@ -333,15 +347,24 @@ export class PopupView extends EventEmitter {
   setSize(rect: Partial<Electron.Rectangle>) {
     if (!this.browserWindow || !this.parent) return
 
+    // Chromium may report a transient zero dimension while an extension page
+    // is reflowing. Keep the current content size instead of collapsing the
+    // visible popup to its minimum width/height.
+    const widthInput =
+      rect.width && rect.width > 0 ? rect.width : this.lastWidth > 0 ? this.lastWidth : 0
+    const heightInput =
+      rect.height && rect.height > 0 ? rect.height : this.lastHeight > 0 ? this.lastHeight : 0
     const width = Math.floor(
-      Math.min(PopupView.BOUNDS.maxWidth, Math.max(rect.width || 0, PopupView.BOUNDS.minWidth)),
+      Math.min(PopupView.BOUNDS.maxWidth, Math.max(widthInput || 0, PopupView.BOUNDS.minWidth)),
     )
 
     const height = Math.floor(
-      Math.min(PopupView.BOUNDS.maxHeight, Math.max(rect.height || 0, PopupView.BOUNDS.minHeight)),
+      Math.min(PopupView.BOUNDS.maxHeight, Math.max(heightInput || 0, PopupView.BOUNDS.minHeight)),
     )
 
     const size = { width, height }
+    this.lastWidth = width
+    this.lastHeight = height
     d(`setSize`, size)
 
     this.emit('will-resize', size)
@@ -430,6 +453,7 @@ export class PopupView extends EventEmitter {
   private updatePreferredSize = (event: Electron.Event, size: Electron.Size) => {
     d('updatePreferredSize', size)
     this.usingPreferredSize = true
+    this.preferredSizeReceived = true
 
     // While DevTools is open the window is intentionally enlarged for
     // inspection; don't let the content's preferred size shrink it back.

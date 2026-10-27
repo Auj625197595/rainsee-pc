@@ -37,6 +37,7 @@ export class SidePanelAPI {
     handle('sidePanel.open', this.open, { permission: 'sidePanel' })
     handle('sidePanel.getOptions', this.getOptions, { permission: 'sidePanel' })
     handle('sidePanel.getPanelBehavior', this.getPanelBehaviorHandler, { permission: 'sidePanel' })
+    handle('sidePanel.close', this.close, { permission: 'sidePanel' })
   }
 
   private getExtension(extensionId: string): any {
@@ -118,6 +119,26 @@ export class SidePanelAPI {
     this.openFor(event.extension.id, tabId, resolvedWindowId)
   }
 
+  // chrome.sidePanel.close (Chrome 141+). Chrome requires windowId or tabId;
+  // either way it closes this extension's panel in the resolved window.
+  private close = (
+    event: ExtensionEvent,
+    details: { windowId?: number; tabId?: number } = {},
+  ) => {
+    let windowId: number | undefined
+    if (typeof details?.tabId === 'number') {
+      const tab = this.ctx.store.getTabById(details.tabId)
+      windowId = tab ? this.ctx.store.tabToWindow.get(tab)?.id : undefined
+    } else if (typeof details?.windowId === 'number' && details.windowId !== -2) {
+      windowId = details.windowId
+    } else {
+      windowId = this.ctx.store.getCurrentWindow(event)?.id
+    }
+    const closeSidePanel = this.ctx.store.impl.closeSidePanel
+    if (typeof closeSidePanel !== 'function') return
+    closeSidePanel(event.extension.id, windowId)
+  }
+
   private getOptions = (
     { extension }: ExtensionEvent,
     details: { tabId?: number } = {},
@@ -145,6 +166,19 @@ export class SidePanelAPI {
   /** Called from BrowserActionAPI.activateClick when openPanelOnActionClick is on. */
   openFromAction(extensionId: string, tabId: number, windowId?: number): void {
     this.openFor(extensionId, tabId, windowId)
+  }
+
+  /**
+   * Host notification: the extension's panel became visible / hidden. Fires
+   * chrome.sidePanel.onOpened / onClosed so extensions that track panel state
+   * (and toggle via close()) stay in sync with closes from the host UI.
+   */
+  notifyPanelState(
+    opened: boolean,
+    extensionId: string,
+    info: { windowId: number; tabId?: number; path: string },
+  ) {
+    this.ctx.router.sendEvent(extensionId, opened ? 'sidePanel.onOpened' : 'sidePanel.onClosed', info)
   }
 
   private openFor(extensionId: string, tabId: number | undefined, windowId?: number) {

@@ -27,47 +27,118 @@ const d = debug('electron-chrome-extensions:proxy')
  * plaintext HTTP to a TLS socket, so every connection check fails.
  */
 export class ProxyAPI {
-  /** Last-applied value, echoed by `get` (mirrors Chrome returning current settings). */
+  /** Fallback state for hosts that do not provide a proxy coordinator. */
   private current: any = { mode: 'system' }
+  private fallbackController: string | undefined
 
   constructor(private ctx: ExtensionContext) {
     const handle = this.ctx.router.apiHandler()
     handle('proxy.settings.set', this.set, { permission: 'proxy' })
     handle('proxy.settings.clear', this.clear, { permission: 'proxy' })
     handle('proxy.settings.get', this.get, { permission: 'proxy' })
+
+    const sessionExtensions = (ctx.session as any).extensions || ctx.session
+    if (typeof sessionExtensions.on === 'function') {
+      sessionExtensions.on('extension-unloaded', (_event: any, extension: Electron.Extension) => {
+        const extensionId = extension?.id
+        if (!extensionId) return
+        void this.releaseExtension(extensionId).catch((error: any) =>
+          console.error('[crx-proxy] failed to release unloaded extension:', extensionId, error),
+        )
+      })
+    }
+
+    ctx.store?.impl?.proxy?.onChanged?.(() => {
+      void this.broadcastChanges()
+    })
   }
 
-  private set = async (_event: ExtensionEvent, details: any): Promise<undefined> => {
+  private set = async (event: ExtensionEvent, details: any): Promise<undefined> => {
     const value = (details && details.value) || { mode: 'system' }
-    this.current = value
     const config = mapProxyConfig(value)
     try {
-      await this.ctx.session.setProxy(config)
+      const coordinator = this.ctx.store?.impl?.proxy
+      if (coordinator) {
+        await coordinator.set(event.extension.id, value, config)
+      } else {
+        await this.applyDirectly(config)
+        this.current = value
+        this.fallbackController = event.extension.id
+      }
       d(`setProxy ${JSON.stringify(config)}`)
     } catch (e: any) {
-      // Never let a bad config tear down the caller — Chrome's set never rejects.
       console.error('[crx-proxy] setProxy failed:', e && e.message, JSON.stringify(config))
+      // Promise-based chrome.proxy calls reject on invalid configuration. Keep
+      // that contract so extensions do not report success after a host failure.
+      throw e
     }
     // chrome.proxy.settings.set's callback receives no arguments.
     return undefined
   }
 
-  private clear = async (_event: ExtensionEvent, _details: any): Promise<undefined> => {
-    this.current = { mode: 'system' }
+  private clear = async (event: ExtensionEvent, _details: any): Promise<undefined> => {
     try {
-      await this.ctx.session.setProxy({ mode: 'system' })
-      d('setProxy cleared -> system')
+      const coordinator = this.ctx.store?.impl?.proxy
+      if (coordinator) {
+        await coordinator.clear(event.extension.id)
+      } else if (this.fallbackController === event.extension.id) {
+        await this.applyDirectly({ mode: 'system' })
+        this.current = { mode: 'system' }
+        this.fallbackController = undefined
+      }
+      d(`setProxy cleared for ${event.extension.id}`)
     } catch (e: any) {
       console.error('[crx-proxy] clear failed:', e && e.message)
+      throw e
     }
     return undefined
   }
 
-  private get = async (_event: ExtensionEvent, _details: any) => {
+  private get = async (event: ExtensionEvent, _details: any) => {
+    const coordinator = this.ctx.store?.impl?.proxy
+    if (coordinator) return coordinator.get(event.extension.id)
     return {
       value: this.current,
-      levelOfControl: 'controlled_by_this_extension',
+      levelOfControl:
+        this.fallbackController === event.extension.id
+          ? 'controlled_by_this_extension'
+          : this.fallbackController
+          ? 'controlled_by_other_extensions'
+          : 'controllable_by_this_extension',
     }
+  }
+
+  public releaseExtension(extensionId: string): Promise<void> {
+    const coordinator = this.ctx.store?.impl?.proxy
+    if (coordinator) return coordinator.release(extensionId)
+    if (this.fallbackController !== extensionId) return Promise.resolve()
+    this.fallbackController = undefined
+    this.current = { mode: 'system' }
+    return this.applyDirectly({ mode: 'system' })
+  }
+
+  private async applyDirectly(config: Electron.ProxyConfig) {
+    await this.ctx.session.setProxy(config)
+    if (typeof this.ctx.session.closeAllConnections === 'function') {
+      try {
+        await this.ctx.session.closeAllConnections()
+      } catch (e: any) {
+        console.warn('[crx-proxy] failed to close existing connections:', e && e.message)
+      }
+    }
+  }
+
+  private async broadcastChanges() {
+    const coordinator = this.ctx.store?.impl?.proxy
+    if (!coordinator) return
+    const sessionExtensions = (this.ctx.session as any).extensions || this.ctx.session
+    const extensions: Electron.Extension[] = sessionExtensions.getAllExtensions?.() || []
+    await Promise.all(
+      extensions.map(async (extension) => {
+        const details = await coordinator.get(extension.id)
+        await this.ctx.router.sendEvent(extension.id, 'proxy.settings.onChange', details)
+      }),
+    )
   }
 }
 
@@ -138,7 +209,7 @@ function mapBypass(bypassList: any): string | undefined {
 }
 
 /** Map a chrome.proxy.settings value to an Electron ProxyConfig. */
-function mapProxyConfig(value: any): Electron.ProxyConfig {
+export function mapProxyConfig(value: any): Electron.ProxyConfig {
   const mode = value && value.mode
   switch (mode) {
     case 'direct':
@@ -147,7 +218,18 @@ function mapProxyConfig(value: any): Electron.ProxyConfig {
       return { mode }
     case 'pac_script': {
       const ps = (value && value.pacScript) || {}
-      return { mode: 'pac_script', pacScript: ps.data || ps.url || '' }
+      let pacScript = ''
+      if (typeof ps.data === 'string' && ps.data) {
+        // Electron expects a PAC URL while chrome.proxy accepts inline source.
+        // A base64 data URL avoids URL-escaping pitfalls in arbitrary scripts.
+        pacScript = `data:application/x-ns-proxy-autoconfig;base64,${Buffer.from(
+          ps.data,
+          'utf8',
+        ).toString('base64')}`
+      } else if (typeof ps.url === 'string') {
+        pacScript = ps.url
+      }
+      return { mode: 'pac_script', pacScript }
     }
     case 'fixed_servers': {
       const rules = (value && value.rules) || {}

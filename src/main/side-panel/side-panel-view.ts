@@ -21,6 +21,7 @@ export class SidePanelView {
   public headerBounds: any = null;
   public visible = false;
   private currentUrl = '';
+  public panelPath = '';
   private closeChannel: string;
   private pinChannel: string;
 
@@ -29,21 +30,7 @@ export class SidePanelView {
     public tabId: number,
     public extensionId: string,
   ) {
-    this.browserView = new BrowserView({
-      webPreferences: {
-        // extension session:chrome-extension:// 资源可加载 + chrome.* 可用。
-        session: Application.instance.sessions.view,
-        // crx-preload 注入 electron bridge + chrome.* shims(同 popup.ts)。
-        // sandbox:false 走 classic preload 路径(WebPreferences),不依赖
-        // binding.startupData(sandboxed renderer 会 null 跳过)。
-        preload: path.join(app.getAppPath(), 'build', 'crx-preload.bundle.js'),
-        nodeIntegration: false,
-        contextIsolation: false,
-        sandbox: false,
-        javascript: true,
-      },
-    });
-    this.browserView.setBackgroundColor('#ffffff');
+    this.browserView = this.createContentView();
 
     this.headerView = new BrowserView({
       webPreferences: {
@@ -60,6 +47,62 @@ export class SidePanelView {
     ipcMain.on(this.closeChannel, this.onHeaderClose);
     ipcMain.on(this.pinChannel, this.onHeaderPin);
     this.setupListeners();
+  }
+
+  private createContentView() {
+    const view = new BrowserView({
+      webPreferences: {
+        // extension session:chrome-extension:// 资源可加载 + chrome.* 可用。
+        session: Application.instance.sessions.view,
+        // 独立的 crx-sidepanel-preload(内容同 crx-preload)。preload 路径参与
+        // Electron 的渲染进程复用判定:若与 SW 注册的 crx-preload 同路径,面板会
+        // 被塞进扩展 SW 的渲染进程,SW 空闲停止/崩溃时面板跟着死 → 1 秒后空白。
+        // sandbox:false 走 classic preload,不依赖 binding.startupData。
+        preload: path.join(app.getAppPath(), 'build', 'crx-sidepanel-preload.bundle.js'),
+        nodeIntegration: false,
+        contextIsolation: false,
+        sandbox: false,
+        javascript: true,
+      },
+    });
+    view.setBackgroundColor('#ffffff');
+    view.webContents.on('render-process-gone', () => this.onContentGone(view));
+    return view;
+  }
+
+  // 面板渲染进程消失(崩溃或被宿主进程连带退出)后,旧 webContents 不可再用:
+  // 重建一个新的 view,可见时立即重载,否则等下次 show 时加载。
+  private onContentGone(dead: BrowserView) {
+    if (!this.browserView || this.browserView !== dead) return;
+    const url = this.currentUrl;
+    this.currentUrl = '';
+    setTimeout(() => {
+      if (!this.browserView || this.browserView !== dead) return;
+      const next = this.createContentView();
+      this.browserView = next;
+      this.setupListeners();
+      const win = this.window.win;
+      if (this.visible && win && !win.isDestroyed()) {
+        try {
+          win.removeBrowserView(dead);
+        } catch {
+          // ignore
+        }
+        win.addBrowserView(next);
+        this.window.viewManager.fixBounds();
+      }
+      try {
+        if (!dead.webContents.isDestroyed()) (dead.webContents as any).destroy();
+      } catch {
+        // ignore
+      }
+      if (this.visible && url) {
+        this.currentUrl = url;
+        next.webContents.loadURL(url).catch(() => {
+          // ignore load failure
+        });
+      }
+    }, 50);
   }
 
   public get webContents() {
@@ -256,6 +299,7 @@ export class SidePanelView {
   public async load(extensionId: string, panelPath: string) {
     const url = `chrome-extension://${extensionId}/${panelPath.replace(/^\//, '')}`;
     this.extensionId = extensionId;
+    this.panelPath = panelPath;
     void this.loadHeader(extensionId);
     if (url === this.currentUrl) return;
     this.currentUrl = url;

@@ -2,9 +2,9 @@ import * as React from 'react';
 import { observer } from 'mobx-react-lite';
 
 import store from '../../store';
-import { IExtItem } from '~/interfaces';
+import { ExtensionNotificationMode, IExtItem } from '~/interfaces';
 import { Switch } from '~/renderer/components/Switch';
-import { IconPuzzle } from './icons';
+import { IconPuzzle, IconRefresh } from './icons';
 import {
   Detail,
   DetailPageHead,
@@ -24,10 +24,12 @@ import {
   DetailSettingBody,
   DetailSettingTitle,
   DetailSettingText,
+  DetailSelect,
   DetailValue,
   DetailAllowed,
   DetailActions,
   DetailButton,
+  DetailUpdateFeedback,
   DetailLink,
   DetailInspectList,
   DetailInspectFeedback,
@@ -226,6 +228,29 @@ export const ExtDetail = observer(({ item }: { item: IExtItem }) => {
           />
         </DetailSetting>}
 
+        {item.type !== 'theme' && item.hasNotifications && (
+          <DetailSetting>
+            <DetailSettingBody>
+              <DetailSettingTitle>{t('extNotificationsTitle')}</DetailSettingTitle>
+              <DetailSettingText>{t('extNotificationsDesc')}</DetailSettingText>
+            </DetailSettingBody>
+            <DetailSelect
+              aria-label={t('extNotificationsTitle')}
+              value={item.notificationMode || 'allow'}
+              onChange={(e) =>
+                store.setNotificationMode(
+                  item,
+                  e.target.value as ExtensionNotificationMode,
+                )
+              }
+            >
+              <option value="block">{t('extNotificationsBlock')}</option>
+              <option value="allow">{t('extNotificationsAllow')}</option>
+              <option value="hide-name">{t('extNotificationsHideName')}</option>
+            </DetailSelect>
+          </DetailSetting>
+        )}
+
         {item.optionsUrl && (
           <DetailSetting>
             <DetailSettingBody>
@@ -304,6 +329,21 @@ export const ExtDetail = observer(({ item }: { item: IExtItem }) => {
         )}
 
         <DetailActions>
+          <DetailButton
+            type="button"
+            disabled={store.isExtensionChecking(item.id)}
+            onClick={() => store.checkUpdate(item)}
+          >
+            <IconRefresh />
+            {store.isExtensionChecking(item.id)
+              ? t('extUpdateChecking')
+              : t('extCheckUpdates')}
+          </DetailButton>
+          {store.extensionUpdateStatus(item.id) && (
+            <DetailUpdateFeedback>
+              {store.extensionUpdateStatus(item.id)}
+            </DetailUpdateFeedback>
+          )}
           {store.devMode && (
             <DetailButton type="button" onClick={() => store.reload(item)}>
               {t('extReload')}
